@@ -1,0 +1,15 @@
+# Rust
+target/
+
+# Node (chain-writer sidecar)
+node_modules/
+
+# Local configuration and secrets
+.env
+
+# IDE / editor
+.idea/
+.vscode/
+
+# Claude Code local settings
+.claude/settings.local.json*

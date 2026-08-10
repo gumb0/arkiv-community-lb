@@ -1,0 +1,20 @@
+{
+  "name": "arkiv-writer",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Chain-writer core for the Arkiv community LB: schema-blind entity operations over the official SDK, plus a smoke-test CLI.",
+  "scripts": {
+    "smoke": "node --env-file=../.env --import tsx src/smoke.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@arkiv-network/sdk": "0.7.0-dev.1",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

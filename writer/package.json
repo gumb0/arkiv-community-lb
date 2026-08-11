@@ -6,7 +6,8 @@
   "description": "Chain-writer core for the Arkiv community LB: schema-blind entity operations over the official SDK, plus a smoke-test CLI.",
   "scripts": {
     "smoke": "node --env-file=../.env --import tsx src/smoke.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "batch": "node --env-file=../.env --import tsx src/batch-experiment.ts"
   },
   "dependencies": {
     "@arkiv-network/sdk": "0.7.0-dev.1",

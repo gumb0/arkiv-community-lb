@@ -7,7 +7,8 @@
   "scripts": {
     "smoke": "node --env-file=../.env --import tsx src/smoke.ts",
     "typecheck": "tsc --noEmit",
-    "batch": "node --env-file=../.env --import tsx src/batch-experiment.ts"
+    "batch": "node --env-file=../.env --import tsx src/batch-experiment.ts",
+    "queries": "node --env-file=../.env --import tsx src/queries.ts"
   },
   "dependencies": {
     "@arkiv-network/sdk": "0.7.0-dev.1",

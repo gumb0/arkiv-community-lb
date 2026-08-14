@@ -49,14 +49,19 @@ export type BatchOps = {
 }
 
 export type WriterConfig = {
-  /** Full RPC endpoint URL, any access key already embedded. */
   rpcUrl: string
+  /** Sent as `Authorization: Bearer …` when the endpoint is metered. */
+  apiKey?: string
   privateKey: Hex
 }
 
 /** Connects, probes the chain id, and returns the writer surface. */
 export async function createWriter(config: WriterConfig) {
-  const transport = http(config.rpcUrl)
+  const transport = http(config.rpcUrl, {
+    fetchOptions: config.apiKey
+      ? { headers: { authorization: `Bearer ${config.apiKey}` } }
+      : undefined,
+  })
 
   const chainId = await createPublicClient({ transport }).getChainId()
 

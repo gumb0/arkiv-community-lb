@@ -1,8 +1,13 @@
 // Generic entity write operations over the official Arkiv SDK.
-// Schema-blind: payloads are opaque bytes, attributes are generic key-value
+// Schema-blind: payloads are opaque bytes, attributes are generic name→value
 // pairs — domain encoding belongs to the caller (see AGENTS.md).
 
-import { createWalletClient } from "@arkiv-network/sdk"
+import {
+  type AttributeInputs,
+  type CreationFlags,
+  createWalletClient,
+  type Expiry,
+} from "@arkiv-network/sdk"
 import {
   createPublicClient,
   defineChain,
@@ -12,23 +17,33 @@ import {
 } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 
-export type Attribute = { key: string; value: string | number }
+// Callers build these with the SDK's own vocabulary: tagged value
+// constructors (i32, u256, str, …) and ExpirationTime helpers.
+export type { AttributeInputs, CreationFlags, Expiry }
 
 export type CreateOp = {
   payload: Uint8Array
   contentType: string
-  attributes: Attribute[]
-  /** Seconds until expiry; must be a positive multiple of the block time. */
-  expiresIn: number
+  attributes?: AttributeInputs
+  expires: Expiry
+  flags?: CreationFlags
+  salt?: bigint
 }
 
-export type UpdateOp = CreateOp & { entityKey: Hex }
-export type ExtendOp = { entityKey: Hex; expiresIn: number }
+export type PatchOp = {
+  entityKey: Hex
+  set?: AttributeInputs
+  unset?: readonly string[]
+  payload?: Uint8Array
+  contentType?: string
+}
+
+export type ExtendOp = { entityKey: Hex; expires: Expiry }
 export type DeleteOp = { entityKey: Hex }
 
 export type BatchOps = {
   creates?: CreateOp[]
-  updates?: UpdateOp[]
+  patches?: PatchOp[]
   deletes?: DeleteOp[]
   extensions?: ExtendOp[]
 }
@@ -60,7 +75,7 @@ export async function createWriter(config: WriterConfig) {
     chainId,
 
     createEntity: (op: CreateOp) => wallet.createEntity(op),
-    updateEntity: (op: UpdateOp) => wallet.updateEntity(op),
+    patchEntity: (op: PatchOp) => wallet.patchEntity(op),
     deleteEntity: (op: DeleteOp) => wallet.deleteEntity(op),
     extendEntity: (op: ExtendOp) => wallet.extendEntity(op),
     /** All operations in one transaction — one nonce, atomic on-chain. */

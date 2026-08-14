@@ -11,7 +11,7 @@
     "queries": "node --env-file=../.env --import tsx src/queries.ts"
   },
   "dependencies": {
-    "@arkiv-network/sdk": "0.7.0-dev.1",
+    "@arkiv-network/sdk": "0.8.0-dev.1",
     "viem": "^2.21.0"
   },
   "devDependencies": {

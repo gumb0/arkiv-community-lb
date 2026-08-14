@@ -1,21 +1,21 @@
-// Query-language probe: the raw arkiv_query sentences a non-SDK reader
-// hand-builds. Creates a fixture set tagged with a unique run id, runs
-// named probes against expected counts, prints an evidence table, deletes
-// the fixtures.
+// Query-language probe against the 0.8 API: result semantics that only
+// real entities can prove. Parse acceptance and error codes were covered
+// by the raw curl battery; the smoke covers basic reads — this file checks
+// what queries *return*: negation semantics, typed comparisons, system
+// filters, projections, pagination.
 //
-// Every probe is scoped to this run's id: expired entities from earlier
-// runs are still served by the chain (known bug), so an unscoped query
-// silently counts other runs' fixtures too.
+// Fixtures are tagged with a unique run id and every probe is scoped to it;
+// cleanup runs in a finally block.
 //
-// Env: PRIVATE_KEY, RPC_URL, optional API_KEY.
+// Env: PRIVATE_KEY, RPC_URL, optional API_KEY (sent as Authorization: Bearer).
 // Run: npm run queries
 
-import { jsonToPayload } from "@arkiv-network/sdk"
+import { dec, ExpirationTime, i32, jsonToPayload, key, str, u256 } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "./writer.ts"
 
 const FIXTURES = 30
-const TTL_SECONDS = 600
+const TTL = ExpirationTime.fromMinutes(10)
 const RUN = `r${Date.now().toString(36)}`
 
 function env(name: string, required = true): string {
@@ -27,17 +27,17 @@ function env(name: string, required = true): string {
   return value
 }
 
-const rpcUrl = (() => {
-  const base = env("RPC_URL").replace(/\/+$/, "")
-  const key = env("API_KEY", false)
-  return key ? `${base}/${key}` : base
-})()
+const rpcUrl = env("RPC_URL").replace(/\/+$/, "")
+const apiKey = env("API_KEY", false)
 
 let rpcId = 0
 async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
   const res = await fetch(rpcUrl, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+    },
     body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
   })
   const body = (await res.json()) as { result?: unknown; error?: { message: string } }
@@ -45,26 +45,28 @@ async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
   return body.result
 }
 
-type QueryOptions = Record<string, unknown>
-type QueryRow = { key?: Hex; expiresAt?: Hex; attributes?: { key: string; value: string }[] }
-type QueryResult = { data?: QueryRow[] } & Record<string, unknown>
+type QueryRow = {
+  key?: Hex
+  attributes?: { name: string; type: string; value: unknown }[]
+  attributeSchema?: { name: string; type: string }[]
+}
+type QueryResult = { data?: QueryRow[]; cursor?: string; blockNumber?: string }
 
-async function query(q: string, options: QueryOptions = {}): Promise<QueryResult> {
+async function query(q: string, options: Record<string, unknown> = {}): Promise<QueryResult> {
   return (await rawRpc("arkiv_query", [
     q,
-    { includeData: { key: true, attributes: true, expiration: true }, ...options },
+    { select: { key: true, attributes: true }, ...options },
   ])) as QueryResult
 }
 
-/** Scoped to this run: leftovers from other runs can never be counted. */
-const mine = (rest?: string) => (rest ? `run = "${RUN}" && ${rest}` : `run = "${RUN}"`)
+/** Scoped to this run: other runs' fixtures can never be counted. */
+const mine = (rest?: string) => `run = str('${RUN}')${rest ? ` AND ${rest}` : ""}`
 
-async function probe(name: string, q: string, expected: number, options: QueryOptions = {}) {
+async function probe(name: string, q: string, expected: number, options?: Record<string, unknown>) {
   try {
     const result = await query(q, options)
     const rows = result.data?.length ?? -1
-    const verdict = rows === expected ? "✓" : `✗ expected ${expected},`
-    console.log(`${verdict} ${name}: ${rows} rows`)
+    console.log(`${rows === expected ? "✓" : `✗ expected ${expected},`} ${name}: ${rows} rows`)
     return result
   } catch (error) {
     console.log(`✗ ${name}: ${(error as Error).message}`)
@@ -72,91 +74,123 @@ async function probe(name: string, q: string, expected: number, options: QueryOp
   }
 }
 
-const writer = await createWriter({ rpcUrl, privateKey: env("PRIVATE_KEY") as Hex })
+const writer = await createWriter({
+  rpcUrl,
+  apiKey: apiKey || undefined,
+  privateKey: env("PRIVATE_KEY") as Hex,
+})
 console.log(`query probe: run ${RUN}, address ${writer.address}, chain ${writer.chainId}\n`)
 
 const preFixtureBlock = BigInt((await rawRpc("eth_blockNumber", [])) as string)
 
-// group alternates a/b; rank = index; group-a rows also carry "flag".
+// i = 0..29. Evens: group a, flag set, name aa-i. Odds: group b, no flag, name ab-i.
 const { createdEntities: fixtures } = await writer.mutateEntities({
   creates: Array.from({ length: FIXTURES }, (_, i) => ({
     payload: jsonToPayload({ probe: "queries", i }),
     contentType: "application/json",
-    attributes: [
-      { key: "kind", value: "query-probe" },
-      { key: "run", value: RUN },
-      { key: "group", value: i % 2 === 0 ? "a" : "b" },
-      { key: "rank", value: i },
-      ...(i % 2 === 0 ? [{ key: "flag", value: "y" }] : []),
-    ],
-    expiresIn: TTL_SECONDS,
+    attributes: {
+      kind: str("query-probe"),
+      run: str(RUN),
+      group: str(i % 2 === 0 ? "a" : "b"),
+      name: str(`${i % 2 === 0 ? "aa" : "ab"}-${i}`),
+      rank: i32(i),
+      big: u256(BigInt(1_000_000 + i)),
+      score: dec(`${i}.5`),
+      ...(i % 2 === 0 ? { flag: str("y") } : {}),
+    },
+    expires: TTL,
   })),
 })
-console.log(`fixtures: ${fixtures.length} created\n`)
+console.log(`fixtures: ${fixtures.length} created`)
+
+// A key-typed attribute needs a real key, so it rides a follow-up patch.
+await writer.patchEntity({ entityKey: fixtures[1], set: { ref: key(fixtures[0]) } })
+console.log(`ref attribute patched onto fixture 1\n`)
 
 const me = writer.address
-const nobody = `0x${"11".repeat(20)}`
+const nobody = "0x1111111111111111111111111111111111111111"
 
 try {
-  // --- the sentences Rust will build ---
-  await probe("string equality", mine(), 30)
-  await probe("conjunction", mine(`group = "a"`), 15)
-  await probe("numeric >", mine("rank > 19"), 10)
-  await probe("numeric range", mine("(rank >= 10 && rank < 20)"), 10)
-  await probe("disjunction", mine(`(group = "a" || rank > 25)`), 17)
-  await probe("inequality !=", mine(`group != "a"`), 15)
-  await probe("bare !flag (expect: parse error)", mine("!flag"), 15)
-  await probe("NOT over a present attribute !(group = \"a\")", mine(`!(group = "a")`), 15)
-  // group-b rows carry no "flag" attribute at all: 15 rows means negation
-  // matches absent attributes, 0 means it only matches present-but-different.
-  await probe("NOT as absence !(flag = \"y\")", mine(`!(flag = "y")`), 15)
-  await probe("creator filter", mine(`$creator=${me}`), 30)
-  await probe("owner filter", mine(`$owner=${me}`), 30)
-  await probe("creator excludes others", mine(`$creator=${nobody}`), 0)
+  console.log("--- typed comparisons ---")
+  await probe("str equality", mine(), 30)
+  await probe("AND conjunction", mine(`group = str('a')`), 15)
+  await probe("i32 >", mine("rank > i32(19)"), 10)
+  await probe("i32 untagged equivalent", mine("rank > 19"), 10)
+  await probe("i32 parenthesized range", mine("(rank >= i32(10) AND rank < i32(20))"), 10)
+  await probe("OR + parens", mine(`(group = str('a') OR rank > i32(25))`), 17)
+  await probe("u256 range", mine("big > u256(1000019)"), 10)
+  await probe("dec range", mine("score >= dec(10.5)"), 20)
+  await probe("STARTSWITH prefix", mine("name STARTSWITH str('aa')"), 15)
+  await probe("STARTSWITH shared prefix", mine("name STARTSWITH str('a')"), 30)
+  await probe("key-typed attribute", mine(`ref = key(${fixtures[0]})`), 1)
 
-  // --- options ---
-  const ordered = await probe("orderBy rank desc", mine(), 30, {
-    orderBy: [{ name: "rank", type: "numeric", desc: true }],
-  })
-  if (ordered?.data) {
-    const ranks = ordered.data.map((row) =>
-      Number(row.attributes?.find((attribute) => attribute.key === "rank")?.value ?? -1),
-    )
-    const sorted = ranks.every((rank, i) => i === 0 || ranks[i - 1] >= rank)
-    console.log(`  orderBy honoured: ${sorted} (first ranks: ${ranks.slice(0, 5).join(",")})`)
+  console.log("--- negation: NOT is the only form; complement includes absence ---")
+  // The API doc specs both != (typed value-negation) and NOT (complement);
+  // the implementation removed != with a directive error. Assert that.
+  try {
+    await query(mine(`group != str('a')`))
+    console.log("✗ != rejected: it was accepted — implementation changed, re-check the doc")
+  } catch (error) {
+    const gone = (error as Error).message.includes("not part of the query language")
+    console.log(`${gone ? "✓" : "✗"} != rejected with a directive error`)
   }
+  await probe("NOT() complement includes absent-attribute rows",
+    mine(`NOT (flag = str('y'))`), 15)
 
+  console.log("--- system filters ---")
+  await probe("creator filter", mine(`$creator = addr(${me})`), 30)
+  await probe("owner filter", mine(`$owner = addr(${me})`), 30)
+  await probe("creator excludes others", mine(`$creator = addr(${nobody})`), 0)
+  await probe("wrong-case attr name matches nothing", mine(`Group = str('a')`), 0)
+
+  console.log("--- options ---")
   await probe("atBlock before this run", mine(), 0, {
     atBlock: `0x${preFixtureBlock.toString(16)}`,
   })
+  const schemaOnly = await probe("select attributeSchema only", mine(), 30, {
+    select: { key: true, attributeSchema: true },
+  })
+  if (schemaOnly?.data?.[0]) {
+    const row = schemaOnly.data[0]
+    console.log(
+      `  schema names: ${(row.attributeSchema ?? []).map((a) => a.name).join(",") || "MISSING"}; values included: ${row.attributes !== undefined}`,
+    )
+  }
+  const subset = await probe("select attribute subset {rank}", mine(), 30, {
+    select: { key: true, attributes: { rank: true } },
+  })
+  if (subset?.data?.[0]) {
+    console.log(
+      `  subset row attributes: ${(subset.data[0].attributes ?? []).map((a) => a.name).join(",")}`,
+    )
+  }
+  // orderBy is removed from the options (closed set: atBlock, select,
+  // limit, cursor). Assert the rejection so a quiet reintroduction shouts.
+  try {
+    await query(mine(), { orderBy: [{ name: "rank", type: "numeric", desc: true }] })
+    console.log("✗ orderBy rejected: it was accepted — options set changed, re-check the doc")
+  } catch (error) {
+    const gone = (error as Error).message.includes("unknown field")
+    console.log(`${gone ? "✓" : "✗"} orderBy rejected (closed options set)`)
+  }
 
-  // --- pagination ---
+  console.log("--- pagination ---")
   const seen = new Set<string>()
   let cursor: string | undefined
   let pages = 0
-  try {
-    do {
-      const result = await query(mine(), { resultsPerPage: "0xa", ...(cursor ? { cursor } : {}) })
-      pages++
-      for (const row of result.data ?? []) if (row.key) seen.add(row.key)
-      cursor = (result as { cursor?: string }).cursor ?? undefined
-    } while (cursor && pages < 10)
-    const ok = seen.size === FIXTURES
-    console.log(`${ok ? "✓" : "✗"} pagination: ${pages} pages, ${seen.size} distinct keys`)
-  } catch (error) {
-    console.log(`✗ pagination: ${(error as Error).message}`)
-  }
-
-  // --- accumulated ghosts (known expired-serving bug) ---
-  const head = BigInt((await rawRpc("eth_blockNumber", [])) as string)
-  const all = await query(`kind = "query-probe"`)
-  const expired = (all.data ?? []).filter((row) => BigInt(row.expiresAt ?? "0x0") <= head).length
-  console.log(
-    `\nghosts: ${all.data?.length ?? 0} query-probe entities on chain, ${expired} of them expired-but-served`,
-  )
+  do {
+    const result = await query(mine(), {
+      select: { key: true },
+      limit: "0xa",
+      ...(cursor ? { cursor } : {}),
+    })
+    pages++
+    for (const row of result.data ?? []) if (row.key) seen.add(row.key)
+    cursor = result.cursor
+  } while (cursor && pages < 10)
+  const ok = seen.size === FIXTURES
+  console.log(`${ok ? "✓" : "✗"} pagination: ${pages} pages, ${seen.size} distinct keys`)
 } finally {
-  // Runs even if a probe throws, so an aborted run leaves no litter:
-  // expired entities cannot be deleted afterwards (EntityExpired).
   await writer.mutateEntities({ deletes: fixtures.map((entityKey) => ({ entityKey })) })
-  console.log(`fixtures deleted; query probe done`)
+  console.log(`\nfixtures deleted; query probe done`)
 }

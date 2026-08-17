@@ -7,9 +7,10 @@
 // BATCH_N (default 100).
 // Run: npm run batch
 //
-// A gateway in front of the RPC may cap the request body (the devnet edge
-// rejects ~256 KiB with HTTP 413), so large-N create phases can fail there
-// while succeeding against a node directly. Lower BATCH_N in that case.
+// The node caps raw transaction size at 128 KiB (txpool default), so a
+// large-N create phase can exceed it regardless of endpoint — the error is
+// "oversized data". Lower BATCH_N in that case; a gateway in front may
+// reject the same batch earlier as HTTP 413.
 
 import { ExpirationTime, i32, jsonToPayload, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"

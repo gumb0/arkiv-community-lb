@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "batch": "node --env-file=../.env --import tsx src/batch-experiment.ts",
     "permanent": "node --env-file=../.env --import tsx src/permanent-probe.ts",
-    "queries": "node --env-file=../.env --import tsx src/queries.ts"
+    "queries": "node --env-file=../.env --import tsx src/queries.ts",
+    "concurrency": "node --env-file=../.env --import tsx src/concurrency-probe.ts"
   },
   "dependencies": {
     "@arkiv-network/sdk": "0.8.0-dev.1",

@@ -1,0 +1,25 @@
+# frp server (frps) config for the LB host — the tunnel server that NAT'd
+# provider nodes connect to. Version pinned project-wide: frp v0.61.1
+# (matches the client image in the node distribution).
+
+# Control channel the clients dial. The only port to open in the firewall.
+bindPort = 7000
+
+# Forwarded provider ports exist on loopback only: the LB reaches a
+# tunneled provider as http://127.0.0.1:<port> on this host, and nothing
+# else can reach it.
+proxyBindAddr = "127.0.0.1"
+
+# Static shared token — interim, replaced by per-provider signature
+# admission (see docs/TUNNELING.md). Generate: openssl rand -hex 16
+auth.token = "<token>"
+
+# Admission hook (planned): frps calls this local HTTP endpoint on every
+# Login and NewProxy, carrying the client's metadata and requested port;
+# the handler verifies and accepts or rejects with a reason the node
+# operator sees in their own client log.
+#[[httpPlugins]]
+#name = "admission"
+#addr = "127.0.0.1:9001"
+#path = "/handler"
+#ops = ["Login", "NewProxy"]

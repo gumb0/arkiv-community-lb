@@ -8,6 +8,7 @@
     "smoke": "node --env-file=../.env --import tsx src/smoke.ts",
     "typecheck": "tsc --noEmit",
     "batch": "node --env-file=../.env --import tsx src/batch-experiment.ts",
+    "permanent": "node --env-file=../.env --import tsx src/permanent-probe.ts",
     "queries": "node --env-file=../.env --import tsx src/queries.ts"
   },
   "dependencies": {

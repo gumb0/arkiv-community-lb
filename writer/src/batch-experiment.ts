@@ -1,16 +1,22 @@
-// Batch-scale probe: N creates in one transaction, N extends in one
-// transaction, N deletes in one transaction — wall time and gas per phase.
-// Validates that batched cost is per transaction, not per operation, and
-// measures gas per op at scale.
+// Batch-scale tariff probe on the 0.8 API: N-op transactions, one phase
+// per op kind — wall time, gas (total and per op), calldata size. The
+// patch phases run twice (one vs three mutations) to separate per-op
+// from per-mutation pricing.
 //
-// Env: PRIVATE_KEY, RPC_URL, optional API_KEY; BATCH_N (default 100).
+// Env: PRIVATE_KEY, RPC_URL, optional API_KEY (sent as Authorization: Bearer);
+// BATCH_N (default 100).
 // Run: npm run batch
+//
+// A gateway in front of the RPC may cap the request body (the devnet edge
+// rejects ~256 KiB with HTTP 413), so large-N create phases can fail there
+// while succeeding against a node directly. Lower BATCH_N in that case.
 
-import { jsonToPayload } from "@arkiv-network/sdk"
+import { ExpirationTime, i32, jsonToPayload, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "./writer.ts"
 
-const TTL_SECONDS = 120
+const TTL = ExpirationTime.fromMinutes(10)
+const RUN = `r${Date.now().toString(36)}`
 
 function env(name: string, required = true): string {
   const value = process.env[name] ?? ""
@@ -22,18 +28,17 @@ function env(name: string, required = true): string {
 }
 
 const batchN = Number(process.env.BATCH_N ?? "100")
-
-const rpcUrl = (() => {
-  const base = env("RPC_URL").replace(/\/+$/, "")
-  const key = env("API_KEY", false)
-  return key ? `${base}/${key}` : base
-})()
+const rpcUrl = env("RPC_URL").replace(/\/+$/, "")
+const apiKey = env("API_KEY", false)
 
 let rpcId = 0
 async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
   const res = await fetch(rpcUrl, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+    },
     body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
   })
   const body = (await res.json()) as { result?: unknown; error?: { message: string } }
@@ -54,17 +59,22 @@ function report(phase: string, seconds: number, stats: { gasUsed: bigint; callda
   )
 }
 
-const writer = await createWriter({ rpcUrl, privateKey: env("PRIVATE_KEY") as Hex })
-console.log(`batch experiment: N=${batchN}, address ${writer.address}, chain ${writer.chainId}\n`)
+const writer = await createWriter({
+  rpcUrl,
+  apiKey: apiKey || undefined,
+  privateKey: env("PRIVATE_KEY") as Hex,
+})
+console.log(
+  `batch experiment: N=${batchN}, run ${RUN}, address ${writer.address}, chain ${writer.chainId}\n`,
+)
 
-// Phase 1: N creates, one transaction.
 let started = Date.now()
 const { txHash: createTx, createdEntities } = await writer.mutateEntities({
   creates: Array.from({ length: batchN }, (_, i) => ({
-    payload: jsonToPayload({ probe: "batch-experiment", i }),
+    payload: jsonToPayload({ probe: "batch", i, run: RUN }),
     contentType: "application/json",
-    attributes: [{ key: "kind", value: "batch-experiment" }],
-    expiresIn: TTL_SECONDS,
+    attributes: { kind: str("batch-experiment"), run: str(RUN), rank: i32(i) },
+    expires: TTL,
   })),
 })
 report(`create x${batchN}`, (Date.now() - started) / 1000, await txStats(createTx))
@@ -72,14 +82,33 @@ if (createdEntities.length !== batchN) {
   throw new Error(`expected ${batchN} keys, got ${createdEntities.length}`)
 }
 
-// Phase 2: N extends, one transaction — the refresh-cycle shape at cap scale.
 started = Date.now()
 const { txHash: extendTx } = await writer.mutateEntities({
-  extensions: createdEntities.map((entityKey) => ({ entityKey, expiresIn: TTL_SECONDS })),
+  extensions: createdEntities.map((entityKey) => ({
+    entityKey,
+    expires: ExpirationTime.fromMinutes(15),
+  })),
 })
 report(`extend x${batchN}`, (Date.now() - started) / 1000, await txStats(extendTx))
 
-// Phase 3: N deletes, one transaction — cleanup doubling as a measurement.
+started = Date.now()
+const { txHash: patch1Tx } = await writer.mutateEntities({
+  patches: createdEntities.map((entityKey) => ({
+    entityKey,
+    set: { status: str("patched") },
+  })),
+})
+report(`patch x${batchN} (1 mutation)`, (Date.now() - started) / 1000, await txStats(patch1Tx))
+
+started = Date.now()
+const { txHash: patch3Tx } = await writer.mutateEntities({
+  patches: createdEntities.map((entityKey, i) => ({
+    entityKey,
+    set: { status: str("repatched"), extra: str("x"), rank: i32(i + 1000) },
+  })),
+})
+report(`patch x${batchN} (3 mutations)`, (Date.now() - started) / 1000, await txStats(patch3Tx))
+
 started = Date.now()
 const { txHash: deleteTx } = await writer.mutateEntities({
   deletes: createdEntities.map((entityKey) => ({ entityKey })),

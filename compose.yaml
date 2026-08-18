@@ -1,0 +1,22 @@
+# The LB host stack. Will eventually hold every service that runs on the
+# LB box (the LB itself, the chain-writer sidecar); for now only the
+# tunnel server.
+name: arkiv-community-lb
+
+services:
+  # The tunnel server NAT'd provider nodes connect to (docs/TUNNELING.md).
+  # Usage: copy tunnel/frps.toml.example to tunnel/frps.toml, set a real
+  # token, then `docker compose up -d`.
+  tunnel:
+    build: ./tunnel
+    # Host networking because the LB runs on the host for now, to be
+    # revisited later.
+    network_mode: host
+    volumes:
+      - ./tunnel/frps.toml:/etc/frp/frps.toml:ro
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"

@@ -95,3 +95,8 @@ on the provider side.
 only firewall opening; forwarded provider ports bind to loopback
 (the LB is their only client); the admission hook is present but
 commented until the marketplace lands.
+
+The server runs from the repo's compose stack: copy the example to
+`tunnel/frps.toml`, set a real token, `docker compose up -d`. The image
+is built locally from the pinned release, checksum verified — same as
+the client in the node distribution.

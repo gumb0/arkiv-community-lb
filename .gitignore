@@ -6,6 +6,7 @@ node_modules/
 
 # Local configuration and secrets
 .env
+tunnel/frps.toml
 
 # IDE / editor
 .idea/

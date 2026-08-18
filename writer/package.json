@@ -7,6 +7,8 @@
   "scripts": {
     "smoke": "node --env-file=../.env --import tsx src/smoke.ts",
     "typecheck": "tsc --noEmit",
+    "service": "node --env-file=../.env --import tsx src/service.ts",
+    "service-smoke": "node --env-file=../.env --import tsx src/service-smoke.ts",
     "batch": "node --env-file=../.env --import tsx src/batch-experiment.ts",
     "permanent": "node --env-file=../.env --import tsx src/permanent-probe.ts",
     "queries": "node --env-file=../.env --import tsx src/queries.ts",

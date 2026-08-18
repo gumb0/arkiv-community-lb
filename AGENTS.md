@@ -43,6 +43,20 @@ adversarial — integrity checking is a first-class concern, not an add-on.
   host's long-running processes.
 - Client headers are never forwarded to providers, and a provider's JSON-RPC
   error is an answer, not a failure — passed through, never retried elsewhere.
+- Providers behind NAT reach the LB through **frp tunnels**; a tunneled
+  provider is a plain `http://127.0.0.1:<port>` URL to the Proxy. The choice,
+  the admission design, and the measurements are in `docs/TUNNELING.md` — not
+  to be reopened there.
+
+## Deployment
+
+- `compose.yaml` at the repository root is the **LB host stack**: every service
+  that runs on the LB box belongs in it (so far only the tunnel server).
+- Service images are built locally from pinned upstream releases, checksum
+  verified in the Dockerfile — no third-party image in the trust chain.
+- Secrets and machine-local configuration stay untracked; the committed
+  reference is an `.example` file beside them (`tunnel/frps.toml.example`,
+  `.env.example`).
 
 ## Testing
 

@@ -12,7 +12,7 @@
 
 import { dec, ExpirationTime, i32, jsonToPayload, key, str, u256 } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
-import { createWriter } from "./writer.ts"
+import { createWriter } from "../src/writer.ts"
 
 const FIXTURES = 30
 const TTL = ExpirationTime.fromMinutes(10)

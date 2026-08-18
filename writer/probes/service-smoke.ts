@@ -7,8 +7,8 @@
 
 import { ExpirationTime, jsonToPayload } from "@arkiv-network/sdk"
 import { toHex, type Hex } from "viem"
-import { startService } from "./service.ts"
-import { createWriter } from "./writer.ts"
+import { startService } from "../src/service.ts"
+import { createWriter } from "../src/writer.ts"
 
 const RUN = `r${Date.now().toString(36)}`
 const TTL = { seconds: 300 }

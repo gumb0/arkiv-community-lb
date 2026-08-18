@@ -14,7 +14,7 @@
 
 import { ExpirationTime, i32, jsonToPayload, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
-import { createWriter } from "./writer.ts"
+import { createWriter } from "../src/writer.ts"
 
 const TTL = ExpirationTime.fromMinutes(10)
 const RUN = `r${Date.now().toString(36)}`

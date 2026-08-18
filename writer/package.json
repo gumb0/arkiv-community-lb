@@ -3,16 +3,16 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "Chain-writer core for the Arkiv community LB: schema-blind entity operations over the official SDK, plus a smoke-test CLI.",
+  "description": "Chain-writer sidecar for the Arkiv community LB: schema-blind entity operations over the official SDK, and the HTTP service around them.",
   "scripts": {
-    "smoke": "node --env-file=../.env --import tsx src/smoke.ts",
+    "smoke": "node --env-file=../.env --import tsx probes/smoke.ts",
     "typecheck": "tsc --noEmit",
     "service": "node --env-file=../.env --import tsx src/service.ts",
-    "service-smoke": "node --env-file=../.env --import tsx src/service-smoke.ts",
-    "batch": "node --env-file=../.env --import tsx src/batch-experiment.ts",
-    "permanent": "node --env-file=../.env --import tsx src/permanent-probe.ts",
-    "queries": "node --env-file=../.env --import tsx src/queries.ts",
-    "concurrency": "node --env-file=../.env --import tsx src/concurrency-probe.ts"
+    "service-smoke": "node --env-file=../.env --import tsx probes/service-smoke.ts",
+    "batch": "node --env-file=../.env --import tsx probes/batch-experiment.ts",
+    "permanent": "node --env-file=../.env --import tsx probes/permanent-probe.ts",
+    "queries": "node --env-file=../.env --import tsx probes/queries.ts",
+    "concurrency": "node --env-file=../.env --import tsx probes/concurrency-probe.ts"
   },
   "dependencies": {
     "@arkiv-network/sdk": "0.8.0-dev.1",

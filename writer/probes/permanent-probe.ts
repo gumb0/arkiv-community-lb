@@ -6,7 +6,7 @@
 
 import { ExpirationTime, jsonToPayload, MAX_EXPIRES_AT, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
-import { createWriter } from "./writer.ts"
+import { createWriter } from "../src/writer.ts"
 
 function env(name: string, required = true): string {
   const value = process.env[name] ?? ""

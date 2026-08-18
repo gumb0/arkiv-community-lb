@@ -68,3 +68,9 @@ adversarial — integrity checking is a first-class concern, not an add-on.
   `arkiv-community-node`, located at `../node` by default (env-var
   overridable). The rig invokes the same scripts and CLIs that ship — no
   parallel test-only implementations.
+- In the TS writer package, `src/` is what ships (the writer module and the
+  HTTP service) and `probes/` holds the scripts that are run by hand against a
+  live network with a funded key — the smokes and the one-off experiments.
+  Both directories are typechecked. **`tests/` is reserved for suites CI can
+  run unattended**: a probe spends gas, needs a key, and fails when the chain
+  stalls, so it never belongs in a CI job or in `npm test`.

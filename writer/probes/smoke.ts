@@ -10,7 +10,9 @@ import { ExpirationTime, i32, jsonToPayload, str } from "@arkiv-network/sdk"
 import { toHex, type Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
 
-const TTL = ExpirationTime.fromSeconds(60)
+// Lifetimes are in blocks, not seconds: the SDK converts durations at a fixed
+// 2 s, so a probe written in seconds means something else on a faster chain.
+const TTL = ExpirationTime.fromBlocks(30)
 const RUN = `r${Date.now().toString(36)}`
 
 function env(name: string, required = true): string {
@@ -148,12 +150,12 @@ await step("patch: set + tombstone unset, expiry untouched", async () => {
 
 await step("extend: grows, and shrinking reverts with a cause", async () => {
   const before = BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
-  await writer.extendEntity({ entityKey, expires: ExpirationTime.fromMinutes(5) })
+  await writer.extendEntity({ entityKey, expires: ExpirationTime.fromBlocks(150) })
   const grown = BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
   console.log(`  expiresAt ${before} -> ${grown}`)
   assert(grown > before, "expiry strictly increased")
   try {
-    await writer.extendEntity({ entityKey, expires: ExpirationTime.fromSeconds(2) })
+    await writer.extendEntity({ entityKey, expires: ExpirationTime.fromBlocks(1) })
     assert(false, "shrinking extend should revert")
   } catch (error) {
     assert((error as Error).name === "EntityMutationError", "typed EntityMutationError")
@@ -215,7 +217,7 @@ await step("expiry: entity leaves queries; the $expiresAt filter is exact at the
     payload: jsonToPayload({ probe: "smoke-expiry", run: RUN }),
     contentType: "application/json",
     attributes: { kind: str("smoke-expiry"), run: str(RUN) },
-    expires: ExpirationTime.fromSeconds(10),
+    expires: ExpirationTime.fromBlocks(5),
   })
   const expiresAt = short.expiresAt
   const deadline = Date.now() + 2 * 60_000

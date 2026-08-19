@@ -12,7 +12,7 @@ import { startService } from "../src/service.ts"
 import { createWriter } from "../src/writer.ts"
 
 const RUN = `r${Date.now().toString(36)}`
-const TTL = { seconds: 300 }
+const TTL = { blocks: 150 } // blocks, so a faster chain means the same thing
 
 function env(name: string, required = true): string {
   const value = process.env[name] ?? ""

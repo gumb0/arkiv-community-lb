@@ -16,7 +16,7 @@ import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
 
 const FIXTURES = 30
-const TTL = ExpirationTime.fromMinutes(10)
+const TTL = ExpirationTime.fromBlocks(300) // blocks, so a faster chain means the same thing
 const RUN = `r${Date.now().toString(36)}`
 
 function env(name: string, required = true): string {

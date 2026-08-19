@@ -53,6 +53,11 @@ export type WriterConfig = {
   /** Sent as `Authorization: Bearer …` when the endpoint is metered. */
   apiKey?: string
   privateKey: Hex
+  /**
+   * How often to ask whether a transaction has been mined. viem's own default
+   * is 4 s, which on a 2 s chain waits longer than the block it waits for.
+   */
+  pollingInterval?: number
 }
 
 /** Connects, probes the chain id, and returns the writer surface. */
@@ -73,7 +78,12 @@ export async function createWriter(config: WriterConfig) {
   })
 
   const account = privateKeyToAccount(config.privateKey)
-  const wallet = createWalletClient({ chain, transport, account })
+  const wallet = createWalletClient({
+    chain,
+    transport,
+    account,
+    pollingInterval: config.pollingInterval ?? 1000,
+  })
 
   return {
     address: account.address,

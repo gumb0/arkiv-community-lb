@@ -13,7 +13,7 @@ import { createPublicClient, defineChain, http, type Chain, type Hex } from "vie
 import { privateKeyToAccount } from "viem/accounts"
 import { nonceManager } from "viem/nonce"
 
-const TTL = ExpirationTime.fromMinutes(5)
+const TTL = ExpirationTime.fromBlocks(150) // blocks, so a faster chain means the same thing
 const RUN = `r${Date.now().toString(36)}`
 
 function env(name: string, required = true): string {

@@ -18,7 +18,7 @@ import { ExpirationTime, i32, jsonToPayload, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
 
-const TTL = ExpirationTime.fromMinutes(10)
+const TTL = ExpirationTime.fromBlocks(300) // blocks, so a faster chain means the same thing
 const RUN = `r${Date.now().toString(36)}`
 
 function env(name: string, required = true): string {
@@ -89,7 +89,7 @@ started = Date.now()
 const { txHash: extendTx } = await writer.mutateEntities({
   extensions: createdEntities.map((entityKey) => ({
     entityKey,
-    expires: ExpirationTime.fromMinutes(15),
+    expires: ExpirationTime.fromBlocks(450),
   })),
 })
 report(`extend x${batchN}`, (Date.now() - started) / 1000, await txStats(extendTx))
@@ -133,7 +133,7 @@ try {
         expires: TTL,
       },
     ],
-    extensions: [{ entityKey: doomedKey, expires: ExpirationTime.fromMinutes(15) }],
+    extensions: [{ entityKey: doomedKey, expires: ExpirationTime.fromBlocks(450) }],
   })
 } catch (error) {
   reverted = true

@@ -1,7 +1,8 @@
 // One-off probe: does the chain accept a permanent entity (expiry = u64 max),
 // what does it cost, and is it still deletable?
 //
-// Env: PRIVATE_KEY, RPC_URL, optional API_KEY (sent as Authorization: Bearer).
+// Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
+// an Authorization: Bearer header).
 // Run: npm run permanent
 
 import { ExpirationTime, jsonToPayload, MAX_EXPIRES_AT, str } from "@arkiv-network/sdk"
@@ -17,8 +18,8 @@ function env(name: string, required = true): string {
   return value
 }
 
-const rpcUrl = env("RPC_URL").replace(/\/+$/, "")
-const apiKey = env("API_KEY", false)
+const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
+const apiKey = env("ARKIV_API_KEY", false)
 
 async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
   const res = await fetch(rpcUrl, {
@@ -37,7 +38,7 @@ async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
 const writer = await createWriter({
   rpcUrl,
   apiKey: apiKey || undefined,
-  privateKey: env("PRIVATE_KEY") as Hex,
+  privateKey: env("WRITER_PRIVATE_KEY") as Hex,
 })
 console.log(`permanent probe: address ${writer.address}, chain ${writer.chainId}`)
 console.log(`MAX_EXPIRES_AT = ${MAX_EXPIRES_AT} (u64 max: ${MAX_EXPIRES_AT === 2n ** 64n - 1n})\n`)

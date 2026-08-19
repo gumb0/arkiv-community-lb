@@ -2,7 +2,8 @@
 // Reads stay raw JSON-RPC on purpose: they validate the read path the
 // LB itself will use, not the SDK's reader.
 //
-// Env: PRIVATE_KEY, RPC_URL, optional API_KEY (sent as Authorization: Bearer).
+// Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
+// an Authorization: Bearer header).
 // Run: npm run smoke
 
 import { ExpirationTime, i32, jsonToPayload, str } from "@arkiv-network/sdk"
@@ -21,8 +22,8 @@ function env(name: string, required = true): string {
   return value
 }
 
-const rpcUrl = env("RPC_URL").replace(/\/+$/, "")
-const apiKey = env("API_KEY", false)
+const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
+const apiKey = env("ARKIV_API_KEY", false)
 
 let rpcId = 0
 async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
@@ -96,7 +97,7 @@ async function step<T>(name: string, run: () => Promise<T>): Promise<T> {
 }
 
 const writer = await step("connect (chain id probed)", () =>
-  createWriter({ rpcUrl, apiKey: apiKey || undefined, privateKey: env("PRIVATE_KEY") as Hex }),
+  createWriter({ rpcUrl, apiKey: apiKey || undefined, privateKey: env("WRITER_PRIVATE_KEY") as Hex }),
 )
 console.log(`  address ${writer.address}, chain id ${writer.chainId}, run ${RUN}`)
 

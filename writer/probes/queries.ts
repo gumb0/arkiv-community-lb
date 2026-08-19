@@ -7,7 +7,8 @@
 // Fixtures are tagged with a unique run id and every probe is scoped to it;
 // cleanup runs in a finally block.
 //
-// Env: PRIVATE_KEY, RPC_URL, optional API_KEY (sent as Authorization: Bearer).
+// Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
+// an Authorization: Bearer header).
 // Run: npm run queries
 
 import { dec, ExpirationTime, i32, jsonToPayload, key, str, u256 } from "@arkiv-network/sdk"
@@ -27,8 +28,8 @@ function env(name: string, required = true): string {
   return value
 }
 
-const rpcUrl = env("RPC_URL").replace(/\/+$/, "")
-const apiKey = env("API_KEY", false)
+const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
+const apiKey = env("ARKIV_API_KEY", false)
 
 let rpcId = 0
 async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
@@ -77,7 +78,7 @@ async function probe(name: string, q: string, expected: number, options?: Record
 const writer = await createWriter({
   rpcUrl,
   apiKey: apiKey || undefined,
-  privateKey: env("PRIVATE_KEY") as Hex,
+  privateKey: env("WRITER_PRIVATE_KEY") as Hex,
 })
 console.log(`query probe: run ${RUN}, address ${writer.address}, chain ${writer.chainId}\n`)
 

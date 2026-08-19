@@ -347,13 +347,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
 
   const writer = await createWriter({
-    rpcUrl: env("RPC_URL").replace(/\/+$/, ""),
-    apiKey: env("API_KEY", false) || undefined,
-    privateKey: env("PRIVATE_KEY") as Hex,
+    rpcUrl: env("ARKIV_RPC_URL").replace(/\/+$/, ""),
+    apiKey: env("ARKIV_API_KEY", false) || undefined,
+    privateKey: env("WRITER_PRIVATE_KEY") as Hex,
   })
   const service = await startService(writer, {
-    host: env("HOST", false) || undefined,
-    port: env("PORT", false) ? Number(env("PORT", false)) : undefined,
+    host: env("WRITER_HOST", false) || undefined,
+    port: env("WRITER_PORT", false) ? Number(env("WRITER_PORT", false)) : undefined,
   })
   console.log(
     `chain-writer service: ${service.host}:${service.port}, ` +

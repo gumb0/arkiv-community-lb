@@ -3,7 +3,8 @@
 // patch phases run twice (one vs three mutations) to separate per-op
 // from per-mutation pricing.
 //
-// Env: PRIVATE_KEY, RPC_URL, optional API_KEY (sent as Authorization: Bearer);
+// Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
+// an Authorization: Bearer header);
 // BATCH_N (default 100).
 // Run: npm run batch
 //
@@ -29,8 +30,8 @@ function env(name: string, required = true): string {
 }
 
 const batchN = Number(process.env.BATCH_N ?? "100")
-const rpcUrl = env("RPC_URL").replace(/\/+$/, "")
-const apiKey = env("API_KEY", false)
+const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
+const apiKey = env("ARKIV_API_KEY", false)
 
 let rpcId = 0
 async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
@@ -63,7 +64,7 @@ function report(phase: string, seconds: number, stats: { gasUsed: bigint; callda
 const writer = await createWriter({
   rpcUrl,
   apiKey: apiKey || undefined,
-  privateKey: env("PRIVATE_KEY") as Hex,
+  privateKey: env("WRITER_PRIVATE_KEY") as Hex,
 })
 console.log(
   `batch experiment: N=${batchN}, run ${RUN}, address ${writer.address}, chain ${writer.chainId}\n`,

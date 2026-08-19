@@ -211,15 +211,25 @@ describe("wire format in", () => {
     equal(status, 200)
     const ops = lastOp<{
       creates: { contentType: string }[]
-      patches: unknown[]
+      patches: { entityKey: Hex; set: Record<string, unknown> }[]
       deletes: { entityKey: Hex }[]
-      extensions: unknown[]
+      extensions: { entityKey: Hex; expires: { minLifetime: bigint } }[]
     }>("mutate")
     equal(ops.creates.length, 2)
     equal(at(ops.creates, 1, "creates").contentType, "text/plain") // order preserved
+
     equal(ops.patches.length, 1)
+    const patch = at(ops.patches, 0, "patches")
+    equal(patch.entityKey, KEY_A)
+    deepEqual(patch.set.a, { type: "i32", value: 1 })
+
+    equal(ops.deletes.length, 1)
     equal(at(ops.deletes, 0, "deletes").entityKey, KEY_B)
+
     equal(ops.extensions.length, 1)
+    const extension = at(ops.extensions, 0, "extensions")
+    equal(extension.entityKey, KEY_A)
+    equal(extension.expires.minLifetime, 10n)
   })
 
   it("omits absent optional fields rather than sending empty ones", async () => {

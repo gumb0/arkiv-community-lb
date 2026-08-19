@@ -6,13 +6,14 @@
 //
 // Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
 // an Authorization: Bearer header);
-// BATCH_N (default 100).
+// BATCH_N (default 50).
 // Run: npm run batch
 //
-// The node caps raw transaction size at 128 KiB (txpool default), so a
-// large-N create phase can exceed it regardless of endpoint — the error is
-// "oversized data". Lower BATCH_N in that case; a gateway in front may
-// reject the same batch earlier as HTTP 413.
+// The node caps raw transaction size at 128 KiB (txpool default), and the
+// create phase reaches it at N=98 with these payloads — the error is
+// "oversized data", and a gateway in front may reject the same batch earlier
+// as HTTP 413. The default leaves room for payloads to grow; raise it to
+// find the ceiling again.
 
 import { ExpirationTime, i32, jsonToPayload, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
@@ -30,7 +31,7 @@ function env(name: string, required = true): string {
   return value
 }
 
-const batchN = Number(process.env.BATCH_N ?? "100")
+const batchN = Number(process.env.BATCH_N ?? "50")
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
 

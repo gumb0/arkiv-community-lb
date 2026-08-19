@@ -8,7 +8,7 @@
 // shell reads. Run: npm test
 
 import { EntityMutationError } from "@arkiv-network/sdk"
-import { deepStrictEqual as deepEqual, ok, strictEqual as equal } from "node:assert/strict"
+import { deepStrictEqual as deepEqual, ok, rejects, strictEqual as equal } from "node:assert/strict"
 import { after, before, describe, it } from "node:test"
 import { WaitForTransactionReceiptTimeoutError, type Hex } from "viem"
 import { startService, type Service } from "../src/service.ts"
@@ -308,6 +308,18 @@ describe("routing", () => {
     })
     equal(response.status, 413)
     equal(fake.calls.length, before, "nothing reached the writer")
+  })
+})
+
+describe("startup", () => {
+  it("rejects when the port is taken, rather than hanging", async () => {
+    // The listener that carries this error to the caller is detached once the
+    // port is bound, so this guards that the swap keeps the rejection. Without
+    // it, a service that cannot bind would leave its caller waiting forever.
+    await rejects(
+      startService(makeFake().writer, { port: service.port }),
+      (error: NodeJS.ErrnoException) => error.code === "EADDRINUSE",
+    )
   })
 })
 

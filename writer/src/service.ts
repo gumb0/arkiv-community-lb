@@ -316,8 +316,14 @@ export function startService(writer: Writer, options: ServiceOptions = {}): Prom
   })
 
   return new Promise((resolve, reject) => {
+    // While starting up, an error means the port could not be taken: the
+    // caller's promise rejects with it.
     server.once("error", reject)
     server.listen(port, host, () => {
+      // The promise has settled now, so calling reject() would do nothing at
+      // all. Any error from here on needs somewhere else to go.
+      server.off("error", reject)
+      server.on("error", (error) => console.error("chain-writer: server error:", error))
       const address = server.address()
       const boundPort = typeof address === "object" && address ? address.port : port
       resolve({

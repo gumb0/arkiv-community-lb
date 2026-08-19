@@ -1,7 +1,8 @@
 // Batch-scale tariff probe on the 0.8 API: N-op transactions, one phase
 // per op kind — wall time, gas (total and per op), calldata size. The
 // patch phases run twice (one vs three mutations) to separate per-op
-// from per-mutation pricing.
+// from per-mutation pricing. A last phase checks that a batch is
+// all-or-nothing, which the design leans on and only the doc has claimed.
 //
 // Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
 // an Authorization: Bearer header);
@@ -116,5 +117,46 @@ const { txHash: deleteTx } = await writer.mutateEntities({
   deletes: createdEntities.map((entityKey) => ({ entityKey })),
 })
 report(`delete x${batchN}`, (Date.now() - started) / 1000, await txStats(deleteTx))
+
+// One doomed op must take the whole batch with it. The extend names a key
+// nothing can own, which the SDK cannot know is wrong, so the engine is the
+// one deciding — unlike a bad expiry, which never leaves the client.
+const doomedKey = `0x${"ee".repeat(32)}` as Hex
+let reverted = false
+try {
+  await writer.mutateEntities({
+    creates: [
+      {
+        payload: jsonToPayload({ probe: "atomicity", run: RUN }),
+        contentType: "application/json",
+        attributes: { kind: str("batch-atomicity"), run: str(RUN) },
+        expires: TTL,
+      },
+    ],
+    extensions: [{ entityKey: doomedKey, expires: ExpirationTime.fromMinutes(15) }],
+  })
+} catch (error) {
+  reverted = true
+  const cause = (error as Error).cause as Error | undefined
+  console.log(
+    `\natomicity: batch rejected — ${(error as Error).constructor.name}` +
+      `${cause ? ` → ${cause.constructor.name}` : ""}`,
+  )
+}
+
+const survivors = (
+  (await rawRpc("arkiv_query", [
+    `kind = str('batch-atomicity') AND run = str('${RUN}')`,
+    { select: { key: true } },
+  ])) as { data?: { key: Hex }[] }
+).data ?? []
+console.log(`atomicity: valid create in that batch landed: ${survivors.length} (expected 0)`)
+
+if (survivors.length > 0) {
+  await writer.mutateEntities({ deletes: survivors.map(({ key }) => ({ entityKey: key })) })
+}
+if (!reverted || survivors.length > 0) {
+  throw new Error("a batch applied part of itself: execute is not all-or-nothing here")
+}
 
 console.log("\nbatch experiment done")

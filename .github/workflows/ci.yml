@@ -4,7 +4,9 @@ on:
   pull_request:
 
 jobs:
-  typecheck:
+  # The writer package: types, then the tests that need no chain. Anything
+  # that needs a live network lives in writer/probes and is run by hand.
+  writer:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,4 +15,6 @@ jobs:
       - run: npm ci
         working-directory: writer
       - run: npm run typecheck
+        working-directory: writer
+      - run: npm test
         working-directory: writer

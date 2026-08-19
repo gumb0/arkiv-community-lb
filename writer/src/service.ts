@@ -237,33 +237,33 @@ export function startService(writer: Writer, options: ServiceOptions = {}): Prom
     return result
   }
 
-  const routes: Record<string, (body: unknown) => Promise<unknown>> = {
-    "/create": (body) => {
-      const op = decodeCreate(body)
-      return enqueue(() => writer.createEntity(op))
-    },
-    "/patch": (body) => {
-      const op = decodePatch(body)
-      return enqueue(() => writer.patchEntity(op))
-    },
-    "/delete": (body) => {
-      const op = decodeDelete(body)
-      return enqueue(() => writer.deleteEntity(op))
-    },
-    "/extend": (body) => {
-      const op = decodeExtend(body)
-      return enqueue(() => writer.extendEntity(op))
-    },
-    "/mutate": (body) => {
-      const ops = decodeBatch(body)
-      return enqueue(() => writer.mutateEntities(ops))
-    },
+  // Decoding and writing are kept apart so the status code follows from
+  // *where* a failure happened, not from the error's class: anything thrown
+  // while decoding is the caller's bad request, anything thrown by the writer
+  // is the chain's answer. The SDK's own validators (i32 range, attribute
+  // names, expiry shape) run inside the decoders, so their errors land on the
+  // 400 side without this having to know their names.
+  const route = <T>(decode: (body: unknown) => T, write: (op: T) => Promise<unknown>) =>
+    (body: unknown) => {
+      const op = decode(body)
+      return () => write(op)
+    }
+
+  const routes: Record<string, (body: unknown) => () => Promise<unknown>> = {
+    "/create": route(decodeCreate, (op) => writer.createEntity(op)),
+    "/patch": route(decodePatch, (op) => writer.patchEntity(op)),
+    "/delete": route(decodeDelete, (op) => writer.deleteEntity(op)),
+    "/extend": route(decodeExtend, (op) => writer.extendEntity(op)),
+    "/mutate": route(decodeBatch, (ops) => writer.mutateEntities(ops)),
   }
 
   const server: Server = createServer((request, response) => {
-    const respond = (status: number, body: unknown) => {
+    const respond = (status: number, body: unknown, sent?: () => void) => {
       response.writeHead(status, { "content-type": "application/json" })
-      response.end(JSON.stringify(body, (_k, v) => (typeof v === "bigint" ? v.toString() : v)))
+      response.end(
+        JSON.stringify(body, (_k, v) => (typeof v === "bigint" ? v.toString() : v)),
+        sent,
+      )
     }
     const respondError = (status: number, error: unknown) => {
       const chain = errorChain(error)
@@ -279,26 +279,39 @@ export function startService(writer: Writer, options: ServiceOptions = {}): Prom
 
     const chunks: Buffer[] = []
     let size = 0
+    let refused = false
     request.on("data", (chunk: Buffer) => {
+      if (refused) return
       size += chunk.length
       if (size > MAX_BODY_BYTES) {
-        respondError(413, new Error(`body over ${MAX_BODY_BYTES} bytes`))
-        request.destroy()
+        // Stop buffering, but keep reading to the end before answering.
+        // Replying mid-upload races the caller's own writes: it sees the
+        // socket close, reads that as a transport failure, and retries a body
+        // that will never fit. This listener is compose-internal, so draining
+        // a runaway body is the cheaper problem.
+        refused = true
+        chunks.length = 0
         return
       }
       chunks.push(chunk)
     })
     request.on("end", async () => {
-      let result: unknown
-      try {
-        const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"))
-        result = await route(body)
-      } catch (error) {
-        const decodeFailure =
-          error instanceof DecodeError || error instanceof SyntaxError || error instanceof RangeError
-        return respondError(decodeFailure ? 400 : 500, error)
+      if (refused) {
+        return respond(413, {
+          error: errorChain(new Error(`body over ${MAX_BODY_BYTES} bytes`)),
+        })
       }
-      respond(200, result)
+      let write: () => Promise<unknown>
+      try {
+        write = route(JSON.parse(Buffer.concat(chunks).toString("utf8")))
+      } catch (error) {
+        return respondError(400, error)
+      }
+      try {
+        respond(200, await enqueue(write))
+      } catch (error) {
+        respondError(500, error)
+      }
     })
   })
 

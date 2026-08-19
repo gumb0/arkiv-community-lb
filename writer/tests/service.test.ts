@@ -96,6 +96,13 @@ async function post(route: string, body: unknown, raw?: string) {
   return { status: response.status, body: (await response.json()) as Record<string, unknown> }
 }
 
+/** An indexed read that must have found something — asserts, then narrows. */
+function at<T>(items: readonly T[], index: number, what: string): T {
+  const item = items[index]
+  ok(item !== undefined, `${what}[${index}] is missing`)
+  return item
+}
+
 /** The op the fake was last handed, for the given method. */
 function lastOp<T>(method: string): T {
   const call = [...fake.calls].reverse().find((entry) => entry.method === method)
@@ -135,7 +142,7 @@ describe("wire format in", () => {
     deepEqual(op.attributes.price, { type: "dec", value: "1.25" })
     deepEqual(op.attributes.owner, { type: "addr", value: ADDRESS })
     deepEqual(op.attributes.live, { type: "bool", value: true })
-    equal(op.attributes.parent.type, "key")
+    deepEqual(op.attributes.parent, { type: "key", value: KEY_B })
   })
 
   it("decodes base64 payloads to the exact bytes", async () => {
@@ -209,9 +216,9 @@ describe("wire format in", () => {
       extensions: unknown[]
     }>("mutate")
     equal(ops.creates.length, 2)
-    equal(ops.creates[1].contentType, "text/plain") // order preserved
+    equal(at(ops.creates, 1, "creates").contentType, "text/plain") // order preserved
     equal(ops.patches.length, 1)
-    equal(ops.deletes[0].entityKey, KEY_B)
+    equal(at(ops.deletes, 0, "deletes").entityKey, KEY_B)
     equal(ops.extensions.length, 1)
   })
 
@@ -258,7 +265,8 @@ describe("bad requests are refused before the chain", () => {
       const { status, body: result } = await post(route, body)
       equal(status, 400, `${name} should be 400`)
       const chain = result.error as { name: string; message: string }[]
-      ok(chain[0].message.includes(expected), `message names the problem: ${chain[0].message}`)
+      const head = at(chain, 0, "error chain")
+      ok(head.message.includes(expected), `message names the problem: ${head.message}`)
       equal(fake.calls.length, before, "nothing reached the writer")
     })
   }
@@ -276,7 +284,7 @@ describe("bad requests are refused before the chain", () => {
       attributes: { rank: { type: "i32", value: 2 ** 31 } },
     })
     equal(status, 400)
-    equal((body.error as { name: string }[])[0].name, "InvalidValueError")
+    equal(at(body.error as { name: string }[], 0, "error chain").name, "InvalidValueError")
   })
 })
 
@@ -312,8 +320,8 @@ describe("failures", () => {
 
     equal(status, 500)
     const chain = body.error as { name: string; message: string }[]
-    equal(chain[0].name, "EntityMutationError")
-    equal(chain[1].message, "execution reverted")
+    equal(at(chain, 0, "error chain").name, "EntityMutationError")
+    equal(at(chain, 1, "error chain").message, "execution reverted")
   })
 
   it("a receipt timeout is 504 with the pending hash, not 500", async () => {

@@ -74,6 +74,12 @@ function assert(cond: boolean, what: string): asserts cond {
   if (!cond) throw new Error(`assertion failed: ${what}`)
 }
 
+/** An indexed read that must have found something — asserts, then narrows. */
+function required<T>(value: T | undefined, what: string): T {
+  assert(value !== undefined, `${what} is present`)
+  return value
+}
+
 const attrValue = (row: QueriedRow | undefined, name: string) =>
   row?.attributes?.find((attribute) => attribute.name === name)?.value
 
@@ -183,8 +189,8 @@ await step("batch: two creates + one patch in one transaction", async () => {
   })
   assert(createdEntities.length === 2, "two entity keys returned")
   const [a, b, patched] = await Promise.all([
-    byKey(createdEntities[0]),
-    byKey(createdEntities[1]),
+    byKey(required(createdEntities[0], "first created key")),
+    byKey(required(createdEntities[1], "second created key")),
     byKey(entityKey),
   ])
   assert(a !== undefined && b !== undefined, "both created entities readable")

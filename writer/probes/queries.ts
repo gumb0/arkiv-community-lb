@@ -104,7 +104,9 @@ const { createdEntities: fixtures } = await writer.mutateEntities({
 console.log(`fixtures: ${fixtures.length} created`)
 
 // A key-typed attribute needs a real key, so it rides a follow-up patch.
-await writer.patchEntity({ entityKey: fixtures[1], set: { ref: key(fixtures[0]) } })
+const [first, second] = fixtures
+if (first === undefined || second === undefined) throw new Error("fixtures were not created")
+await writer.patchEntity({ entityKey: second, set: { ref: key(first) } })
 console.log(`ref attribute patched onto fixture 1\n`)
 
 const me = writer.address

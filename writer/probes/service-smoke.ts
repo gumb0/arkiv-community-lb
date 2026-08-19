@@ -65,6 +65,12 @@ function assert(cond: boolean, what: string): asserts cond {
   if (!cond) throw new Error(`assertion failed: ${what}`)
 }
 
+/** An indexed read that must have found something — asserts, then narrows. */
+function required<T>(value: T | undefined, what: string): T {
+  assert(value !== undefined, `${what} is present`)
+  return value
+}
+
 async function step<T>(name: string, run: () => Promise<T>): Promise<T> {
   const started = Date.now()
   try {
@@ -178,7 +184,11 @@ const batched = await step("POST /mutate — two creates and a patch in one tx",
   const created = result.createdEntities as Hex[]
   assert(created.length === 2, "two keys returned, in batch order")
   assert((result.patchedEntities as Hex[]).length === 1, "one patched key returned")
-  const [a, b, patched] = await Promise.all([byKey(created[0]), byKey(created[1]), byKey(entityKey)])
+  const [a, b, patched] = await Promise.all([
+    byKey(required(created[0], "first created key")),
+    byKey(required(created[1], "second created key")),
+    byKey(entityKey),
+  ])
   assert(a !== undefined && b !== undefined, "both created entities readable")
   assert(attrValue(a, "rank") === 10 && attrValue(b, "rank") === 11, "batch order preserved")
   assert(attrValue(patched, "batched") === "yes", "patch applied in the same tx")
@@ -220,7 +230,7 @@ await step("bad request bodies are 400, not 500", async () => {
     const chain = result.error as { name: string; message: string }[]
     assert(status === 400, `${route} ${JSON.stringify(body).slice(0, 60)} → 400 (got ${status})`)
     assert(Array.isArray(chain) && chain.length > 0, "error chain present")
-    console.log(`  400 ${chain[0].message}`)
+    console.log(`  400 ${required(chain[0], "error chain head").message}`)
   }
 })
 
@@ -233,7 +243,10 @@ await step("a reverting write is 500 with the walked cause chain", async () => {
   const { status, body } = await post("/extend", { entityKey, expires: { seconds: 2 } })
   const chain = body.error as { name: string; message: string }[]
   assert(status === 500, `shrinking extend → 500 (got ${status})`)
-  assert(chain[0].name === "EntityMutationError", "top of chain is the SDK's typed error")
+  assert(
+    required(chain[0], "error chain head").name === "EntityMutationError",
+    "top of chain is the SDK's typed error",
+  )
   assert(chain.length > 1, "cause chain walked past the top error")
   console.log(`  ${chain.map((link) => link.name).join(" → ")}`)
 })

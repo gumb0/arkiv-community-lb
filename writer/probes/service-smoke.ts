@@ -255,13 +255,21 @@ await step("a reverting write is 500 with the walked cause chain", async () => {
 await step("cleanup: one /mutate deletes everything this run created", async () => {
   const keys = [entityKey, ...batched, ...parallel]
   await ok("/mutate", { deletes: keys.map((key) => ({ entityKey: key })) })
-  // The query index can briefly trail the receipt (seen once on a 250 ms
-  // chain: 2 of 5 rows still visible right after the delete), so poll.
-  let left: unknown[] = []
-  for (let attempt = 0; attempt < 20; attempt++) {
+  // The attribute-indexed query can trail the delete's receipt — 5 s was not
+  // enough on a loaded CI runner, while a $key lookup right after a receipt
+  // has never lagged (writer-smoke's delete leg). Poll long, and on failure
+  // say per row whether a $key lookup still sees it, to tell a slow index
+  // from a row that is really alive.
+  const deadline = Date.now() + 30_000
+  let left: QueriedRow[] = []
+  do {
     left = await query(`kind = str('service-smoke') AND run = str('${RUN}')`)
     if (left.length === 0) break
-    await new Promise((resolve) => setTimeout(resolve, 250))
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  } while (Date.now() < deadline)
+  for (const row of left) {
+    const byKeyRow = row.key === undefined ? undefined : await byKey(row.key)
+    console.log(`  still visible: ${row.key} ($key lookup: ${byKeyRow ? "present" : "absent"})`)
   }
   assert(left.length === 0, `no entities left (found ${left.length})`)
 })

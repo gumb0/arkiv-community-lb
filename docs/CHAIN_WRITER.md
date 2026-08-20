@@ -56,6 +56,10 @@ JSON cannot carry bytes, 64-bit integers, or the SDK's tagged values, so:
   SDK's type tags: `str`, `bool`, `i32`, `u64`, `u256`, `dec`, `addr`,
   `key`, `bytes32`. Values for `u64`/`u256`/`dec` (and `salt`) are decimal
   strings.
+- **salt** defaults to 128 random bits, which keeps the new entity's key
+  unpredictable. `"salt": "0"` is the SDK's `NO_SALT`: the key derives from
+  the owner and nonce alone, so anyone who knows both can compute it in
+  advance — only for entities that are meant to be found that way.
 - **expires** is `"permanent"`, `{ "seconds": n }`, `{ "blocks": n }`, or
   `{ "atBlock": "n" }`. Ask in blocks when the chain's block time may
   differ from 2 s — the SDK converts durations at a fixed 2 s per block.

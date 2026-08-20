@@ -6,15 +6,26 @@ Providers are discovered through an on-chain marketplace, paid in GLM for the
 requests they serve, and checked for integrity — the nodes are permissionless,
 not operator-chosen.
 
-**Status: under construction.** Nothing here is usable yet.
+**Status: under construction.** The pieces below exist; the LB service
+itself does not yet.
 
-## What this will contain
+## What is here
+
+- **Chain-writer sidecar** (`writer/`): entity writes over the official
+  Arkiv TS SDK, behind a small HTTP service — wire format and error
+  contract in [docs/CHAIN_WRITER.md](docs/CHAIN_WRITER.md). Unit-tested
+  without a chain; live smoke tests run against a throwaway local node
+  (`scripts/dev-node.sh`) in CI.
+- **Tunnel server stack** (`compose.yaml`, `tunnel/`): how NAT'd providers
+  reach the LB — decision and measurements in
+  [docs/TUNNELING.md](docs/TUNNELING.md).
+
+## Still to come
 
 - The LB service (Rust): health checking, failover, load balancing across
   provider nodes, admin API.
 - A marketplace agent: discovers provider offers on Arkiv and keeps agreements
   alive on-chain.
-- A chain-writer sidecar (TypeScript, official Arkiv SDK) for entity writes.
 - A settle CLI: computes per-period payouts from on-chain records and pays GLM
   on Polygon.
 - A test rig that drives the whole system — real node containers, fault

@@ -4,7 +4,7 @@
 //
 // Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
 // an Authorization: Bearer header).
-// Run: npm run smoke
+// Run: npm run writer-smoke
 
 import { ExpirationTime, i32, jsonToPayload, str } from "@arkiv-network/sdk"
 import { toHex, type Hex } from "viem"

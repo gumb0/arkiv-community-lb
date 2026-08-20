@@ -2,10 +2,10 @@ name: ci
 on:
   push: { branches: [main] }
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  # The writer package: types, then the tests that need no chain. Anything
-  # that needs a live network lives in writer/probes and is run by hand.
+  # The writer package: types, then the tests that need no chain.
   writer:
     runs-on: ubuntu-latest
     steps:
@@ -18,3 +18,38 @@ jobs:
         working-directory: writer
       - run: npm test
         working-directory: writer
+
+  # The two probes that follow our own code, against a local dev node. The
+  # rest measure the pinned SDK and node image, so they run when a pin moves,
+  # not on every push: ./scripts/run-probes.sh with no arguments.
+  #
+  # The image is in a credentialed registry, and a fork's pull request cannot
+  # read the secret that reaches it, so those are left to the writer job.
+  probes:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+    steps:
+      - name: Look for the registry credential
+        id: cred
+        run: |
+          if [ -n "$GHCR_TOKEN" ]; then
+            echo "found=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=no" >> "$GITHUB_OUTPUT"
+            echo "No GHCR_TOKEN secret, so the dev-node image cannot be pulled." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cred.outputs.found == 'yes'
+      - uses: actions/setup-node@v4
+        if: steps.cred.outputs.found == 'yes'
+        with: { node-version: 22, cache: npm, cache-dependency-path: writer/package-lock.json }
+      - run: npm ci
+        if: steps.cred.outputs.found == 'yes'
+        working-directory: writer
+      - name: Log in to ghcr.io
+        if: steps.cred.outputs.found == 'yes'
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+      - run: ./scripts/run-probes.sh writer-smoke service-smoke
+        if: steps.cred.outputs.found == 'yes'

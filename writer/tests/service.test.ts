@@ -361,6 +361,54 @@ describe("failures", () => {
   })
 })
 
+describe("client aborts do not kill the service", () => {
+  // Today's Node handles both abort shapes without help (verified: these
+  // pass with no error listeners in the service). They stay as a contract:
+  // a refactor that touches the request/response streams — piping the body,
+  // manual socket work — must not make a vanishing caller fatal.
+  it("survives a connection reset in the middle of a request body", async () => {
+    // Announce a large body, send half of it, and reset the socket.
+    const { connect } = await import("node:net")
+    await new Promise<void>((resolve) => {
+      const socket = connect(service.port, service.host, () => {
+        socket.write(
+          "POST /create HTTP/1.1\r\n" +
+            `Host: ${service.host}\r\n` +
+            "Content-Type: application/json\r\n" +
+            "Content-Length: 1000\r\n\r\n" +
+            '{"payload":',
+          () => socket.destroy(),
+        )
+      })
+      socket.on("close", resolve)
+      socket.on("error", () => {})
+    })
+    // The service still answers.
+    const { status } = await post("/create", minimalCreate)
+    equal(status, 200)
+  })
+
+  it("survives the caller giving up while its write is still queued", async () => {
+    fake.state.delayMs = 50
+    const aborter = new AbortController()
+    const doomed = fetch(`${base}/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(minimalCreate),
+      signal: aborter.signal,
+    }).catch(() => "aborted")
+    setTimeout(() => aborter.abort(), 10)
+
+    equal(await doomed, "aborted")
+    // Give the queued write time to finish and respond into the closed
+    // connection — the part that must not crash — then prove liveness.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    fake.state.delayMs = 0
+    const { status } = await post("/create", minimalCreate)
+    equal(status, 200)
+  })
+})
+
 describe("serialization", () => {
   it("never lets two writes overlap", async () => {
     fake.state.delayMs = 25

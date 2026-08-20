@@ -255,7 +255,14 @@ await step("a reverting write is 500 with the walked cause chain", async () => {
 await step("cleanup: one /mutate deletes everything this run created", async () => {
   const keys = [entityKey, ...batched, ...parallel]
   await ok("/mutate", { deletes: keys.map((key) => ({ entityKey: key })) })
-  const left = await query(`kind = str('service-smoke') AND run = str('${RUN}')`)
+  // The query index can briefly trail the receipt (seen once on a 250 ms
+  // chain: 2 of 5 rows still visible right after the delete), so poll.
+  let left: unknown[] = []
+  for (let attempt = 0; attempt < 20; attempt++) {
+    left = await query(`kind = str('service-smoke') AND run = str('${RUN}')`)
+    if (left.length === 0) break
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
   assert(left.length === 0, `no entities left (found ${left.length})`)
 })
 

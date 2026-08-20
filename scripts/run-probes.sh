@@ -4,7 +4,8 @@
 # moving the SDK version or the node image, since those are what most of the
 # probes measure. CI names the two that follow our own code instead.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
 
 scripts=("$@")
 [ "${#scripts[@]}" -eq 0 ] && scripts=(probes)
@@ -21,8 +22,9 @@ if ! ./scripts/dev-node.sh url >/dev/null 2>&1; then
 fi
 ARKIV_RPC_URL="$(./scripts/dev-node.sh url)"
 export ARKIV_RPC_URL
-# Leave a node that was already up alone: it is someone's, not ours.
-trap '[ "$started_here" = 1 ] && ./scripts/dev-node.sh stop >/dev/null' EXIT
+# Leave a node that was already up alone: it is someone's, not ours. The
+# absolute path matters: the trap fires after the cd below.
+trap '[ "$started_here" = 1 ] && "$root/scripts/dev-node.sh" stop >/dev/null' EXIT
 
 cd writer
 for script in "${scripts[@]}"; do

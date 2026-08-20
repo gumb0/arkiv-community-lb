@@ -94,7 +94,7 @@ export async function createWriter(config: WriterConfig) {
     deleteEntity: (op: DeleteOp) => wallet.deleteEntity(op),
     extendEntity: (op: ExtendOp) => wallet.extendEntity(op),
     /** All operations in one transaction — one nonce, atomic on-chain. */
-    mutateEntities: (ops: BatchOps) => wallet.mutateEntities(ops),
+    executeBatch: (ops: BatchOps) => wallet.executeBatch(ops),
   }
 }
 

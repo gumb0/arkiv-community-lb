@@ -116,6 +116,6 @@ const rows = (await rawRpc("arkiv_query", [
 ])) as { data?: { key: Hex }[] }
 const keys = (rows.data ?? []).map((row) => row.key)
 if (keys.length > 0) {
-  await plain.mutateEntities({ deletes: keys.map((entityKey) => ({ entityKey })) })
+  await plain.executeBatch({ deletes: keys.map((entityKey) => ({ entityKey })) })
 }
 console.log(`cleanup: ${keys.length} entities deleted; concurrency probe done`)

@@ -73,7 +73,7 @@ console.log(
 )
 
 let started = Date.now()
-const { txHash: createTx, createdEntities } = await writer.mutateEntities({
+const { txHash: createTx, createdEntities } = await writer.executeBatch({
   creates: Array.from({ length: batchN }, (_, i) => ({
     payload: jsonToPayload({ probe: "batch", i, run: RUN }),
     contentType: "application/json",
@@ -87,7 +87,7 @@ if (createdEntities.length !== batchN) {
 }
 
 started = Date.now()
-const { txHash: extendTx } = await writer.mutateEntities({
+const { txHash: extendTx } = await writer.executeBatch({
   extensions: createdEntities.map((entityKey) => ({
     entityKey,
     expires: ExpirationTime.fromBlocks(450),
@@ -96,7 +96,7 @@ const { txHash: extendTx } = await writer.mutateEntities({
 report(`extend x${batchN}`, (Date.now() - started) / 1000, await txStats(extendTx))
 
 started = Date.now()
-const { txHash: patch1Tx } = await writer.mutateEntities({
+const { txHash: patch1Tx } = await writer.executeBatch({
   patches: createdEntities.map((entityKey) => ({
     entityKey,
     set: { status: str("patched") },
@@ -105,7 +105,7 @@ const { txHash: patch1Tx } = await writer.mutateEntities({
 report(`patch x${batchN} (1 mutation)`, (Date.now() - started) / 1000, await txStats(patch1Tx))
 
 started = Date.now()
-const { txHash: patch3Tx } = await writer.mutateEntities({
+const { txHash: patch3Tx } = await writer.executeBatch({
   patches: createdEntities.map((entityKey, i) => ({
     entityKey,
     set: { status: str("repatched"), extra: str("x"), rank: i32(i + 1000) },
@@ -114,7 +114,7 @@ const { txHash: patch3Tx } = await writer.mutateEntities({
 report(`patch x${batchN} (3 mutations)`, (Date.now() - started) / 1000, await txStats(patch3Tx))
 
 started = Date.now()
-const { txHash: deleteTx } = await writer.mutateEntities({
+const { txHash: deleteTx } = await writer.executeBatch({
   deletes: createdEntities.map((entityKey) => ({ entityKey })),
 })
 report(`delete x${batchN}`, (Date.now() - started) / 1000, await txStats(deleteTx))
@@ -125,7 +125,7 @@ report(`delete x${batchN}`, (Date.now() - started) / 1000, await txStats(deleteT
 const doomedKey = `0x${"ee".repeat(32)}` as Hex
 let reverted = false
 try {
-  await writer.mutateEntities({
+  await writer.executeBatch({
     creates: [
       {
         payload: jsonToPayload({ probe: "atomicity", run: RUN }),
@@ -154,7 +154,7 @@ const survivors = (
 console.log(`atomicity: valid create in that batch landed: ${survivors.length} (expected 0)`)
 
 if (survivors.length > 0) {
-  await writer.mutateEntities({ deletes: survivors.map(({ key }) => ({ entityKey: key })) })
+  await writer.executeBatch({ deletes: survivors.map(({ key }) => ({ entityKey: key })) })
 }
 if (!reverted || survivors.length > 0) {
   throw new Error("a batch applied part of itself: execute is not all-or-nothing here")

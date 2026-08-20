@@ -167,7 +167,7 @@ await step("POST /extend — expiry grows", async () => {
   assert(after > before, "expiry strictly increased")
 })
 
-const batched = await step("POST /mutate — two creates and a patch in one tx", async () => {
+const batched = await step("POST /execute-batch — two creates and a patch in one tx", async () => {
   const make = (n: number) => ({
     payload: b64(jsonToPayload({ probe: "service-batch", n, run: RUN })),
     contentType: "application/json",
@@ -178,7 +178,7 @@ const batched = await step("POST /mutate — two creates and a patch in one tx",
     },
     expires: TTL,
   })
-  const result = await ok("/mutate", {
+  const result = await ok("/execute-batch", {
     creates: [make(10), make(11)],
     patches: [{ entityKey, set: { batched: { type: "str", value: "yes" } } }],
   })
@@ -252,9 +252,9 @@ await step("a reverting write is 500 with the walked cause chain", async () => {
   console.log(`  ${chain.map((link) => link.name).join(" → ")}`)
 })
 
-await step("cleanup: one /mutate deletes everything this run created", async () => {
+await step("cleanup: one /execute-batch deletes everything this run created", async () => {
   const keys = [entityKey, ...batched, ...parallel]
-  await ok("/mutate", { deletes: keys.map((key) => ({ entityKey: key })) })
+  await ok("/execute-batch", { deletes: keys.map((key) => ({ entityKey: key })) })
   // The attribute-indexed query can trail the delete's receipt — 5 s was not
   // enough on a loaded CI runner, while a $key lookup right after a receipt
   // has never lagged (writer-smoke's delete leg). Poll long, and on failure

@@ -3,7 +3,7 @@
 // Meant for the compose-internal network only; never expose it publicly.
 //
 // Writes are serialized: one transaction in flight at a time, later requests
-// wait their turn. Batching stays the caller's job — send one /mutate body
+// wait their turn. Batching stays the caller's job — send one /execute-batch body
 // instead of many single-op requests when atomicity or cost matters.
 //
 // Wire format (all routes are POST, bodies and responses are JSON):
@@ -254,7 +254,7 @@ export function startService(writer: Writer, options: ServiceOptions = {}): Prom
     "/patch": route(decodePatch, (op) => writer.patchEntity(op)),
     "/delete": route(decodeDelete, (op) => writer.deleteEntity(op)),
     "/extend": route(decodeExtend, (op) => writer.extendEntity(op)),
-    "/mutate": route(decodeBatch, (ops) => writer.mutateEntities(ops)),
+    "/execute-batch": route(decodeBatch, (ops) => writer.executeBatch(ops)),
   }
 
   const server: Server = createServer((request, response) => {

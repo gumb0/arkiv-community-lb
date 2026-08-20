@@ -59,7 +59,7 @@ function makeFake() {
       await enter("extend", op)
       return { entityKey: op.entityKey, txHash: TX_HASH, expiresAt: 5678n }
     },
-    mutateEntities: async (ops) => {
+    executeBatch: async (ops) => {
       await enter("mutate", ops)
       return {
         txHash: TX_HASH,
@@ -201,8 +201,8 @@ describe("wire format in", () => {
     equal(op.contentType, "text/plain")
   })
 
-  it("keeps batch order and shape in /mutate", async () => {
-    const { status } = await post("/mutate", {
+  it("keeps batch order and shape in /execute-batch", async () => {
+    const { status } = await post("/execute-batch", {
       creates: [minimalCreate, { ...minimalCreate, contentType: "text/plain" }],
       patches: [{ entityKey: KEY_A, set: { a: { type: "i32", value: 1 } } }],
       deletes: [{ entityKey: KEY_B }],
@@ -251,7 +251,7 @@ describe("wire format out", () => {
   })
 
   it("returns the batch result arrays", async () => {
-    const { body } = await post("/mutate", { deletes: [{ entityKey: KEY_A }] })
+    const { body } = await post("/execute-batch", { deletes: [{ entityKey: KEY_A }] })
     deepEqual(body.createdEntities, [KEY_A, KEY_B])
     deepEqual(body.patchedEntities, [])
   })
@@ -266,7 +266,7 @@ describe("bad requests are refused before the chain", () => {
     ["entity key without 0x", "/patch", { entityKey: "1234" }, "0x-prefixed"],
     ["unset that is not an array", "/patch", { entityKey: KEY_A, unset: "tag" }, "must be an array"],
     ["attribute value of the wrong JSON type", "/create", { ...minimalCreate, attributes: { a: { type: "i32", value: "5" } } }, "must be a number"],
-    ["batch field that is not an array", "/mutate", { creates: { payload: "" } }, "must be an array"],
+    ["batch field that is not an array", "/execute-batch", { creates: { payload: "" } }, "must be an array"],
   ]
 
   for (const [name, route, body, expected] of cases) {
@@ -415,7 +415,7 @@ describe("serialization", () => {
     const results = await Promise.all([
       post("/create", minimalCreate),
       post("/create", minimalCreate),
-      post("/mutate", { deletes: [{ entityKey: KEY_A }] }),
+      post("/execute-batch", { deletes: [{ entityKey: KEY_A }] }),
     ])
     fake.state.delayMs = 0
 

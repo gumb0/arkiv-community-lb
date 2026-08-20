@@ -47,7 +47,7 @@ the compose-internal network only; never expose it publicly.
 | `/patch` | entityKey, set?, unset?, payload?, contentType? | change named parts, leave the rest |
 | `/delete` | entityKey | remove |
 | `/extend` | entityKey, expires | set a later expiry |
-| `/mutate` | creates?, patches?, deletes?, extensions? | several operations, one transaction |
+| `/execute-batch` | creates?, patches?, deletes?, extensions? | several operations, one transaction |
 
 JSON cannot carry bytes, 64-bit integers, or the SDK's tagged values, so:
 
@@ -95,7 +95,7 @@ seen before the next transaction is ever built. The write volume this
 serves (periodic refresh and flush cycles, occasional event-driven writes)
 never needs more.
 
-Batching belongs to the caller, through `/mutate`. The queue never merges
+Batching belongs to the caller, through `/execute-batch`. The queue never merges
 waiting requests into one transaction, because a transaction is atomic:
 all operations apply or none do. Merging whatever happened to be queued
 would make unrelated writes share a fate, and hand callers errors caused by
@@ -103,7 +103,7 @@ operations they never sent.
 
 Cost intuition: a write costs one block inclusion (~5 s wall time on a 2 s
 chain, receipt polling included) regardless of how many operations it
-carries. Coalescing a cycle's operations into one `/mutate` is how writes
+carries. Coalescing a cycle's operations into one `/execute-batch` is how writes
 stay cheap.
 
 ## Three outcomes of a write operation
@@ -128,7 +128,7 @@ on the 400 side automatically.
 ## Limits that bind
 
 - The node caps raw transaction size at 128 KiB (txpool default), at every
-  endpoint. A `/mutate` batch must stay under it; with ~200-byte payloads
+  endpoint. A `/execute-batch` batch must stay under it; with ~200-byte payloads
   the ceiling is roughly a hundred creates. The Rust caller chunks.
 - Attribute string values are capped at 128 bytes by the SDK. Larger data
   belongs in the payload.

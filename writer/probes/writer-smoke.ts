@@ -186,7 +186,7 @@ await step("batch: two creates + one patch in one transaction", async () => {
     attributes: { kind: str("smoke-batch"), run: str(RUN), rank: i32(n) },
     expires: TTL,
   })
-  const { txHash, createdEntities } = await writer.mutateEntities({
+  const { txHash, createdEntities } = await writer.executeBatch({
     creates: [make(1), make(2)],
     patches: [{ entityKey, set: { batched: str("yes") } }],
   })

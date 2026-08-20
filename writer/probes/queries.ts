@@ -85,7 +85,7 @@ console.log(`query probe: run ${RUN}, address ${writer.address}, chain ${writer.
 const preFixtureBlock = BigInt((await rawRpc("eth_blockNumber", [])) as string)
 
 // i = 0..29. Evens: group a, flag set, name aa-i. Odds: group b, no flag, name ab-i.
-const { createdEntities: fixtures } = await writer.mutateEntities({
+const { createdEntities: fixtures } = await writer.executeBatch({
   creates: Array.from({ length: FIXTURES }, (_, i) => ({
     payload: jsonToPayload({ probe: "queries", i }),
     contentType: "application/json",
@@ -194,6 +194,6 @@ try {
   const ok = seen.size === FIXTURES
   console.log(`${ok ? "✓" : "✗"} pagination: ${pages} pages, ${seen.size} distinct keys`)
 } finally {
-  await writer.mutateEntities({ deletes: fixtures.map((entityKey) => ({ entityKey })) })
+  await writer.executeBatch({ deletes: fixtures.map((entityKey) => ({ entityKey })) })
   console.log(`\nfixtures deleted; query probe done`)
 }

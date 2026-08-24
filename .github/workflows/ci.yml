@@ -5,6 +5,14 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The Rust workspace: ci.sh is the single source — do not add checks here.
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: ./tests/ci.sh
+
   # The writer package: types, then the tests that need no chain.
   writer:
     runs-on: ubuntu-latest

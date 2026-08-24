@@ -1,0 +1,11 @@
+# The Rust workspace: the LB service (library + thin binary) and the rig
+# that drives it against real containers. TS lives outside the workspace
+# (writer/ — the chain-writer sidecar).
+[workspace]
+resolver = "3"
+members = ["crates/lb", "crates/rig"]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+publish = false

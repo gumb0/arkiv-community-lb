@@ -7,6 +7,7 @@
   "scripts": {
     "probes": "npm run writer-smoke && npm run service-smoke && npm run queries && npm run batch && npm run permanent && npm run concurrency && npm run page-budget",
     "page-budget": "node --env-file-if-exists=../.env --import tsx probes/page-budget.ts",
+    "create-dup": "node --env-file-if-exists=../.env --import tsx probes/create-dup.ts",
     "writer-smoke": "node --env-file-if-exists=../.env --import tsx probes/writer-smoke.ts",
     "test": "node --test --import tsx \"tests/*.test.ts\"",
     "typecheck": "tsc --noEmit",
@@ -15,7 +16,8 @@
     "batch": "node --env-file-if-exists=../.env --import tsx probes/batch-experiment.ts",
     "permanent": "node --env-file-if-exists=../.env --import tsx probes/permanent-probe.ts",
     "queries": "node --env-file-if-exists=../.env --import tsx probes/queries.ts",
-    "concurrency": "node --env-file-if-exists=../.env --import tsx probes/concurrency-probe.ts"
+    "concurrency": "node --env-file-if-exists=../.env --import tsx probes/concurrency-probe.ts",
+    "replay": "node --env-file-if-exists=../.env --import tsx probes/replay-probe.ts"
   },
   "dependencies": {
     "@arkiv-network/sdk": "0.8.0-dev.2",

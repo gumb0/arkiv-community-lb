@@ -255,11 +255,13 @@ await step("a reverting write is 500 with the walked cause chain", async () => {
 await step("cleanup: one /execute-batch deletes everything this run created", async () => {
   const keys = [entityKey, ...batched, ...parallel]
   await ok("/execute-batch", { deletes: keys.map((key) => ({ entityKey: key })) })
-  // The attribute-indexed query can trail the delete's receipt — 5 s was not
-  // enough on a loaded CI runner, while a $key lookup right after a receipt
-  // has never lagged (writer-smoke's delete leg). Poll long, and on failure
-  // say per row whether a $key lookup still sees it, to tell a slow index
-  // from a row that is really alive.
+  // Poll for the rows to vanish, and on failure say per row whether a $key
+  // lookup still sees it: a row that is really alive after every returned
+  // key was deleted is a phantom — the dev node at fast sealing executes a
+  // create twice and mints a second entity under a key nobody was told
+  // (probes/create-dup.ts). dev-node.sh defaults to 2 s sealing for that
+  // reason; a "still visible ($key lookup: present)" line here means a node
+  // running faster.
   const deadline = Date.now() + 30_000
   let left: QueriedRow[] = []
   do {

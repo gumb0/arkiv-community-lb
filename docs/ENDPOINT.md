@@ -1,0 +1,61 @@
+# The community endpoint — client contract
+
+**Scope:** what a client of the community RPC endpoint can rely on: the
+served methods, the denied ones, the errors the load balancer itself
+returns, and the size limits. The endpoint is under construction; this
+is the contract it is built against.
+
+The endpoint speaks JSON-RPC 2.0 over HTTP POST, single requests and
+batches, with permissive CORS — browser applications can call it
+directly. No API key, no registration.
+
+## Served methods
+
+- The read set of `eth_*`, `net_*` and `web3_*` — balances, blocks,
+  transactions, receipts, logs, calls, gas estimation.
+- The `arkiv_*` read namespace — `arkiv_query` and the entity views.
+- `eth_getProof` — kept deliberately: it is the primitive for verifying
+  query results against the chain's state root.
+- **`eth_sendRawTransaction` is relayed.** It is the SDK's entity-write
+  path, and on Arkiv relaying is safe by construction: the chain accepts
+  only storage-operation transactions, there are no contracts.
+
+A read method not listed here but served by the underlying nodes will
+generally work; the lists below are what is deliberately blocked.
+
+## Denied methods
+
+| Group | Methods | Why |
+|---|---|---|
+| Node control | `admin_*`, `engine_*`, `miner_*` | They do things to a node |
+| Accounts and signing | `eth_sendTransaction`, `eth_sign*`, `eth_accounts`, `personal_*` | Community nodes hold no user keys |
+| Per-node state | `eth_newFilter` and the other filter methods, `eth_subscribe`, `eth_unsubscribe` | They bind state to one node, which does not work behind a load balancer |
+
+A denied method gets a normal JSON-RPC error response (below), HTTP 200 —
+it is an answered request, same as a node's own method-not-found.
+
+## Errors the load balancer returns
+
+Errors from the serving node pass through unchanged, including the
+standard codes (−32700, −32601, −32602, and Arkiv's `arkiv_query`
+errors). The load balancer's own errors use codes −32050…−32055, and
+**every message it generates starts with `lb: `** — that prefix is how
+you tell an LB error from a node error.
+
+| Code | Meaning | HTTP |
+|---|---|---|
+| −32050 | method denied | 200 |
+| −32051 | no healthy provider | 503 |
+| −32052 | request timed out | 504 |
+| −32053 | response too large | 502 |
+| −32054 | request too large | 413 |
+| −32055 | overloaded | 429 |
+
+## Limits
+
+- **Request bodies: 2 MiB.** Far above the chain's own transaction size
+  limit, so any valid transaction fits.
+- **Responses: 64 MiB.** Sized to clear any legitimate `arkiv_query`
+  page; hitting it indicates a misbehaving node, and the request fails
+  with −32053 rather than returning truncated data.
+- **Timeouts:** a request is answered or failed within 30 seconds.

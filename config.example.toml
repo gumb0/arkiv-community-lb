@@ -1,0 +1,62 @@
+# arkiv-lb configuration. Copy to config.toml and adjust; every value
+# shown here is the default, so any line you do not change can be
+# deleted. The file is read once at startup — restart to apply changes.
+#
+# The Arkiv reference endpoint is NOT configured here: the LB reads
+# ARKIV_RPC_URL and ARKIV_API_KEY from the environment — the same two
+# variables the chain-writer sidecar uses (see .env.example). Secrets
+# never belong in this file.
+
+[listen]
+# The served JSON-RPC endpoint.
+public = "0.0.0.0:8545"
+# Admin API (/health, /nodes, /node/{id}) — loopback by default; it has
+# no authentication, so if you widen it, it should be firewalled.
+admin = "127.0.0.1:9545"
+
+[health]
+# Interval for checking provider health.
+probe_interval = "5s"
+# Tighter than the timeout for normal calls (attempt_timeout) on
+# purpose: a probe is a cheap, lightweight request.
+probe_timeout = "2s"
+# Consecutive failures that quarantine / successes that readmit,
+# i.e. after flip_after consecutive failures a provider is quarantined, and
+# after flip_after consecutive successes it is readmitted.
+# At least 2 — the LB refuses to start otherwise.
+flip_after = 3
+# If a provider is persistently dead, its probes get less frequent,
+# up to this cadence.
+max_probe_backoff = "5m"
+# How often the chain height from reference RPC is sampled; 0 = every probe sweep.
+ref_height_interval = "0s"
+# How often providers are checked to be on the right chain.
+chainid_check_interval = "5m"
+# A provider this many blocks behind the reference is lagging —
+# this counts as a failed health check.
+lag_tolerance_blocks = 30
+
+[proxy]
+# Timeout for each attempt against one provider.
+attempt_timeout = "10s"
+# Total timeout for the user's request; in case of failover
+# each attempt gets min(attempt_timeout, remaining).
+request_timeout = "30s"
+# Extra providers tried after a transport failure.
+max_retries = 2
+# Max user request size that is accepted.
+max_request_size = "2MiB"
+# Max provider response size that will be relayed to the user.
+# Generous on purpose: sized to clear any legitimate arkiv_query page,
+# so hitting it means a misbehaving provider.
+max_response_size = "64MiB"
+
+# One block per provider. id is the stable handle (lowercase letters,
+# digits, '-') used in logs, /nodes and /node/{id}; a tunneled provider
+# is just a loopback URL on this host.
+#[[providers]]
+#id = "node-1"
+#url = "http://127.0.0.1:18545"
+#[[providers]]
+#id = "node-2"
+#url = "http://127.0.0.1:18546"

@@ -44,6 +44,11 @@ adversarial — integrity checking is a first-class concern, not an add-on.
   host's long-running processes.
 - Client headers are never forwarded to providers, and a provider's JSON-RPC
   error is an answer, not a failure — passed through, never retried elsewhere.
+- **LB-generated JSON-RPC errors** use codes −32050…−32055 and every message
+  starts with `lb: ` — the prefix is applied in `jsonrpc.rs` and nowhere
+  else. Standard codes (−32700, −32601, …) are always a provider's answer;
+  never fabricate them. The client-facing table is `docs/ENDPOINT.md`; the
+  architecture note is `docs/PROXY.md`.
 - Providers behind NAT reach the LB through **frp tunnels**; a tunneled
   provider is a plain `http://127.0.0.1:<port>` URL to the Proxy. The choice,
   the admission design, and the measurements are in `docs/TUNNELING.md` — not
@@ -57,10 +62,19 @@ adversarial — integrity checking is a first-class concern, not an add-on.
   verified in the Dockerfile — no third-party image in the trust chain.
 - Secrets and machine-local configuration stay untracked; the committed
   reference is an `.example` file beside them (`tunnel/frps.toml.example`,
-  `.env.example`).
+  `.env.example`, `config.example.toml`).
+- **`config.example.toml` is the single place config fields are
+  documented** — every value there is the code's default, a test keeps it
+  parsing, and the Rust structs carry no field doc comments. The LB reads
+  the Arkiv endpoint from `ARKIV_RPC_URL`/`ARKIV_API_KEY`, the same
+  environment variables the writer sidecar uses — never from the toml.
 
 ## Testing
 
+- **`tests/ci.sh` is the entire Rust gate** (fmt, clippy with warnings as
+  errors, tests), runnable locally; it must pass before committing. The
+  workflow's rust job only calls it — do not add checks to the workflow
+  directly.
 - The LB is built as a library so integration tests run the real service
   in-process against fake providers — fast, on every change. Never combine
   tokio's paused time with real sockets; scale durations and poll conditions

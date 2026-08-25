@@ -5,5 +5,6 @@
 pub mod admin;
 pub mod config;
 pub mod jsonrpc;
+pub mod pool;
 pub mod proxy;
 pub mod service;

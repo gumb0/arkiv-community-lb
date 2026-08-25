@@ -9,6 +9,11 @@ The endpoint speaks JSON-RPC 2.0 over HTTP POST, single requests and
 batches, with permissive CORS — browser applications can call it
 directly. No API key, no registration.
 
+POST is the only method it serves. Any other method gets a plain-text
+405 with `Allow: POST, OPTIONS`, and a POST with an empty body a
+plain-text 400; neither reaches a node. Everything else this endpoint
+returns is JSON-RPC.
+
 ## Served methods
 
 - The read set of `eth_*`, `net_*` and `web3_*` — balances, blocks,
@@ -41,6 +46,12 @@ standard codes (−32700, −32601, −32602, and Arkiv's `arkiv_query`
 errors). The load balancer's own errors use codes −32050…−32055, and
 **every message it generates starts with `lb: `** — that prefix is how
 you tell an LB error from a node error.
+
+A node's answer — success or error — always arrives as HTTP 2xx. A
+non-2xx status from a node means it did not answer (overloaded, broken,
+or its tunnel speaking in its place); the load balancer treats that as
+a failed attempt and tries another provider, so such responses never
+reach the client.
 
 | Code | Meaning | HTTP |
 |---|---|---|

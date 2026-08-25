@@ -5,11 +5,14 @@
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
+use reqwest::Url;
+
 use crate::config::Provider;
 
+#[derive(Debug)]
 pub struct Entry {
     pub id: String,
-    pub url: String,
+    pub url: Url,
     /// In or out of rotation. Entries are born ineligible: nothing is
     /// served until the first probes pass.
     eligible: AtomicBool,
@@ -22,16 +25,30 @@ pub struct Entry {
     pub served: AtomicU64,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("provider {id:?}: url {url:?} does not parse")]
+pub struct InvalidUrl {
+    pub id: String,
+    pub url: String,
+    #[source]
+    source: url::ParseError,
+}
+
 impl Entry {
-    fn new(provider: &Provider) -> Self {
-        Self {
+    fn new(provider: &Provider) -> Result<Self, InvalidUrl> {
+        let url = Url::parse(&provider.url).map_err(|source| InvalidUrl {
             id: provider.id.clone(),
             url: provider.url.clone(),
+            source,
+        })?;
+        Ok(Self {
+            id: provider.id.clone(),
+            url,
             eligible: AtomicBool::new(false),
             streak: AtomicI64::new(0),
             height: AtomicU64::new(0),
             served: AtomicU64::new(0),
-        }
+        })
     }
 
     pub fn eligible(&self) -> bool {
@@ -43,17 +60,18 @@ impl Entry {
     }
 }
 
+#[derive(Debug)]
 pub struct Pool {
     entries: Box<[Entry]>,
     cursor: AtomicUsize,
 }
 
 impl Pool {
-    pub fn new(providers: &[Provider]) -> Self {
-        Self {
-            entries: providers.iter().map(Entry::new).collect(),
+    pub fn new(providers: &[Provider]) -> Result<Self, InvalidUrl> {
+        Ok(Self {
+            entries: providers.iter().map(Entry::new).collect::<Result<_, _>>()?,
             cursor: AtomicUsize::new(0),
-        }
+        })
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -90,7 +108,7 @@ mod tests {
                 url: format!("http://127.0.0.1:1/{id}"),
             })
             .collect();
-        Pool::new(&providers)
+        Pool::new(&providers).expect("urls parse")
     }
 
     #[test]
@@ -112,6 +130,24 @@ mod tests {
         for _ in 0..10 {
             assert_eq!(pool.next_eligible().expect("one eligible").id, "b");
         }
+    }
+
+    #[test]
+    fn an_unparsable_url_names_its_provider() {
+        let providers = vec![
+            Provider {
+                id: "good".into(),
+                url: "http://127.0.0.1:1".into(),
+            },
+            Provider {
+                id: "broken".into(),
+                url: "http://".into(),
+            },
+        ];
+        let error = Pool::new(&providers).expect_err("must refuse");
+        assert_eq!(error.id, "broken");
+        assert!(error.to_string().contains("broken"), "{error}");
+        assert!(error.to_string().contains("http://"), "{error}");
     }
 
     #[test]

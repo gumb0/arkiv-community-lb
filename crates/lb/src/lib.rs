@@ -4,6 +4,7 @@
 
 pub mod admin;
 pub mod config;
+pub mod forwarder;
 pub mod jsonrpc;
 pub mod pool;
 pub mod proxy;

@@ -3,13 +3,16 @@
 
 use std::net::SocketAddr;
 
+use std::sync::Arc;
+
 use tokio::{net::TcpListener, sync::watch, task::JoinHandle};
 
-use crate::{admin, config::Config, proxy};
+use crate::{admin, config::Config, forwarder::Forwarder, pool, proxy};
 
 pub struct Service {
     pub public_addr: SocketAddr,
     pub admin_addr: SocketAddr,
+    pub pool: Arc<pool::Pool>,
     shutdown: watch::Sender<bool>,
     servers: Vec<JoinHandle<()>>,
 }
@@ -22,6 +25,8 @@ pub enum StartError {
         #[source]
         source: std::io::Error,
     },
+    #[error(transparent)]
+    Provider(#[from] pool::InvalidUrl),
 }
 
 pub async fn start(config: Config) -> Result<Service, StartError> {
@@ -41,15 +46,23 @@ pub async fn start(config: Config) -> Result<Service, StartError> {
         source,
     })?;
 
+    let pool = Arc::new(pool::Pool::new(&config.providers)?);
+    let state = Arc::new(proxy::ProxyState {
+        pool: pool.clone(),
+        forwarder: Forwarder::new(&config.proxy),
+        config: config.proxy.clone(),
+    });
+
     let (shutdown, _) = watch::channel(false);
     let servers = vec![
-        serve(public, proxy::router(), shutdown.subscribe()),
+        serve(public, proxy::router(state), shutdown.subscribe()),
         serve(admin, admin::router(), shutdown.subscribe()),
     ];
 
     Ok(Service {
         public_addr,
         admin_addr,
+        pool,
         shutdown,
         servers,
     })

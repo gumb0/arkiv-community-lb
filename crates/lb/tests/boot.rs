@@ -46,7 +46,7 @@ async fn boots_serves_and_shuts_down() {
         .expect("answers");
     assert_eq!(
         cross.status(),
-        503,
+        405,
         "admin routes must not exist on the public listener"
     );
     let unknown = client

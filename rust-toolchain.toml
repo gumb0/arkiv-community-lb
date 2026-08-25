@@ -1,3 +1,5 @@
-# Pinned so every machine and CI build the same compiler.
+# Pinned so every machine and CI build the same compiler. The components
+# are what tests/ci.sh needs; rustup installs them with the toolchain.
 [toolchain]
 channel = "1.95.0"
+components = ["rustfmt", "clippy"]

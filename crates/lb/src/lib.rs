@@ -2,4 +2,8 @@
 //! run the real service in-process against fake providers. The binary in
 //! `main.rs` stays a thin wrapper.
 
+pub mod admin;
 pub mod config;
+pub mod jsonrpc;
+pub mod proxy;
+pub mod service;

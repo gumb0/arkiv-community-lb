@@ -14,3 +14,6 @@ tunnel/frps.toml
 
 # Claude Code local settings
 .claude/settings.local.json*
+
+# Machine-local LB configuration; config.example.toml is the committed reference
+config.toml

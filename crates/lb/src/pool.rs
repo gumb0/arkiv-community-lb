@@ -16,9 +16,9 @@ pub struct Entry {
     /// In or out of rotation. Entries are born ineligible: nothing is
     /// served until the first probes pass.
     eligible: AtomicBool,
-    /// The shared hysteresis streak: positive = consecutive successes,
-    /// negative = consecutive failures, fed by probes and traffic alike.
-    pub streak: AtomicI64,
+    /// Positive = consecutive successes, negative = consecutive
+    /// failures, fed by probes and traffic alike.
+    pub health_streak: AtomicI64,
     /// Last head height a probe returned.
     pub height: AtomicU64,
     /// Completed forwards, the billing basis.
@@ -45,7 +45,7 @@ impl Entry {
             id: provider.id.clone(),
             url,
             eligible: AtomicBool::new(false),
-            streak: AtomicI64::new(0),
+            health_streak: AtomicI64::new(0),
             height: AtomicU64::new(0),
             served: AtomicU64::new(0),
         })
@@ -57,6 +57,37 @@ impl Entry {
 
     pub fn set_eligible(&self, value: bool) {
         self.eligible.store(value, Ordering::Relaxed);
+    }
+
+    /// Records one health signal, from a probe or from traffic, and flips
+    /// eligibility once `flip_after` results in a row agree. A provider
+    /// that alternates between success and failure does not flap in and out.
+    pub fn record_health(&self, success: bool, flip_after: u32) {
+        let step = |streak: i64| {
+            if success {
+                streak.max(0).saturating_add(1)
+            } else {
+                streak.min(0).saturating_sub(1)
+            }
+        };
+        let previous = self
+            .health_streak
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |streak| {
+                Some(step(streak))
+            })
+            .expect("the update never rejects");
+
+        // Recompute our new value, we can't use health_streak directly,
+        // because it could be already changed by concurrent call.
+        let streak = step(previous);
+        let flip = i64::from(flip_after);
+        // Using outdated `streak` for eligibility decision is harmless,
+        // because no single result can flip state (flip_after >= 2).
+        if streak >= flip {
+            self.set_eligible(true);
+        } else if streak <= -flip {
+            self.set_eligible(false);
+        }
     }
 }
 
@@ -148,6 +179,42 @@ mod tests {
         assert_eq!(error.id, "broken");
         assert!(error.to_string().contains("broken"), "{error}");
         assert!(error.to_string().contains("http://"), "{error}");
+    }
+
+    #[test]
+    fn a_streak_of_agreeing_results_flips_eligibility() {
+        let pool = pool(&["a"]);
+        let entry = &pool.entries()[0];
+
+        entry.record_health(true, 3);
+        entry.record_health(true, 3);
+        assert!(!entry.eligible(), "two of three is not admission");
+        entry.record_health(true, 3);
+        assert!(entry.eligible());
+
+        entry.record_health(false, 3);
+        entry.record_health(false, 3);
+        assert!(entry.eligible(), "still in rotation until the third");
+        entry.record_health(false, 3);
+        assert!(!entry.eligible());
+    }
+
+    #[test]
+    fn one_disagreeing_result_restarts_the_streak() {
+        let pool = pool(&["a"]);
+        let entry = &pool.entries()[0];
+
+        entry.record_health(false, 3);
+        entry.record_health(false, 3);
+        entry.record_health(true, 3);
+        assert_eq!(
+            entry.health_streak.load(Ordering::Relaxed),
+            1,
+            "a success wipes the failures rather than counting against them"
+        );
+        entry.record_health(false, 3);
+        entry.record_health(false, 3);
+        assert_eq!(entry.health_streak.load(Ordering::Relaxed), -2);
     }
 
     #[test]

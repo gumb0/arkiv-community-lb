@@ -527,3 +527,27 @@ async fn near_miss_methods_are_served() {
     }
     assert_eq!(fake.seen.lock().await.len(), 3);
 }
+
+#[tokio::test]
+async fn traffic_failures_alone_quarantine_a_provider() {
+    // No Monitor exists yet: this flip comes from traffic outcomes only.
+    let dead = dead_addr().await;
+    let answer = br#"{"jsonrpc":"2.0","id":31,"result":"ok"}"#;
+    let (live, _live_fake) = fake_provider(answer, Duration::ZERO).await;
+    let (service, public) = start_lb(&[dead, live], |config| {
+        config.health.flip_after = 2;
+    })
+    .await;
+
+    for _ in 0..4 {
+        let (status, _body) = post(&public, request(31)).await;
+        assert_eq!(status, 200, "the live provider carries every request");
+    }
+
+    let entries = service.pool.entries();
+    assert!(
+        !entries[0].eligible(),
+        "two failures in a row take the dead provider out of rotation"
+    );
+    assert!(entries[1].eligible(), "the answering provider stays in");
+}

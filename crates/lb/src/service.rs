@@ -51,6 +51,7 @@ pub async fn start(config: Config) -> Result<Service, StartError> {
         pool: pool.clone(),
         forwarder: Forwarder::new(&config.proxy),
         config: config.proxy.clone(),
+        flip_after: config.health.flip_after,
     });
 
     let (shutdown, _) = watch::channel(false);

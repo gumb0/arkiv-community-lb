@@ -26,6 +26,8 @@ pub struct ProxyState {
     pub pool: Arc<Pool>,
     pub forwarder: Forwarder,
     pub config: Proxy,
+    /// Health is flipped after this amount of consecutive fails / successes
+    pub flip_after: u32,
 }
 
 pub fn router(state: Arc<ProxyState>) -> Router {
@@ -124,10 +126,15 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
 
         match state.forwarder.attempt(entry, &body, timeout).await {
             Outcome::Answer(response) => {
+                entry.record_health(true, state.flip_after);
                 log_outcome(started, attempts, Some(&entry.id), "answered");
                 return response;
             }
             Outcome::TooLarge => {
+                // Response over default 64 MiB cap is provider pathology, not a
+                // client asking for too much, so it counts against the
+                // provider's health like any other non-answer.
+                entry.record_health(false, state.flip_after);
                 log_outcome(started, attempts, Some(&entry.id), "response_too_large");
                 return error(
                     StatusCode::BAD_GATEWAY,
@@ -136,7 +143,10 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
                     &body,
                 );
             }
-            Outcome::NoAnswer => continue,
+            Outcome::NoAnswer => {
+                entry.record_health(false, state.flip_after);
+                continue;
+            }
         }
     }
 

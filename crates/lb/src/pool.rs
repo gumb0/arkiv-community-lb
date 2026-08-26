@@ -51,6 +51,12 @@ impl Entry {
         })
     }
 
+    /// One completed forward. Answers, not attempts: this is the
+    /// billing basis.
+    pub fn record_served(&self) {
+        self.served.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn eligible(&self) -> bool {
         self.eligible.load(Ordering::Relaxed)
     }

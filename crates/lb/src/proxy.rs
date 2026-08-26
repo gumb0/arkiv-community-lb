@@ -127,6 +127,7 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
         match state.forwarder.attempt(entry, &body, timeout).await {
             Outcome::Answer(response) => {
                 entry.record_health(true, state.flip_after);
+                entry.record_served();
                 log_outcome(started, attempts, Some(&entry.id), "answered");
                 return response;
             }

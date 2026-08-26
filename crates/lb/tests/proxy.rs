@@ -551,3 +551,26 @@ async fn traffic_failures_alone_quarantine_a_provider() {
     );
     assert!(entries[1].eligible(), "the answering provider stays in");
 }
+
+#[tokio::test]
+async fn the_served_counter_follows_answers_not_attempts() {
+    use std::sync::atomic::Ordering;
+
+    let dead = dead_addr().await;
+    let answer = br#"{"jsonrpc":"2.0","id":32,"result":"ok"}"#;
+    let (live, _live_fake) = fake_provider(answer, Duration::ZERO).await;
+    let (service, public) = start_lb(&[dead, live], |_| {}).await;
+
+    for _ in 0..3 {
+        let (status, _body) = post(&public, request(32)).await;
+        assert_eq!(status, 200);
+    }
+
+    let entries = service.pool.entries();
+    assert_eq!(
+        entries[0].served.load(Ordering::Relaxed),
+        0,
+        "a provider that never answered bills nothing, though it was tried"
+    );
+    assert_eq!(entries[1].served.load(Ordering::Relaxed), 3);
+}

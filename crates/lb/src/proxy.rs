@@ -85,6 +85,7 @@ async fn handle(
     // Denied before selection: a refused request reaches no provider and
     // ticks nobody's health.
     if let Some(name) = denylist::denied(&body) {
+        tracing::info!(method_prefix = %name, outcome = %"denied", "request");
         return error(
             StatusCode::OK,
             jsonrpc::METHOD_DENIED,
@@ -99,11 +100,14 @@ async fn handle(
 /// under one request deadline — each attempt gets
 /// `min(attempt_timeout, remaining)`.
 async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
-    let deadline = Instant::now() + state.config.request_timeout;
-    let attempts = 1 + state.config.max_retries;
+    let started = Instant::now();
+    let deadline = started + state.config.request_timeout;
+    let max_attempts = 1 + state.config.max_retries;
+    let mut attempts = 0;
 
-    for _ in 0..attempts {
+    for _ in 0..max_attempts {
         let Some(entry) = state.pool.next_eligible() else {
+            log_outcome(started, attempts, None, "no_healthy_provider");
             return error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 jsonrpc::NO_HEALTHY_PROVIDER,
@@ -116,10 +120,15 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
             break;
         }
         let timeout = remaining.min(state.config.attempt_timeout);
+        attempts += 1;
 
         match state.forwarder.attempt(entry, &body, timeout).await {
-            Outcome::Answer(response) => return response,
+            Outcome::Answer(response) => {
+                log_outcome(started, attempts, Some(&entry.id), "answered");
+                return response;
+            }
             Outcome::TooLarge => {
+                log_outcome(started, attempts, Some(&entry.id), "response_too_large");
                 return error(
                     StatusCode::BAD_GATEWAY,
                     jsonrpc::RESPONSE_TOO_LARGE,
@@ -137,6 +146,7 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
     // provider produced an answer. Running out of time instead gets its
     // own code.
     if Instant::now() >= deadline {
+        log_outcome(started, attempts, None, "timed_out");
         error(
             StatusCode::GATEWAY_TIMEOUT,
             jsonrpc::REQUEST_TIMED_OUT,
@@ -144,6 +154,7 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
             &body,
         )
     } else {
+        log_outcome(started, attempts, None, "no_provider_answered");
         error(
             StatusCode::SERVICE_UNAVAILABLE,
             jsonrpc::NO_HEALTHY_PROVIDER,
@@ -151,6 +162,17 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
             &body,
         )
     }
+}
+
+/// How a request ended, for whoever is reading the log.
+fn log_outcome(started: Instant, attempts: u32, provider: Option<&str>, outcome: &str) {
+    tracing::info!(
+        provider = %provider.unwrap_or("-"),
+        attempts,
+        latency_ms = started.elapsed().as_millis(),
+        outcome = %outcome,
+        "request"
+    );
 }
 
 /// An LB error as a response: envelope, `lb: ` prefix, id echoed when the

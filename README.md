@@ -34,6 +34,19 @@ itself does not yet.
 The node-operator side lives in the companion repo,
 [arkiv-community-node](https://github.com/gumb0/arkiv-community-node).
 
+## Known limitations
+
+Deliberate for the first version, not oversights:
+
+- One load balancer instance, no redundancy: a restart is a short outage
+  for everyone using the endpoint.
+- Method filtering is a text search over the request body rather than a
+  JSON parse, so it can refuse a request that merely mentions a refused
+  name ([docs/ENDPOINT.md](docs/ENDPOINT.md)) and cannot count requests
+  per method.
+- Nothing limits how many requests a client may send, or how many run at
+  once, so memory use scales with concurrency times the response cap.
+
 ## License
 
 [Apache-2.0](LICENSE)

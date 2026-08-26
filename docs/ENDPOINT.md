@@ -39,6 +39,10 @@ generally work; the lists below are what is deliberately blocked.
 A denied method gets a normal JSON-RPC error response (below), HTTP 200 —
 it is an answered request, same as a node's own method-not-found.
 
+**Known limitation:** the check is a text search over the request body,
+so a request that merely mentions one of these names anywhere is refused
+too — a query filtering on the string `admin_`, for example.
+
 ## Errors the load balancer returns
 
 Errors from the serving node pass through unchanged, including the

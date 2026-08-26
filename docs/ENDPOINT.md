@@ -55,7 +55,7 @@ reach the client.
 
 | Code | Meaning | HTTP |
 |---|---|---|
-| −32050 | method denied | 200 |
+| −32050 | method not supported | 200 |
 | −32051 | no healthy provider | 503 |
 | −32052 | request timed out | 504 |
 | −32053 | response too large | 502 |

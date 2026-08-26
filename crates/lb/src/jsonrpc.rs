@@ -6,6 +6,7 @@
 
 use serde_json::{Value, json};
 
+pub const METHOD_DENIED: i32 = -32050;
 pub const NO_HEALTHY_PROVIDER: i32 = -32051;
 pub const REQUEST_TIMED_OUT: i32 = -32052;
 pub const RESPONSE_TOO_LARGE: i32 = -32053;

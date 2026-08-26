@@ -493,3 +493,37 @@ async fn empty_body_is_refused_without_spending_the_budget() {
         "nodes answer an empty body with 400, which would burn every attempt"
     );
 }
+
+#[tokio::test]
+async fn denied_method_is_refused_before_any_provider() {
+    let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
+    let (_service, public) = start_lb(&[addr], |_| {}).await;
+
+    let denied = json!({"jsonrpc": "2.0", "id": 21, "method": "admin_peers", "params": []});
+    let (status, body) = post(&public, denied).await;
+    assert_eq!(status, 200, "a denial is an answered request");
+    assert_eq!(body["error"]["code"], -32050);
+    assert_eq!(body["id"], 21);
+    let message = body["error"]["message"].as_str().expect("message");
+    assert_eq!(message, "lb: method not supported: admin_", "{message}");
+    assert_eq!(
+        fake.seen.lock().await.len(),
+        0,
+        "a refused request must not reach a node"
+    );
+}
+
+#[tokio::test]
+async fn near_miss_methods_are_served() {
+    let answer = br#"{"jsonrpc":"2.0","id":22,"result":"ok"}"#;
+    let (addr, fake) = fake_provider(answer, Duration::ZERO).await;
+    let (_service, public) = start_lb(&[addr], |_| {}).await;
+
+    for method in ["eth_sendRawTransaction", "eth_getProof", "debug_traceBlock"] {
+        let call = json!({"jsonrpc": "2.0", "id": 22, "method": method, "params": []});
+        let (status, body) = post(&public, call).await;
+        assert_eq!(status, 200, "{method}");
+        assert_eq!(body["result"], "ok", "{method} must reach a node");
+    }
+    assert_eq!(fake.seen.lock().await.len(), 3);
+}

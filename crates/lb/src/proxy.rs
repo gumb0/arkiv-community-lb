@@ -16,6 +16,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::{
     config::Proxy,
+    denylist,
     forwarder::{Forwarder, Outcome},
     jsonrpc,
     pool::Pool,
@@ -80,6 +81,16 @@ async fn handle(
             "Empty request body: expected a JSON-RPC request.\n",
         )
             .into_response();
+    }
+    // Denied before selection: a refused request reaches no provider and
+    // ticks nobody's health.
+    if let Some(name) = denylist::denied(&body) {
+        return error(
+            StatusCode::OK,
+            jsonrpc::METHOD_DENIED,
+            &format!("method not supported: {name}"),
+            &body,
+        );
     }
     forward_with_failover(&state, body).await
 }

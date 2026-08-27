@@ -574,3 +574,33 @@ async fn the_served_counter_follows_answers_not_attempts() {
     );
     assert_eq!(entries[1].served.load(Ordering::Relaxed), 3);
 }
+
+#[tokio::test]
+async fn a_quarantined_provider_stops_receiving_traffic() {
+    use axum::http::StatusCode;
+
+    let (broken, broken_fake) =
+        broken_provider(StatusCode::BAD_GATEWAY, b"nope", Duration::ZERO).await;
+    let answer = br#"{"jsonrpc":"2.0","id":41,"result":"ok"}"#;
+    let (live, live_fake) = fake_provider(answer, Duration::ZERO).await;
+    let (_service, public) = start_lb(&[broken, live], |config| {
+        config.health.flip_after = 2;
+    })
+    .await;
+
+    for _ in 0..6 {
+        let (status, _body) = post(&public, request(41)).await;
+        assert_eq!(status, 200);
+    }
+
+    assert_eq!(
+        broken_fake.seen.lock().await.len(),
+        2,
+        "two failures flip the provider out; after that it gets nothing"
+    );
+    assert_eq!(
+        live_fake.seen.lock().await.len(),
+        6,
+        "the live provider carried every request"
+    );
+}

@@ -12,7 +12,13 @@ use std::{
 };
 
 use axum::{Router, body::Bytes, http::HeaderMap, response::IntoResponse};
-use lb::config::{Config, Provider};
+use lb::{
+    config::{Config, Provider},
+    jsonrpc::{
+        METHOD_DENIED, NO_HEALTHY_PROVIDER, REQUEST_TIMED_OUT, REQUEST_TOO_LARGE,
+        RESPONSE_TOO_LARGE,
+    },
+};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
@@ -246,7 +252,10 @@ async fn http_error_body_never_reaches_the_client() {
 
     let (status, body) = post(&public, request(2)).await;
     assert_eq!(status, 503); // Service Unavailable
-    assert_eq!(body["error"]["code"], -32051, "LB envelope, not the HTML");
+    assert_eq!(
+        body["error"]["code"], NO_HEALTHY_PROVIDER,
+        "LB envelope, not the HTML"
+    );
     assert_eq!(
         broken_fake.seen.lock().await.len(),
         3,
@@ -274,7 +283,7 @@ async fn exhausted_budget_answers_no_provider_with_the_request_id() {
 
     let (status, body) = post(&public, request(9)).await;
     assert_eq!(status, 503); // Service Unavailable
-    assert_eq!(body["error"]["code"], -32051);
+    assert_eq!(body["error"]["code"], NO_HEALTHY_PROVIDER);
     assert_eq!(body["id"], 9, "error envelopes echo the request id");
     let message = body["error"]["message"].as_str().expect("message");
     assert!(message.starts_with("lb: "), "{message}");
@@ -313,7 +322,7 @@ async fn deadline_wins_over_remaining_budget() {
 
     let (status, body) = post(&public, request(5)).await;
     assert_eq!(status, 504); // Gateway Timeout
-    assert_eq!(body["error"]["code"], -32052);
+    assert_eq!(body["error"]["code"], REQUEST_TIMED_OUT);
 }
 
 #[tokio::test]
@@ -328,7 +337,7 @@ async fn oversized_response_is_terminal_not_retried() {
 
     let (status, body) = post(&public, request(6)).await;
     assert_eq!(status, 502); // Bad Gateway
-    assert_eq!(body["error"]["code"], -32053);
+    assert_eq!(body["error"]["code"], RESPONSE_TOO_LARGE);
     assert_eq!(
         ok_fake.seen.lock().await.len(),
         0,
@@ -355,7 +364,7 @@ async fn oversized_request_is_refused_before_any_provider() {
         json!({"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": ["x".repeat(1024)]});
     let (status, body) = post(&public, big).await;
     assert_eq!(status, 413); // Payload Too Large
-    assert_eq!(body["error"]["code"], -32054);
+    assert_eq!(body["error"]["code"], REQUEST_TOO_LARGE);
     assert_eq!(fake.seen.lock().await.len(), 0);
 }
 
@@ -390,7 +399,10 @@ async fn truncated_body_is_not_reported_as_too_large() {
         answer.starts_with("HTTP/1.1 400"), // Bad Request
         "a truncated body is a bad request, not a size verdict: {answer:?}"
     );
-    assert!(!answer.contains("-32054"), "{answer:?}");
+    assert!(
+        !answer.contains(&REQUEST_TOO_LARGE.to_string()),
+        "{answer:?}"
+    );
     assert_eq!(
         fake.seen.lock().await.len(),
         0,
@@ -453,7 +465,7 @@ async fn chunked_response_over_the_cap_is_refused() {
 
     let (status, body) = post(&public, request(12)).await;
     assert_eq!(status, 502); // Bad Gateway
-    assert_eq!(body["error"]["code"], -32053);
+    assert_eq!(body["error"]["code"], RESPONSE_TOO_LARGE);
     assert_eq!(
         flood_hits.load(Ordering::Relaxed),
         1,
@@ -538,7 +550,7 @@ async fn denied_method_is_refused_before_any_provider() {
     let denied = json!({"jsonrpc": "2.0", "id": 21, "method": "admin_peers", "params": []});
     let (status, body) = post(&public, denied).await;
     assert_eq!(status, 200, "a denial is an answered request");
-    assert_eq!(body["error"]["code"], -32050);
+    assert_eq!(body["error"]["code"], METHOD_DENIED);
     assert_eq!(body["id"], 21);
     let message = body["error"]["message"].as_str().expect("message");
     assert_eq!(message, "lb: method not supported: admin_", "{message}");

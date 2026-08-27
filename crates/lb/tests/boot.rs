@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use lb::config::Config;
+use lb::{config::Config, jsonrpc::NO_HEALTHY_PROVIDER};
 
 #[tokio::test]
 async fn boots_serves_and_shuts_down() {
@@ -38,7 +38,7 @@ async fn boots_serves_and_shuts_down() {
         .expect("public answers");
     assert_eq!(response.status(), 503); // Service Unavailable
     let body: serde_json::Value = response.json().await.expect("json");
-    assert_eq!(body["error"]["code"], -32051);
+    assert_eq!(body["error"]["code"], NO_HEALTHY_PROVIDER);
     let message = body["error"]["message"].as_str().expect("message");
     assert!(message.starts_with("lb: "), "{message}");
 

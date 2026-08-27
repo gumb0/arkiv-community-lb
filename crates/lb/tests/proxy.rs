@@ -611,3 +611,33 @@ async fn a_quarantined_provider_stops_receiving_traffic() {
         "the live provider carried every request"
     );
 }
+
+#[tokio::test]
+async fn preflight_is_answered_without_a_provider() {
+    let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
+    let (_service, public) = start_lb(&[addr], |_| {}).await;
+
+    // What a browser sends before a cross-origin POST.
+    let response = reqwest::Client::new()
+        .request(reqwest::Method::OPTIONS, &public)
+        .header("origin", "https://example.org")
+        .header("access-control-request-method", "POST")
+        .header("access-control-request-headers", "content-type")
+        .send()
+        .await
+        .expect("lb answers");
+    assert!(
+        response.status().is_success(),
+        "preflight must succeed: {}",
+        response.status()
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("*"),
+        "browser clients are part of the contract"
+    );
+    assert_eq!(fake.seen.lock().await.len(), 0);
+}

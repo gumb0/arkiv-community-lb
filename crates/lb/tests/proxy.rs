@@ -5,7 +5,7 @@
 use std::{
     net::SocketAddr,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -20,7 +20,6 @@ use lb::{
     },
 };
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
 
 /// One recorded request: the headers and body a provider saw.
 type Seen = (HeaderMap, Bytes);
@@ -30,6 +29,13 @@ struct Fake {
     status: axum::http::StatusCode,
     response: Vec<u8>,
     delay: Duration,
+}
+
+impl Fake {
+    /// How many requests reached this provider.
+    fn requests(&self) -> usize {
+        self.seen.lock().expect("seen").len()
+    }
 }
 
 /// A fake provider on a real socket; answers every request the same way.
@@ -53,7 +59,7 @@ async fn broken_provider(
     let app = Router::new().fallback(move |headers: HeaderMap, body: Bytes| {
         let state = state.clone();
         async move {
-            state.seen.lock().await.push((headers, body));
+            state.seen.lock().expect("seen").push((headers, body));
             tokio::time::sleep(state.delay).await;
             (state.status, state.response.clone()).into_response()
         }
@@ -184,7 +190,7 @@ async fn relays_byte_identical_and_strips_client_headers() {
     assert_eq!(status, 200);
     assert_eq!(body["result"], "0x2a");
 
-    let seen = fake.seen.lock().await;
+    let seen = fake.seen.lock().expect("seen");
     let (headers, request_body) = &seen[0];
     assert_eq!(
         serde_json::from_slice::<Value>(request_body).expect("json"),
@@ -215,9 +221,9 @@ async fn provider_error_is_an_answer_not_retried() {
     let (status, body) = post(&public, request(1)).await;
     assert_eq!(status, 200);
     assert_eq!(body["error"]["code"], -32601);
-    assert_eq!(err_fake.seen.lock().await.len(), 1);
+    assert_eq!(err_fake.requests(), 1);
     assert_eq!(
-        ok_fake.seen.lock().await.len(),
+        ok_fake.requests(),
         0,
         "an answer is never retried elsewhere"
     );
@@ -241,7 +247,7 @@ async fn http_error_status_fails_over() {
     let (status, body) = post(&public, request(8)).await;
     assert_eq!(status, 200, "the client never sees the broken provider");
     assert_eq!(body["result"], "ok");
-    assert_eq!(broken_fake.seen.lock().await.len(), 1);
+    assert_eq!(broken_fake.requests(), 1);
 }
 
 #[tokio::test]
@@ -263,7 +269,7 @@ async fn http_error_body_never_reaches_the_client() {
         "LB envelope, not the HTML"
     );
     assert_eq!(
-        broken_fake.seen.lock().await.len(),
+        broken_fake.requests(),
         3,
         "the full budget was spent trying"
     );
@@ -279,7 +285,7 @@ async fn dead_provider_fails_over_invisibly() {
     let (status, body) = post(&public, request(3)).await;
     assert_eq!(status, 200, "the client never sees the dead provider");
     assert_eq!(body["result"], "ok");
-    assert_eq!(fake.seen.lock().await.len(), 1);
+    assert_eq!(fake.requests(), 1);
 }
 
 #[tokio::test]
@@ -313,7 +319,7 @@ async fn slow_provider_times_out_and_fails_over() {
         started.elapsed() < Duration::from_millis(450),
         "failover, not waiting out the sleep"
     );
-    assert_eq!(slow_fake.seen.lock().await.len(), 1);
+    assert_eq!(slow_fake.requests(), 1);
 }
 
 #[tokio::test]
@@ -345,7 +351,7 @@ async fn oversized_response_is_terminal_not_retried() {
     assert_eq!(status, 502); // Bad Gateway
     assert_eq!(body["error"]["code"], RESPONSE_TOO_LARGE);
     assert_eq!(
-        ok_fake.seen.lock().await.len(),
+        ok_fake.requests(),
         0,
         "re-downloading elsewhere helps nobody"
     );
@@ -371,7 +377,7 @@ async fn oversized_request_is_refused_before_any_provider() {
     let (status, body) = post(&public, big).await;
     assert_eq!(status, 413); // Payload Too Large
     assert_eq!(body["error"]["code"], REQUEST_TOO_LARGE);
-    assert_eq!(fake.seen.lock().await.len(), 0);
+    assert_eq!(fake.requests(), 0);
 }
 
 #[tokio::test]
@@ -409,11 +415,7 @@ async fn truncated_body_is_not_reported_as_too_large() {
         !answer.contains(&REQUEST_TOO_LARGE.to_string()),
         "{answer:?}"
     );
-    assert_eq!(
-        fake.seen.lock().await.len(),
-        0,
-        "nothing reached a provider"
-    );
+    assert_eq!(fake.requests(), 0, "nothing reached a provider");
 }
 
 #[tokio::test]
@@ -446,7 +448,7 @@ async fn stalled_body_read_times_out_and_fails_over() {
     );
     assert_eq!(stall_hits.load(Ordering::Relaxed), 1);
     assert_eq!(
-        live_fake.seen.lock().await.len(),
+        live_fake.requests(),
         1,
         "one failover, one request to the live provider"
     );
@@ -493,7 +495,7 @@ async fn no_retries_means_one_attempt() {
     let (status, _body) = post(&public, request(13)).await;
     assert_eq!(status, 503); // Service Unavailable
     assert_eq!(
-        broken_fake.seen.lock().await.len(),
+        broken_fake.requests(),
         1,
         "max_retries = 0 is one attempt, not zero and not two"
     );
@@ -522,7 +524,7 @@ async fn get_is_answered_by_the_lb_not_a_provider() {
     assert!(content_type.starts_with("text/plain"), "{content_type}");
     assert!(response.text().await.expect("body").contains("POST"));
     assert_eq!(
-        fake.seen.lock().await.len(),
+        fake.requests(),
         0,
         "a browser visit must not cost a provider request"
     );
@@ -543,7 +545,7 @@ async fn empty_body_is_refused_without_spending_the_budget() {
 
     assert_eq!(response.status(), 400); // Bad Request
     assert_eq!(
-        fake.seen.lock().await.len(),
+        fake.requests(),
         0,
         "nodes answer an empty body with 400, which would burn every attempt"
     );
@@ -562,7 +564,7 @@ async fn denied_method_is_refused_before_any_provider() {
     let message = body["error"]["message"].as_str().expect("message");
     assert_eq!(message, "lb: method not supported: admin_", "{message}");
     assert_eq!(
-        fake.seen.lock().await.len(),
+        fake.requests(),
         0,
         "a refused request must not reach a node"
     );
@@ -580,7 +582,7 @@ async fn near_miss_methods_are_served() {
         assert_eq!(status, 200, "{method}");
         assert_eq!(body["result"], "ok", "{method} must reach a node");
     }
-    assert_eq!(fake.seen.lock().await.len(), 3);
+    assert_eq!(fake.requests(), 3);
 }
 
 #[tokio::test]
@@ -649,12 +651,12 @@ async fn a_quarantined_provider_stops_receiving_traffic() {
     }
 
     assert_eq!(
-        broken_fake.seen.lock().await.len(),
+        broken_fake.requests(),
         2,
         "two failures flip the provider out; after that it gets nothing"
     );
     assert_eq!(
-        live_fake.seen.lock().await.len(),
+        live_fake.requests(),
         6,
         "the live provider carried every request"
     );
@@ -687,7 +689,7 @@ async fn preflight_is_answered_without_a_provider() {
         Some("*"),
         "browser clients are part of the contract"
     );
-    assert_eq!(fake.seen.lock().await.len(), 0);
+    assert_eq!(fake.requests(), 0);
 }
 
 #[tokio::test]
@@ -706,7 +708,7 @@ async fn a_batch_relays_untouched() {
     assert_eq!(body[0]["result"], "0x1");
     assert_eq!(body[1]["result"], "0x2");
 
-    let seen = fake.seen.lock().await;
+    let seen = fake.seen.lock().expect("seen");
     assert_eq!(seen.len(), 1, "one batch is one provider request");
     assert_eq!(
         serde_json::from_slice::<Value>(&seen[0].1).expect("json"),

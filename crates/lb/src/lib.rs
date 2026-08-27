@@ -7,6 +7,7 @@ pub mod config;
 pub mod denylist;
 pub mod forwarder;
 pub mod jsonrpc;
+pub mod monitor;
 pub mod pool;
 pub mod proxy;
 pub mod service;

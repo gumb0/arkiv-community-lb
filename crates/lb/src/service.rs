@@ -7,14 +7,14 @@ use std::sync::Arc;
 
 use tokio::{net::TcpListener, sync::watch, task::JoinHandle};
 
-use crate::{admin, config::Config, forwarder::Forwarder, pool, proxy};
+use crate::{admin, config::Config, forwarder::Forwarder, monitor, pool, proxy};
 
 pub struct Service {
     pub public_addr: SocketAddr,
     pub admin_addr: SocketAddr,
     pub pool: Arc<pool::Pool>,
     shutdown: watch::Sender<bool>,
-    servers: Vec<JoinHandle<()>>,
+    tasks: Vec<JoinHandle<()>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -47,25 +47,32 @@ pub async fn start(config: Config) -> Result<Service, StartError> {
     })?;
 
     let pool = Arc::new(pool::Pool::new(&config.providers)?);
+    // One client for everything outbound — forwards and probes go to the
+    // same providers, so they share one connection pool.
+    let client = reqwest::Client::new();
     let state = Arc::new(proxy::ProxyState {
         pool: pool.clone(),
-        forwarder: Forwarder::new(&config.proxy),
+        forwarder: Forwarder::new(client.clone(), &config.proxy),
         config: config.proxy.clone(),
         flip_after: config.health.flip_after,
     });
 
     let (shutdown, _) = watch::channel(false);
-    let servers = vec![
+    let mut tasks = vec![
         serve(public, proxy::router(state), shutdown.subscribe()),
         serve(admin, admin::router(), shutdown.subscribe()),
     ];
+    if !config.health.disable_probing {
+        let monitor = monitor::Monitor::new(pool.clone(), client, config.health.clone());
+        tasks.push(tokio::spawn(monitor.run(shutdown.subscribe())));
+    }
 
     Ok(Service {
         public_addr,
         admin_addr,
         pool,
         shutdown,
-        servers,
+        tasks,
     })
 }
 
@@ -87,11 +94,11 @@ fn serve(
 }
 
 impl Service {
-    /// Stops both listeners and waits for them to finish.
+    /// Stops every task — listeners and Monitor — and waits them out.
     pub async fn shutdown(self) {
         let _ = self.shutdown.send(true);
-        for server in self.servers {
-            let _ = server.await;
+        for task in self.tasks {
+            let _ = task.await;
         }
     }
 }

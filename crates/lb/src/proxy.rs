@@ -19,7 +19,7 @@ use crate::{
     denylist,
     forwarder::{Forwarder, Outcome},
     jsonrpc,
-    pool::Pool,
+    pool::{HealthSignal, Pool},
 };
 
 pub struct ProxyState {
@@ -126,7 +126,7 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
 
         match state.forwarder.attempt(entry, &body, timeout).await {
             Outcome::Answer(response) => {
-                entry.record_health(true, state.flip_after);
+                entry.record_health(true, state.flip_after, HealthSignal::Traffic);
                 entry.record_served();
                 log_outcome(started, attempts, Some(&entry.id), "answered");
                 return response;
@@ -135,7 +135,7 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
                 // Response over default 64 MiB cap is provider pathology, not a
                 // client asking for too much, so it counts against the
                 // provider's health like any other non-answer.
-                entry.record_health(false, state.flip_after);
+                entry.record_health(false, state.flip_after, HealthSignal::Traffic);
                 log_outcome(started, attempts, Some(&entry.id), "response_too_large");
                 return error(
                     StatusCode::BAD_GATEWAY,
@@ -145,7 +145,7 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
                 );
             }
             Outcome::NoAnswer => {
-                entry.record_health(false, state.flip_after);
+                entry.record_health(false, state.flip_after, HealthSignal::Traffic);
                 continue;
             }
         }

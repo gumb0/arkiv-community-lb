@@ -32,9 +32,9 @@ pub enum Outcome {
 }
 
 impl Forwarder {
-    pub fn new(config: &Proxy) -> Self {
+    pub fn new(client: reqwest::Client, config: &Proxy) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client,
             max_response_size: config.max_response_size.as_u64() as usize,
         }
     }

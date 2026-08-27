@@ -135,6 +135,9 @@ async fn start_lb_with(
     let mut config = Config::default();
     config.listen.public = "127.0.0.1:0".parse().expect("addr");
     config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    // No Monitor: these tests set eligibility by hand, and a probe
+    // sweep would pollute every fake's request log.
+    config.health.disable_probing = true;
     config.providers = addrs
         .iter()
         .enumerate()

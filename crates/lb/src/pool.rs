@@ -1,7 +1,7 @@
 //! The provider pool: long-lived entries, one per configured provider.
 //! Membership is fixed until restart; everything mutable on an entry is
-//! atomic, so the hot path reads without locks. The Monitor is the only
-//! writer of eligibility.
+//! atomic, so the hot path reads without locks. Probes and traffic both
+//! feed the health streak; only probes bring a provider into rotation.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
@@ -65,10 +65,11 @@ impl Entry {
         self.eligible.store(value, Ordering::Relaxed);
     }
 
-    /// Records one health signal, from a probe or from traffic, and flips
-    /// eligibility once `flip_after` results in a row agree. A provider
-    /// that alternates between success and failure does not flap in and out.
-    pub fn record_health(&self, success: bool, flip_after: u32) {
+    /// Records one health signal and flips eligibility once `flip_after`
+    /// results in a row agree. A provider that alternates between
+    /// success and failure does not flap in and out.
+    /// Every flip logs one event naming its source.
+    pub fn record_health(&self, success: bool, flip_after: u32, source: HealthSignal) {
         let step = |streak: i64| {
             if success {
                 streak.max(0).saturating_add(1)
@@ -90,10 +91,40 @@ impl Entry {
         // Using outdated `streak` for eligibility decision is harmless,
         // because no single result can flip state (flip_after >= 2).
         if streak >= flip {
-            self.set_eligible(true);
+            self.set_eligible_and_log(true, source);
         } else if streak <= -flip {
-            self.set_eligible(false);
+            self.set_eligible_and_log(false, source);
         }
+    }
+
+    /// Sets eligibility and logs the flip when the value actually
+    /// changed. `swap` makes check-and-set one atomic step, so two
+    /// racing callers cannot both log the same flip.
+    fn set_eligible_and_log(&self, value: bool, source: HealthSignal) {
+        if self.eligible.swap(value, Ordering::Relaxed) != value {
+            tracing::info!(
+                provider = %self.id,
+                eligible = value,
+                source = %source,
+                "health flip"
+            );
+        }
+    }
+}
+
+/// Where a health signal came from, for the flip log line.
+#[derive(Debug, Clone, Copy)]
+pub enum HealthSignal {
+    Probe,
+    Traffic,
+}
+
+impl std::fmt::Display for HealthSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Probe => "probe",
+            Self::Traffic => "traffic",
+        })
     }
 }
 
@@ -192,16 +223,16 @@ mod tests {
         let pool = pool(&["a"]);
         let entry = &pool.entries()[0];
 
-        entry.record_health(true, 3);
-        entry.record_health(true, 3);
+        entry.record_health(true, 3, HealthSignal::Probe);
+        entry.record_health(true, 3, HealthSignal::Probe);
         assert!(!entry.eligible(), "two of three is not admission");
-        entry.record_health(true, 3);
+        entry.record_health(true, 3, HealthSignal::Probe);
         assert!(entry.eligible());
 
-        entry.record_health(false, 3);
-        entry.record_health(false, 3);
+        entry.record_health(false, 3, HealthSignal::Probe);
+        entry.record_health(false, 3, HealthSignal::Probe);
         assert!(entry.eligible(), "still in rotation until the third");
-        entry.record_health(false, 3);
+        entry.record_health(false, 3, HealthSignal::Probe);
         assert!(!entry.eligible());
     }
 
@@ -210,16 +241,16 @@ mod tests {
         let pool = pool(&["a"]);
         let entry = &pool.entries()[0];
 
-        entry.record_health(false, 3);
-        entry.record_health(false, 3);
-        entry.record_health(true, 3);
+        entry.record_health(false, 3, HealthSignal::Probe);
+        entry.record_health(false, 3, HealthSignal::Probe);
+        entry.record_health(true, 3, HealthSignal::Probe);
         assert_eq!(
             entry.health_streak.load(Ordering::Relaxed),
             1,
             "a success wipes the failures rather than counting against them"
         );
-        entry.record_health(false, 3);
-        entry.record_health(false, 3);
+        entry.record_health(false, 3, HealthSignal::Probe);
+        entry.record_health(false, 3, HealthSignal::Probe);
         assert_eq!(entry.health_streak.load(Ordering::Relaxed), -2);
     }
 

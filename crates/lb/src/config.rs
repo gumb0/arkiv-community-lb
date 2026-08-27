@@ -59,6 +59,10 @@ pub struct Health {
     #[serde(with = "humantime_serde")]
     pub chainid_check_interval: Duration,
     pub lag_tolerance_blocks: u64,
+    /// Test hook, unreachable from the toml: proxy tests set eligibility
+    /// by hand and must not race a probe sweep.
+    #[serde(skip)]
+    pub disable_probing: bool,
 }
 
 impl Default for Health {
@@ -71,6 +75,7 @@ impl Default for Health {
             ref_height_interval: Duration::ZERO,
             chainid_check_interval: Duration::from_secs(5 * 60),
             lag_tolerance_blocks: 30,
+            disable_probing: false,
         }
     }
 }
@@ -143,6 +148,11 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
+        if self.health.probe_interval.is_zero() {
+            return Err(ConfigError::Invalid(
+                "health.probe_interval must be greater than zero".into(),
+            ));
+        }
         if self.health.flip_after < 2 {
             return Err(ConfigError::Invalid(format!(
                 "health.flip_after is {}, minimum is 2: a provider's health may \
@@ -197,6 +207,18 @@ mod tests {
         assert_eq!(config.proxy.max_response_size, ByteSize::mib(64));
         assert_eq!(config.listen.public.port(), 8545);
         assert!(config.providers.is_empty());
+    }
+
+    #[test]
+    fn zero_probe_interval_is_refused() {
+        let error = parse("[health]\nprobe_interval = \"0s\"\n").expect_err("must refuse");
+        assert!(error.to_string().contains("probe_interval"), "{error}");
+    }
+
+    #[test]
+    fn the_probing_test_hook_is_not_reachable_from_toml() {
+        parse("[health]\ndisable_probing = true\n")
+            .expect_err("a serde-skipped field must stay unknown to the toml");
     }
 
     #[test]

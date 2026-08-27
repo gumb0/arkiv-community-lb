@@ -28,6 +28,7 @@ import {
   bool,
   bytes32,
   dec,
+  EntityMutationError,
   ExpirationTime,
   type Expiry,
   i32,
@@ -202,16 +203,17 @@ function errorChain(error: unknown): { name: string; message: string }[] {
 /**
  * The hash of a transaction that was sent but whose receipt never arrived
  * (viem gives up after 180 s and the SDK does not expose that timeout).
- *
- * The hash only exists in the error's message — neither `EntityMutationError`
- * nor viem's timeout error carries it as a field — so this reads it back out.
- * Message parsing is the fallback tier by design, and this is the case it is
- * for: a transport-level outcome with no typed carrier.
+ * The SDK carries the hash on the error since 0.8.0-dev.3; the timeout
+ * itself is recognised by viem's error class somewhere in the cause chain.
  */
-function pendingTxHash(chain: { name: string; message: string }[]): Hex | undefined {
-  const timedOut = chain.find((link) => link.name === "WaitForTransactionReceiptTimeoutError")
-  const hash = timedOut?.message.match(/0x[0-9a-fA-F]{64}/)?.[0]
-  return hash as Hex | undefined
+function pendingTxHash(error: unknown): Hex | undefined {
+  if (!(error instanceof EntityMutationError) || error.txHash === undefined) return undefined
+  let current: unknown = error.cause
+  while (current instanceof Error) {
+    if (current.constructor.name === "WaitForTransactionReceiptTimeoutError") return error.txHash
+    current = current.cause
+  }
+  return undefined
 }
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024
@@ -267,7 +269,7 @@ export function startService(writer: Writer, options: ServiceOptions = {}): Prom
     }
     const respondError = (status: number, error: unknown) => {
       const chain = errorChain(error)
-      const pending = pendingTxHash(chain)
+      const pending = pendingTxHash(error)
       if (pending) return respond(504, { error: chain, pending: { txHash: pending } })
       respond(status, { error: chain })
     }

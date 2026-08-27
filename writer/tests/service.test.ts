@@ -347,11 +347,12 @@ describe("failures", () => {
   })
 
   it("a receipt timeout is 504 with the pending hash, not 500", async () => {
-    // The hash lives only in viem's message; using the real error class means
-    // this test fails if upstream rewords it, which is the point.
+    // Built the way the SDK builds it: viem's timeout as the cause, the
+    // hash as a field.
     const timeout = new WaitForTransactionReceiptTimeoutError({ hash: TX_HASH })
     fake.state.failWith = new EntityMutationError(`Transaction failed: ${timeout.message}`, {
       cause: timeout,
+      txHash: TX_HASH,
     })
     const { status, body } = await post("/create", minimalCreate)
     fake.state.failWith = undefined

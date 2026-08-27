@@ -20,7 +20,7 @@
     "replay": "node --env-file-if-exists=../.env --import tsx probes/replay-probe.ts"
   },
   "dependencies": {
-    "@arkiv-network/sdk": "0.8.0-dev.2",
+    "@arkiv-network/sdk": "0.8.0-dev.3",
     "viem": "^2.21.0"
   },
   "devDependencies": {

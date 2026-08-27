@@ -641,3 +641,28 @@ async fn preflight_is_answered_without_a_provider() {
     );
     assert_eq!(fake.seen.lock().await.len(), 0);
 }
+
+#[tokio::test]
+async fn a_batch_relays_untouched() {
+    let answer =
+        br#"[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"}]"#;
+    let (addr, fake) = fake_provider(answer, Duration::ZERO).await;
+    let (_service, public) = start_lb(&[addr], |_| {}).await;
+
+    let batch = json!([
+        {"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []},
+        {"jsonrpc": "2.0", "id": 2, "method": "eth_chainId", "params": []},
+    ]);
+    let (status, body) = post(&public, batch.clone()).await;
+    assert_eq!(status, 200);
+    assert_eq!(body[0]["result"], "0x1");
+    assert_eq!(body[1]["result"], "0x2");
+
+    let seen = fake.seen.lock().await;
+    assert_eq!(seen.len(), 1, "one batch is one provider request");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&seen[0].1).expect("json"),
+        batch,
+        "the array crosses as one body, never split or re-encoded"
+    );
+}

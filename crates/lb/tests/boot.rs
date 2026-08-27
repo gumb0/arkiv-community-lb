@@ -36,7 +36,7 @@ async fn boots_serves_and_shuts_down() {
         .send()
         .await
         .expect("public answers");
-    assert_eq!(response.status(), 503);
+    assert_eq!(response.status(), 503); // Service Unavailable
     let body: serde_json::Value = response.json().await.expect("json");
     assert_eq!(body["error"]["code"], -32051);
     let message = body["error"]["message"].as_str().expect("message");
@@ -50,7 +50,7 @@ async fn boots_serves_and_shuts_down() {
         .expect("answers");
     assert_eq!(
         cross.status(),
-        405,
+        405, // Method Not Allowed
         "admin routes must not exist on the public listener"
     );
     let unknown = client
@@ -58,7 +58,7 @@ async fn boots_serves_and_shuts_down() {
         .send()
         .await
         .expect("answers");
-    assert_eq!(unknown.status(), 404);
+    assert_eq!(unknown.status(), 404); // Not Found
 
     tokio::time::timeout(Duration::from_secs(5), service.shutdown())
         .await

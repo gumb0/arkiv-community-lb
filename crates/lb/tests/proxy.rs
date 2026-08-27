@@ -245,7 +245,7 @@ async fn http_error_body_never_reaches_the_client() {
     let (_service, public) = start_lb(&[broken], |_| {}).await;
 
     let (status, body) = post(&public, request(2)).await;
-    assert_eq!(status, 503);
+    assert_eq!(status, 503); // Service Unavailable
     assert_eq!(body["error"]["code"], -32051, "LB envelope, not the HTML");
     assert_eq!(
         broken_fake.seen.lock().await.len(),
@@ -273,7 +273,7 @@ async fn exhausted_budget_answers_no_provider_with_the_request_id() {
     let (_service, public) = start_lb(&addrs, |_| {}).await;
 
     let (status, body) = post(&public, request(9)).await;
-    assert_eq!(status, 503);
+    assert_eq!(status, 503); // Service Unavailable
     assert_eq!(body["error"]["code"], -32051);
     assert_eq!(body["id"], 9, "error envelopes echo the request id");
     let message = body["error"]["message"].as_str().expect("message");
@@ -312,7 +312,7 @@ async fn deadline_wins_over_remaining_budget() {
     .await;
 
     let (status, body) = post(&public, request(5)).await;
-    assert_eq!(status, 504);
+    assert_eq!(status, 504); // Gateway Timeout
     assert_eq!(body["error"]["code"], -32052);
 }
 
@@ -327,7 +327,7 @@ async fn oversized_response_is_terminal_not_retried() {
     .await;
 
     let (status, body) = post(&public, request(6)).await;
-    assert_eq!(status, 502);
+    assert_eq!(status, 502); // Bad Gateway
     assert_eq!(body["error"]["code"], -32053);
     assert_eq!(
         ok_fake.seen.lock().await.len(),
@@ -354,7 +354,7 @@ async fn oversized_request_is_refused_before_any_provider() {
     let big =
         json!({"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": ["x".repeat(1024)]});
     let (status, body) = post(&public, big).await;
-    assert_eq!(status, 413);
+    assert_eq!(status, 413); // Payload Too Large
     assert_eq!(body["error"]["code"], -32054);
     assert_eq!(fake.seen.lock().await.len(), 0);
 }
@@ -387,7 +387,7 @@ async fn truncated_body_is_not_reported_as_too_large() {
         .expect("the LB answers a truncated body instead of waiting for the rest")
         .expect("read answer");
     assert!(
-        answer.starts_with("HTTP/1.1 400"),
+        answer.starts_with("HTTP/1.1 400"), // Bad Request
         "a truncated body is a bad request, not a size verdict: {answer:?}"
     );
     assert!(!answer.contains("-32054"), "{answer:?}");
@@ -452,7 +452,7 @@ async fn chunked_response_over_the_cap_is_refused() {
     .await;
 
     let (status, body) = post(&public, request(12)).await;
-    assert_eq!(status, 502);
+    assert_eq!(status, 502); // Bad Gateway
     assert_eq!(body["error"]["code"], -32053);
     assert_eq!(
         flood_hits.load(Ordering::Relaxed),
@@ -473,7 +473,7 @@ async fn no_retries_means_one_attempt() {
     .await;
 
     let (status, _body) = post(&public, request(13)).await;
-    assert_eq!(status, 503);
+    assert_eq!(status, 503); // Service Unavailable
     assert_eq!(
         broken_fake.seen.lock().await.len(),
         1,
@@ -487,7 +487,7 @@ async fn get_is_answered_by_the_lb_not_a_provider() {
     let (_service, public) = start_lb(&[addr], |_| {}).await;
 
     let response = client().get(&public).send().await.expect("lb answers");
-    assert_eq!(response.status(), 405);
+    assert_eq!(response.status(), 405); // Method Not Allowed
     assert_eq!(
         response
             .headers()
@@ -522,7 +522,7 @@ async fn empty_body_is_refused_without_spending_the_budget() {
         .send()
         .await
         .expect("lb answers");
-    assert_eq!(response.status(), 400);
+    assert_eq!(response.status(), 400); // Bad Request
     assert_eq!(
         fake.seen.lock().await.len(),
         0,

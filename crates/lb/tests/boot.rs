@@ -13,7 +13,11 @@ async fn boots_serves_and_shuts_down() {
     let service = lb::service::start(config).await.expect("service boots");
     let public = format!("http://{}", service.public_addr);
     let admin = format!("http://{}", service.admin_addr);
-    let client = reqwest::Client::new();
+    // Gives up instead of hanging the suite when a listener never answers.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("client");
 
     // Admin liveness.
     let health = client

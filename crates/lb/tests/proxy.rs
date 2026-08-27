@@ -134,8 +134,19 @@ async fn start_lb(
     (service, public)
 }
 
+/// Every request in this suite goes through a client that gives up:
+/// a regression that never answers fails the test instead of hanging it.
+const GIVE_UP_AFTER: Duration = Duration::from_secs(10);
+
+fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(GIVE_UP_AFTER)
+        .build()
+        .expect("client")
+}
+
 async fn post(url: &str, body: Value) -> (u16, Value) {
-    let response = reqwest::Client::new()
+    let response = client()
         .post(url)
         .header("authorization", "Bearer client-secret")
         .header("x-forwarded-for", "203.0.113.9")
@@ -371,9 +382,9 @@ async fn truncated_body_is_not_reported_as_too_large() {
     stream.shutdown().await.expect("close write half");
 
     let mut answer = String::new();
-    stream
-        .read_to_string(&mut answer)
+    tokio::time::timeout(GIVE_UP_AFTER, stream.read_to_string(&mut answer))
         .await
+        .expect("the LB answers a truncated body instead of waiting for the rest")
         .expect("read answer");
     assert!(
         answer.starts_with("HTTP/1.1 400"),
@@ -475,11 +486,7 @@ async fn get_is_answered_by_the_lb_not_a_provider() {
     let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
     let (_service, public) = start_lb(&[addr], |_| {}).await;
 
-    let response = reqwest::Client::new()
-        .get(&public)
-        .send()
-        .await
-        .expect("lb answers");
+    let response = client().get(&public).send().await.expect("lb answers");
     assert_eq!(response.status(), 405);
     assert_eq!(
         response
@@ -508,7 +515,7 @@ async fn empty_body_is_refused_without_spending_the_budget() {
     let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
     let (_service, public) = start_lb(&[addr], |_| {}).await;
 
-    let response = reqwest::Client::new()
+    let response = client()
         .post(&public)
         .header("content-type", "application/json")
         .body("")
@@ -640,7 +647,7 @@ async fn preflight_is_answered_without_a_provider() {
     let (_service, public) = start_lb(&[addr], |_| {}).await;
 
     // What a browser sends before a cross-origin POST.
-    let response = reqwest::Client::new()
+    let response = client()
         .request(reqwest::Method::OPTIONS, &public)
         .header("origin", "https://example.org")
         .header("access-control-request-method", "POST")

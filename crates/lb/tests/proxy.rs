@@ -596,16 +596,25 @@ async fn traffic_failures_alone_quarantine_a_provider() {
     })
     .await;
 
-    for _ in 0..4 {
-        let (status, _body) = post(&public, request(31)).await;
-        assert_eq!(status, 200, "the live provider carries every request");
-    }
-
+    // Each request tries the dead provider first: the cursor comes back
+    // around to it every time while it is still eligible.
     let entries = service.pool.entries();
+    let (status, _body) = post(&public, request(31)).await;
+    assert_eq!(status, 200, "the live provider carries the request");
+    assert!(entries[0].eligible(), "one failure is not yet a verdict");
+
+    let (status, _body) = post(&public, request(31)).await;
+    assert_eq!(status, 200);
     assert!(
         !entries[0].eligible(),
         "two failures in a row take the dead provider out of rotation"
     );
+
+    for _ in 0..2 {
+        let (status, _body) = post(&public, request(31)).await;
+        assert_eq!(status, 200);
+        assert!(!entries[0].eligible(), "and it stays out");
+    }
     assert!(entries[1].eligible(), "the answering provider stays in");
 }
 
@@ -645,6 +654,8 @@ async fn a_quarantined_provider_stops_receiving_traffic() {
     })
     .await;
 
+    // The first two requests each fail on the broken provider before
+    // reaching the live one; the other four must never touch it.
     for _ in 0..6 {
         let (status, _body) = post(&public, request(41)).await;
         assert_eq!(status, 200);

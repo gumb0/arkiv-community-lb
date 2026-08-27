@@ -49,10 +49,25 @@ One background loop probes every provider on a fixed interval with a
 cheap JSON-RPC call; probe outcomes and live traffic outcomes feed the
 same per-provider health counter. A run of consecutive failures quarantines; a
 run of consecutive successes readmits. There are no weights and no
-scores — eligibility is binary, and no single result can ever flip it,
-thanks to the minimum success/failure run length (`flip_after` in the
-config) — which is what makes racing, stale results harmless. Quarantined providers keep being probed,
+scores — eligibility is binary. Quarantined providers keep being probed,
 with backoff once a provider looks abandoned; recovery is automatic.
+
+The rule for the flag is simple: it changes only after `flip_after`
+results in a row agree. This one rule does two jobs.
+
+It prevents flapping. One failed probe does not demote a provider — a
+short network problem on the load balancer's own side would otherwise
+empty the whole pool at once. One success does not readmit a provider
+either. And a provider that alternates between good and bad answers
+never changes state at all.
+
+It also makes races harmless. Health results come from probes and from
+live traffic at the same time, so a result can be stale by the time it
+is recorded — for example a probe that was answered just before its
+provider died. A stale result moves the counter by one step, and one
+step is never enough to change the state; the next real result corrects
+it. This protection needs `flip_after` to be at least 2, so the load
+balancer refuses to start with a smaller value.
 
 Providers are **born ineligible**: a new entry serves nothing until its
 first probes pass, and the very first contact verifies the chain

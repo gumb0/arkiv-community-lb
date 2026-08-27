@@ -2,7 +2,14 @@
 //! credential boundary, failover, the retry budget, both timeouts, and
 //! both size caps.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use axum::{Router, body::Bytes, http::HeaderMap, response::IntoResponse};
 use lb::config::{Config, Provider};
@@ -63,16 +70,24 @@ async fn dead_addr() -> SocketAddr {
 
 /// A provider speaking raw HTTP: answers `head`, then `body` chunks with a
 /// pause between them, then holds the connection open forever. Used for
-/// the cases a well-behaved server cannot produce.
-async fn raw_provider(head: &'static [u8], chunks: Vec<Vec<u8>>, gap: Duration) -> SocketAddr {
+/// the cases a well-behaved server cannot produce. Also returns its
+/// connection count: one per attempt the LB made.
+async fn raw_provider(
+    head: &'static [u8],
+    chunks: Vec<Vec<u8>>,
+    gap: Duration,
+) -> (SocketAddr, Arc<AtomicUsize>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("addr");
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
+            counter.fetch_add(1, Ordering::Relaxed);
             let chunks = chunks.clone();
             tokio::spawn(async move {
                 let mut scratch = vec![0u8; 8192];
@@ -91,7 +106,7 @@ async fn raw_provider(head: &'static [u8], chunks: Vec<Vec<u8>>, gap: Duration) 
             });
         }
     });
-    addr
+    (addr, hits)
 }
 
 /// Boots the LB over the given provider addresses, everyone eligible.
@@ -377,14 +392,14 @@ async fn stalled_body_read_times_out_and_fails_over() {
     // Headers and a first fragment arrive fast, then the body stops.
     // Only the attempt timeout can end this; the deadline is checked
     // between attempts, not during one.
-    let stalling = raw_provider(
+    let (stalling, stall_hits) = raw_provider(
         b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n",
         vec![b"{\"jsonrpc\":\"2.0\",".to_vec()],
         Duration::ZERO,
     )
     .await;
     let answer = br#"{"jsonrpc":"2.0","id":11,"result":"ok"}"#;
-    let (live, _live_fake) = fake_provider(answer, Duration::ZERO).await;
+    let (live, live_fake) = fake_provider(answer, Duration::ZERO).await;
     let (_service, public) = start_lb(&[stalling, live], |config| {
         config.proxy.attempt_timeout = Duration::from_millis(150);
         config.proxy.request_timeout = Duration::from_secs(30);
@@ -400,9 +415,11 @@ async fn stalled_body_read_times_out_and_fails_over() {
         elapsed >= Duration::from_millis(150),
         "the stall must actually have been waited out: {elapsed:?}"
     );
-    assert!(
-        elapsed < Duration::from_secs(2),
-        "the attempt timeout must cover the body read, not just the headers: {elapsed:?}"
+    assert_eq!(stall_hits.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        live_fake.seen.lock().await.len(),
+        1,
+        "one failover, one request to the live provider"
     );
 }
 
@@ -411,7 +428,7 @@ async fn chunked_response_over_the_cap_is_refused() {
     // No content-length to check: only the running total while reading
     // can catch this one.
     let chunk = format!("400\r\n{}\r\n", "x".repeat(1024)).into_bytes();
-    let flood = raw_provider(
+    let (flood, flood_hits) = raw_provider(
         b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n",
         vec![chunk; 8],
         Duration::from_millis(5),
@@ -426,6 +443,11 @@ async fn chunked_response_over_the_cap_is_refused() {
     let (status, body) = post(&public, request(12)).await;
     assert_eq!(status, 502);
     assert_eq!(body["error"]["code"], -32053);
+    assert_eq!(
+        flood_hits.load(Ordering::Relaxed),
+        1,
+        "too large is terminal: the same provider is not asked again"
+    );
 }
 
 #[tokio::test]

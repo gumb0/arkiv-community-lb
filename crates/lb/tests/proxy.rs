@@ -115,8 +115,14 @@ async fn raw_provider(
     (addr, hits)
 }
 
-/// Boots the LB over the given provider addresses, everyone eligible.
-async fn start_lb(
+/// Boots the LB with default config over the given provider addresses,
+/// everyone eligible.
+async fn start_lb(addrs: &[SocketAddr]) -> (lb::service::Service, String) {
+    start_lb_with(addrs, |_| {}).await
+}
+
+/// Like `start_lb`, with a hook to adjust the config first.
+async fn start_lb_with(
     addrs: &[SocketAddr],
     tune: impl Fn(&mut Config),
 ) -> (lb::service::Service, String) {
@@ -172,7 +178,7 @@ fn request(id: u64) -> Value {
 async fn relays_byte_identical_and_strips_client_headers() {
     let answer = br#"{"jsonrpc":"2.0","id":7,"result":"0x2a"}"#;
     let (addr, fake) = fake_provider(answer, Duration::ZERO).await;
-    let (_service, public) = start_lb(&[addr], |_| {}).await;
+    let (_service, public) = start_lb(&[addr]).await;
 
     let (status, body) = post(&public, request(7)).await;
     assert_eq!(status, 200);
@@ -204,7 +210,7 @@ async fn provider_error_is_an_answer_not_retried() {
     let error = br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}"#;
     let (err_addr, err_fake) = fake_provider(error, Duration::ZERO).await;
     let (ok_addr, ok_fake) = fake_provider(b"{}", Duration::ZERO).await;
-    let (_service, public) = start_lb(&[err_addr, ok_addr], |_| {}).await;
+    let (_service, public) = start_lb(&[err_addr, ok_addr]).await;
 
     let (status, body) = post(&public, request(1)).await;
     assert_eq!(status, 200);
@@ -230,7 +236,7 @@ async fn http_error_status_fails_over() {
     .await;
     let answer = br#"{"jsonrpc":"2.0","id":8,"result":"ok"}"#;
     let (live, _live_fake) = fake_provider(answer, Duration::ZERO).await;
-    let (_service, public) = start_lb(&[broken, live], |_| {}).await;
+    let (_service, public) = start_lb(&[broken, live]).await;
 
     let (status, body) = post(&public, request(8)).await;
     assert_eq!(status, 200, "the client never sees the broken provider");
@@ -248,7 +254,7 @@ async fn http_error_body_never_reaches_the_client() {
         Duration::ZERO,
     )
     .await;
-    let (_service, public) = start_lb(&[broken], |_| {}).await;
+    let (_service, public) = start_lb(&[broken]).await;
 
     let (status, body) = post(&public, request(2)).await;
     assert_eq!(status, 503); // Service Unavailable
@@ -268,7 +274,7 @@ async fn dead_provider_fails_over_invisibly() {
     let dead = dead_addr().await;
     let answer = br#"{"jsonrpc":"2.0","id":3,"result":"ok"}"#;
     let (live, fake) = fake_provider(answer, Duration::ZERO).await;
-    let (_service, public) = start_lb(&[dead, live], |_| {}).await;
+    let (_service, public) = start_lb(&[dead, live]).await;
 
     let (status, body) = post(&public, request(3)).await;
     assert_eq!(status, 200, "the client never sees the dead provider");
@@ -279,7 +285,7 @@ async fn dead_provider_fails_over_invisibly() {
 #[tokio::test]
 async fn exhausted_budget_answers_no_provider_with_the_request_id() {
     let addrs = [dead_addr().await, dead_addr().await, dead_addr().await];
-    let (_service, public) = start_lb(&addrs, |_| {}).await;
+    let (_service, public) = start_lb(&addrs).await;
 
     let (status, body) = post(&public, request(9)).await;
     assert_eq!(status, 503); // Service Unavailable
@@ -294,7 +300,7 @@ async fn slow_provider_times_out_and_fails_over() {
     let (slow, slow_fake) = fake_provider(b"{}", Duration::from_millis(500)).await;
     let answer = br#"{"jsonrpc":"2.0","id":4,"result":"fast"}"#;
     let (fast, _fast_fake) = fake_provider(answer, Duration::ZERO).await;
-    let (_service, public) = start_lb(&[slow, fast], |config| {
+    let (_service, public) = start_lb_with(&[slow, fast], |config| {
         config.proxy.attempt_timeout = Duration::from_millis(100);
     })
     .await;
@@ -313,7 +319,7 @@ async fn slow_provider_times_out_and_fails_over() {
 #[tokio::test]
 async fn deadline_wins_over_remaining_budget() {
     let (slow, _fake) = fake_provider(b"{}", Duration::from_secs(5)).await;
-    let (_service, public) = start_lb(&[slow], |config| {
+    let (_service, public) = start_lb_with(&[slow], |config| {
         config.proxy.attempt_timeout = Duration::from_millis(150);
         config.proxy.request_timeout = Duration::from_millis(250);
         config.proxy.max_retries = 10;
@@ -330,7 +336,7 @@ async fn oversized_response_is_terminal_not_retried() {
     let huge = vec![b'x'; 4096];
     let (big, _big_fake) = fake_provider(&huge, Duration::ZERO).await;
     let (ok, ok_fake) = fake_provider(b"{}", Duration::ZERO).await;
-    let (service, public) = start_lb(&[big, ok], |config| {
+    let (service, public) = start_lb_with(&[big, ok], |config| {
         config.proxy.max_response_size = bytesize::ByteSize::b(1024);
     })
     .await;
@@ -355,7 +361,7 @@ async fn oversized_response_is_terminal_not_retried() {
 #[tokio::test]
 async fn oversized_request_is_refused_before_any_provider() {
     let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
-    let (_service, public) = start_lb(&[addr], |config| {
+    let (_service, public) = start_lb_with(&[addr], |config| {
         config.proxy.max_request_size = bytesize::ByteSize::b(256);
     })
     .await;
@@ -373,7 +379,7 @@ async fn truncated_body_is_not_reported_as_too_large() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
-    let (_service, public) = start_lb(&[addr], |_| {}).await;
+    let (_service, public) = start_lb(&[addr]).await;
     let authority = public.strip_prefix("http://").expect("http url");
 
     // Promise 100 bytes, deliver 8, close the write half; the read half
@@ -423,7 +429,7 @@ async fn stalled_body_read_times_out_and_fails_over() {
     .await;
     let answer = br#"{"jsonrpc":"2.0","id":11,"result":"ok"}"#;
     let (live, live_fake) = fake_provider(answer, Duration::ZERO).await;
-    let (_service, public) = start_lb(&[stalling, live], |config| {
+    let (_service, public) = start_lb_with(&[stalling, live], |config| {
         config.proxy.attempt_timeout = Duration::from_millis(150);
         config.proxy.request_timeout = Duration::from_secs(30);
     })
@@ -457,7 +463,7 @@ async fn chunked_response_over_the_cap_is_refused() {
         Duration::from_millis(5),
     )
     .await;
-    let (_service, public) = start_lb(&[flood], |config| {
+    let (_service, public) = start_lb_with(&[flood], |config| {
         config.proxy.max_response_size = bytesize::ByteSize::b(2048);
         config.proxy.attempt_timeout = Duration::from_secs(5);
     })
@@ -479,7 +485,7 @@ async fn no_retries_means_one_attempt() {
 
     let (broken, broken_fake) =
         broken_provider(StatusCode::BAD_GATEWAY, b"nope", Duration::ZERO).await;
-    let (_service, public) = start_lb(&[broken], |config| {
+    let (_service, public) = start_lb_with(&[broken], |config| {
         config.proxy.max_retries = 0;
     })
     .await;
@@ -496,7 +502,7 @@ async fn no_retries_means_one_attempt() {
 #[tokio::test]
 async fn get_is_answered_by_the_lb_not_a_provider() {
     let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
-    let (_service, public) = start_lb(&[addr], |_| {}).await;
+    let (_service, public) = start_lb(&[addr]).await;
 
     let response = client().get(&public).send().await.expect("lb answers");
     assert_eq!(response.status(), 405); // Method Not Allowed
@@ -525,7 +531,7 @@ async fn get_is_answered_by_the_lb_not_a_provider() {
 #[tokio::test]
 async fn empty_body_is_refused_without_spending_the_budget() {
     let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
-    let (_service, public) = start_lb(&[addr], |_| {}).await;
+    let (_service, public) = start_lb(&[addr]).await;
 
     let response = client()
         .post(&public)
@@ -534,6 +540,7 @@ async fn empty_body_is_refused_without_spending_the_budget() {
         .send()
         .await
         .expect("lb answers");
+
     assert_eq!(response.status(), 400); // Bad Request
     assert_eq!(
         fake.seen.lock().await.len(),
@@ -545,7 +552,7 @@ async fn empty_body_is_refused_without_spending_the_budget() {
 #[tokio::test]
 async fn denied_method_is_refused_before_any_provider() {
     let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
-    let (_service, public) = start_lb(&[addr], |_| {}).await;
+    let (_service, public) = start_lb(&[addr]).await;
 
     let denied = json!({"jsonrpc": "2.0", "id": 21, "method": "admin_peers", "params": []});
     let (status, body) = post(&public, denied).await;
@@ -565,7 +572,7 @@ async fn denied_method_is_refused_before_any_provider() {
 async fn near_miss_methods_are_served() {
     let answer = br#"{"jsonrpc":"2.0","id":22,"result":"ok"}"#;
     let (addr, fake) = fake_provider(answer, Duration::ZERO).await;
-    let (_service, public) = start_lb(&[addr], |_| {}).await;
+    let (_service, public) = start_lb(&[addr]).await;
 
     for method in ["eth_sendRawTransaction", "eth_getProof", "debug_traceBlock"] {
         let call = json!({"jsonrpc": "2.0", "id": 22, "method": method, "params": []});
@@ -582,7 +589,7 @@ async fn traffic_failures_alone_quarantine_a_provider() {
     let dead = dead_addr().await;
     let answer = br#"{"jsonrpc":"2.0","id":31,"result":"ok"}"#;
     let (live, _live_fake) = fake_provider(answer, Duration::ZERO).await;
-    let (service, public) = start_lb(&[dead, live], |config| {
+    let (service, public) = start_lb_with(&[dead, live], |config| {
         config.health.flip_after = 2;
     })
     .await;
@@ -607,7 +614,7 @@ async fn the_served_counter_follows_answers_not_attempts() {
     let dead = dead_addr().await;
     let answer = br#"{"jsonrpc":"2.0","id":32,"result":"ok"}"#;
     let (live, _live_fake) = fake_provider(answer, Duration::ZERO).await;
-    let (service, public) = start_lb(&[dead, live], |_| {}).await;
+    let (service, public) = start_lb(&[dead, live]).await;
 
     for _ in 0..3 {
         let (status, _body) = post(&public, request(32)).await;
@@ -631,7 +638,7 @@ async fn a_quarantined_provider_stops_receiving_traffic() {
         broken_provider(StatusCode::BAD_GATEWAY, b"nope", Duration::ZERO).await;
     let answer = br#"{"jsonrpc":"2.0","id":41,"result":"ok"}"#;
     let (live, live_fake) = fake_provider(answer, Duration::ZERO).await;
-    let (_service, public) = start_lb(&[broken, live], |config| {
+    let (_service, public) = start_lb_with(&[broken, live], |config| {
         config.health.flip_after = 2;
     })
     .await;
@@ -656,7 +663,7 @@ async fn a_quarantined_provider_stops_receiving_traffic() {
 #[tokio::test]
 async fn preflight_is_answered_without_a_provider() {
     let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
-    let (_service, public) = start_lb(&[addr], |_| {}).await;
+    let (_service, public) = start_lb(&[addr]).await;
 
     // What a browser sends before a cross-origin POST.
     let response = client()
@@ -688,7 +695,7 @@ async fn a_batch_relays_untouched() {
     let answer =
         br#"[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"}]"#;
     let (addr, fake) = fake_provider(answer, Duration::ZERO).await;
-    let (_service, public) = start_lb(&[addr], |_| {}).await;
+    let (_service, public) = start_lb(&[addr]).await;
 
     let batch = json!([
         {"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []},

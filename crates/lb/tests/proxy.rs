@@ -295,7 +295,7 @@ async fn oversized_response_is_terminal_not_retried() {
     let huge = vec![b'x'; 4096];
     let (big, _big_fake) = fake_provider(&huge, Duration::ZERO).await;
     let (ok, ok_fake) = fake_provider(b"{}", Duration::ZERO).await;
-    let (_service, public) = start_lb(&[big, ok], |config| {
+    let (service, public) = start_lb(&[big, ok], |config| {
         config.proxy.max_response_size = bytesize::ByteSize::b(1024);
     })
     .await;
@@ -307,6 +307,13 @@ async fn oversized_response_is_terminal_not_retried() {
         ok_fake.seen.lock().await.len(),
         0,
         "re-downloading elsewhere helps nobody"
+    );
+    assert_eq!(
+        service.pool.entries()[0]
+            .health_streak
+            .load(std::sync::atomic::Ordering::Relaxed),
+        -1,
+        "past the cap means a misbehaving provider, so it costs a health tick"
     );
 }
 

@@ -21,6 +21,9 @@ pub struct Provider {
     pub health_streak: AtomicI64,
     /// Last head height a probe returned.
     pub height: AtomicU64,
+    /// Confirmed to be on the same chain as the reference. False until
+    /// the first passing check; a mismatch clears it and quarantines.
+    pub chain_verified: AtomicBool,
     /// Completed forwards, the billing basis.
     pub served: AtomicU64,
 }
@@ -47,6 +50,7 @@ impl Provider {
             eligible: AtomicBool::new(false),
             health_streak: AtomicI64::new(0),
             height: AtomicU64::new(0),
+            chain_verified: AtomicBool::new(false),
             served: AtomicU64::new(0),
         })
     }
@@ -97,6 +101,14 @@ impl Provider {
         }
     }
 
+    /// Quarantines immediately, without waiting for a failure streak —
+    /// for verdicts that leave no room for doubt. The streak resets so
+    /// recovery starts from zero once the cause is fixed.
+    pub fn quarantine(&self, source: HealthSignal) {
+        self.health_streak.store(0, Ordering::Relaxed);
+        self.set_eligible_and_log(false, source);
+    }
+
     /// Sets eligibility and logs the flip when the value actually
     /// changed. `swap` makes check-and-set one atomic step, so two
     /// racing callers cannot both log the same flip.
@@ -118,6 +130,7 @@ pub enum HealthSignal {
     Probe,
     Traffic,
     Lag,
+    Chain,
 }
 
 impl std::fmt::Display for HealthSignal {
@@ -126,6 +139,7 @@ impl std::fmt::Display for HealthSignal {
             Self::Probe => "probe",
             Self::Traffic => "traffic",
             Self::Lag => "lag",
+            Self::Chain => "chain",
         })
     }
 }

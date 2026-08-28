@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 /// settable state, with a switch to play dead (503 to everything).
 struct Rpc {
     height: AtomicU64,
-    chain_id: u64,
+    chain_id: AtomicU64,
     down: AtomicBool,
     /// Client requests answered. Probes send id 0, the tests' client
     /// sends id 1 — the only way to tell them apart at the fake.
@@ -30,7 +30,7 @@ struct Rpc {
 async fn rpc_provider(chain_id: u64) -> (SocketAddr, Arc<Rpc>) {
     let rpc = Arc::new(Rpc {
         height: AtomicU64::new(1),
-        chain_id,
+        chain_id: AtomicU64::new(chain_id),
         down: AtomicBool::new(false),
         served: AtomicU64::new(0),
     });
@@ -50,7 +50,9 @@ async fn rpc_provider(chain_id: u64) -> (SocketAddr, Arc<Rpc>) {
                 Some("eth_blockNumber") => {
                     json!(format!("{:#x}", state.height.load(Ordering::Relaxed)))
                 }
-                Some("eth_chainId") => json!(format!("{:#x}", state.chain_id)),
+                Some("eth_chainId") => {
+                    json!(format!("{:#x}", state.chain_id.load(Ordering::Relaxed)))
+                }
                 other => panic!("unexpected method probed: {other:?}"),
             };
             axum::Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
@@ -76,6 +78,7 @@ async fn start_monitored(
     config.listen.admin = "127.0.0.1:0".parse().expect("addr");
     config.health.probe_interval = Duration::from_millis(20);
     config.health.flip_after = 2;
+    config.health.chain_id = Some(CHAIN_ID);
     config.providers = addrs
         .iter()
         .enumerate()
@@ -370,4 +373,47 @@ async fn a_pool_larger_than_the_probe_concurrency_cap_is_fully_probed() {
             provider.id
         );
     }
+}
+
+#[tokio::test]
+async fn a_wrong_chain_provider_is_never_admitted() {
+    let (addr, rpc) = rpc_provider(999).await;
+    let service = start_monitored(&[addr], |_| {}).await;
+    let provider = &service.pool.providers()[0];
+
+    // Ten-plus rounds of opportunity.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(!provider.eligible(), "wrong chain never enters rotation");
+    assert_eq!(
+        provider.height.load(Ordering::Relaxed),
+        0,
+        "a wrong-chain provider is not even asked for its height"
+    );
+    assert_eq!(rpc.served.load(Ordering::Relaxed), 0, "and serves nothing");
+}
+
+#[tokio::test]
+async fn a_chain_id_change_after_admission_evicts_and_a_fix_readmits() {
+    let (addr, rpc) = rpc_provider(CHAIN_ID).await;
+    let service = start_monitored(&[addr], |config| {
+        config.health.chainid_check_interval = Duration::from_millis(60);
+    })
+    .await;
+    let provider = &service.pool.providers()[0];
+    wait_for("admission", || provider.eligible()).await;
+
+    // The node is switched to another chain: the next chain round
+    // evicts it, and probe successes must not bring it back.
+    rpc.chain_id.store(999, Ordering::Relaxed);
+    wait_for("chain eviction", || !provider.eligible()).await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(
+        !provider.eligible(),
+        "must stay out while on the wrong chain"
+    );
+
+    // Switched back: verified again on the next chain round, then
+    // readmitted by ordinary probe successes.
+    rpc.chain_id.store(CHAIN_ID, Ordering::Relaxed);
+    wait_for("readmission after the fix", || provider.eligible()).await;
 }

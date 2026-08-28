@@ -62,6 +62,7 @@ pub struct Health {
     pub ref_height_interval: Duration,
     #[serde(with = "humantime_serde")]
     pub chainid_check_interval: Duration,
+    pub chain_id: Option<u64>,
     pub lag_tolerance_blocks: u64,
     /// Test hook, unreachable from the toml: proxy tests set eligibility
     /// by hand and must not race a probe sweep.
@@ -78,6 +79,7 @@ impl Default for Health {
             max_probe_backoff: Duration::from_secs(5 * 60),
             ref_height_interval: Duration::ZERO,
             chainid_check_interval: Duration::from_secs(5 * 60),
+            chain_id: None,
             lag_tolerance_blocks: 30,
             disable_probing: false,
         }
@@ -214,6 +216,13 @@ mod tests {
     }
 
     #[test]
+    fn chain_id_parses_and_defaults_to_unchecked() {
+        assert_eq!(parse("").expect("valid").health.chain_id, None);
+        let config = parse("[health]\nchain_id = 1337\n").expect("valid");
+        assert_eq!(config.health.chain_id, Some(1337));
+    }
+
+    #[test]
     fn zero_probe_interval_is_refused() {
         let error = parse("[health]\nprobe_interval = \"0s\"\n").expect_err("must refuse");
         assert!(error.to_string().contains("probe_interval"), "{error}");
@@ -223,6 +232,12 @@ mod tests {
     fn the_probing_test_hook_is_not_reachable_from_toml() {
         parse("[health]\ndisable_probing = true\n")
             .expect_err("a serde-skipped field must stay unknown to the toml");
+    }
+
+    #[test]
+    fn zero_chainid_check_interval_means_every_round() {
+        let config = parse("[health]\nchainid_check_interval = \"0s\"\n").expect("zero is legal");
+        assert!(config.health.chainid_check_interval.is_zero());
     }
 
     #[test]

@@ -57,6 +57,7 @@ impl Monitor {
         // instead of bursting missed rounds right away.
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut reference_height = ReferenceHeight::default();
+        let mut last_chain_round: Option<std::time::Instant> = None;
         loop {
             tokio::select! {
                 _ = tick.tick() => {
@@ -65,7 +66,15 @@ impl Monitor {
                     // Asking it concurrently with the probes would avoid that,
                     // at the cost of judging this round by the previous sample.
                     self.refresh_reference_height(&mut reference_height).await;
-                    self.probe_all(reference_height.height).await;
+                    let chain_round = if last_chain_round
+                        .is_none_or(|at| at.elapsed() >= self.config.chainid_check_interval)
+                    {
+                        last_chain_round = Some(std::time::Instant::now());
+                        true
+                    } else {
+                        false
+                    };
+                    self.probe_all(reference_height.height, chain_round).await;
                 }
                 _ = shutdown.changed() => return,
             }
@@ -85,10 +94,10 @@ impl Monitor {
             return;
         }
         reference_height.asked = Some(std::time::Instant::now());
-        reference_height.height = self.block_number("reference", url).await;
+        reference_height.height = self.query_block_number("reference", url).await;
     }
 
-    async fn probe_all(&self, reference_height: Option<u64>) {
+    async fn probe_all(&self, reference_height: Option<u64>, chain_round: bool) {
         // Probing one by one would make a round as slow as the sum of
         // all timeouts; probing everyone at once would spike load with a
         // large pool. So: up to CONCURRENT_PROBES probes at once, each
@@ -96,14 +105,51 @@ impl Monitor {
         // finishes. Interleaved waiting on the Monitor's own task, not
         // threads.
         futures::stream::iter(self.pool.providers())
-            .for_each_concurrent(CONCURRENT_PROBES, |provider| {
-                self.probe(provider, reference_height)
+            .for_each_concurrent(CONCURRENT_PROBES, |provider| async move {
+                if self.chain_cleared(provider, chain_round).await {
+                    self.probe(provider, reference_height).await;
+                }
             })
             .await;
     }
 
+    /// Whether this provider may be probed this round: confirmed on the
+    /// right chain, re-verifying first on a chain round. With no
+    /// `chain_id` configured, everyone is cleared.
+    async fn chain_cleared(&self, provider: &Provider, chain_round: bool) -> bool {
+        let Some(expected) = self.config.chain_id else {
+            return true;
+        };
+        if chain_round {
+            self.verify_chain(provider, expected).await;
+        }
+        provider.chain_verified.load(Ordering::Relaxed)
+    }
+
+    /// One `eth_chainId` round trip, updating `chain_verified`. The
+    /// wrong chain quarantines on the spot: misconfiguration is a
+    /// certainty, not a failure streak.
+    async fn verify_chain(&self, provider: &Provider, expected: u64) {
+        match self.query_chain_id(&provider.id, &provider.url).await {
+            Some(actual) if actual == expected => {
+                provider.chain_verified.store(true, Ordering::Relaxed);
+            }
+            Some(actual) => {
+                tracing::warn!(
+                    provider = %provider.id,
+                    chain_id = actual,
+                    expected,
+                    "wrong chain"
+                );
+                provider.chain_verified.store(false, Ordering::Relaxed);
+                provider.quarantine(HealthSignal::Chain);
+            }
+            None => {}
+        }
+    }
+
     async fn probe(&self, provider: &Provider, reference_height: Option<u64>) {
-        let Some(height) = self.block_number(&provider.id, &provider.url).await else {
+        let Some(height) = self.query_block_number(&provider.id, &provider.url).await else {
             provider.record_health(false, self.config.flip_after, HealthSignal::Probe);
             return;
         };
@@ -123,14 +169,33 @@ impl Monitor {
         }
     }
 
-    /// One `eth_blockNumber` round trip; any shortfall — transport,
-    /// status, or an answer that is not a hex height — is one failure.
-    async fn block_number(&self, id: &str, url: &reqwest::Url) -> Option<u64> {
+    async fn query_block_number(&self, id: &str, url: &reqwest::Url) -> Option<u64> {
+        self.query(
+            id,
+            url,
+            r#"{"jsonrpc":"2.0","id":0,"method":"eth_blockNumber","params":[]}"#,
+        )
+        .await
+    }
+
+    async fn query_chain_id(&self, id: &str, url: &reqwest::Url) -> Option<u64> {
+        self.query(
+            id,
+            url,
+            r#"{"jsonrpc":"2.0","id":0,"method":"eth_chainId","params":[]}"#,
+        )
+        .await
+    }
+
+    /// One probe round trip for a quantity-valued method; any
+    /// shortfall — transport, status, or an answer that is not a hex
+    /// quantity — is one failure.
+    async fn query(&self, id: &str, url: &reqwest::Url, body: &'static str) -> Option<u64> {
         let sent = self
             .client
             .post(url.clone())
             .header(header::CONTENT_TYPE, "application/json")
-            .body(r#"{"jsonrpc":"2.0","id":0,"method":"eth_blockNumber","params":[]}"#)
+            .body(body)
             .timeout(self.config.probe_timeout)
             .send()
             .await;
@@ -146,11 +211,11 @@ impl Monitor {
             }
         };
         let body: Value = serde_json::from_slice(&response.bytes().await.ok()?).ok()?;
-        let height = hex_quantity(body.get("result")?);
-        if height.is_none() {
-            tracing::debug!(provider = %id, "probe answered without a height");
+        let quantity = hex_quantity(body.get("result")?);
+        if quantity.is_none() {
+            tracing::debug!(provider = %id, "probe answered without a quantity");
         }
-        height
+        quantity
     }
 }
 

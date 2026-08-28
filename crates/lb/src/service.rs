@@ -85,6 +85,9 @@ pub async fn start(config: Config) -> Result<Service, StartError> {
                 None
             }
         };
+        if config.health.chain_id.is_none() {
+            tracing::warn!("health.chain_id is not set: chain identity goes unchecked");
+        }
         let monitor = monitor::Monitor::new(pool.clone(), client, config.health.clone(), reference);
         tasks.push(tokio::spawn(monitor.run(shutdown.subscribe())));
     }

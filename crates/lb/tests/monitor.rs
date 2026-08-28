@@ -114,15 +114,15 @@ async fn wait_for(what: &str, condition: impl Fn() -> bool) {
 async fn probes_admit_a_healthy_provider() {
     let (addr, _rpc) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[addr], |_| {}).await;
-    let entry = &service.pool.entries()[0];
+    let provider = &service.pool.providers()[0];
 
     assert!(
-        !entry.eligible(),
+        !provider.eligible(),
         "born ineligible: nothing is served before the first probes pass"
     );
-    wait_for("admission", || entry.eligible()).await;
+    wait_for("admission", || provider.eligible()).await;
     assert!(
-        entry.height.load(Ordering::Relaxed) >= 1,
+        provider.height.load(Ordering::Relaxed) >= 1,
         "a passing probe records the height it saw"
     );
 }
@@ -131,14 +131,14 @@ async fn probes_admit_a_healthy_provider() {
 async fn a_killed_provider_is_quarantined_and_readmitted_on_recovery() {
     let (addr, rpc) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[addr], |_| {}).await;
-    let entry = &service.pool.entries()[0];
-    wait_for("admission", || entry.eligible()).await;
+    let provider = &service.pool.providers()[0];
+    wait_for("admission", || provider.eligible()).await;
 
     rpc.down.store(true, Ordering::Relaxed);
-    wait_for("quarantine", || !entry.eligible()).await;
+    wait_for("quarantine", || !provider.eligible()).await;
 
     rpc.down.store(false, Ordering::Relaxed);
-    wait_for("readmission", || entry.eligible()).await;
+    wait_for("readmission", || provider.eligible()).await;
 }
 
 #[tokio::test]
@@ -158,8 +158,8 @@ async fn the_boot_window_answers_no_healthy_provider_then_serves() {
     assert_eq!(first["error"]["code"], -32051);
 
     // ...and the window closes by itself.
-    let entry = &service.pool.entries()[0];
-    wait_for("admission", || entry.eligible()).await;
+    let provider = &service.pool.providers()[0];
+    wait_for("admission", || provider.eligible()).await;
     let served = block_number(&client, &public).await;
     assert_eq!(served["result"], "0x1", "the provider's answer, relayed");
 }
@@ -170,7 +170,11 @@ async fn failover_keeps_serving_while_a_provider_dies() {
     let (b, _rpc_b) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[a, b], |_| {}).await;
     wait_for("both admitted", || {
-        service.pool.entries().iter().all(|entry| entry.eligible())
+        service
+            .pool
+            .providers()
+            .iter()
+            .all(|provider| provider.eligible())
     })
     .await;
 
@@ -192,7 +196,7 @@ async fn failover_keeps_serving_while_a_provider_dies() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     // 100ms of failing probes at a 20ms cadence: long since quarantined.
-    assert!(!service.pool.entries()[0].eligible());
+    assert!(!service.pool.providers()[0].eligible());
 }
 
 #[tokio::test]
@@ -201,15 +205,19 @@ async fn a_recovered_provider_returns_to_rotation() {
     let (b, _rpc_b) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[a, b], |_| {}).await;
     wait_for("both admitted", || {
-        service.pool.entries().iter().all(|entry| entry.eligible())
+        service
+            .pool
+            .providers()
+            .iter()
+            .all(|provider| provider.eligible())
     })
     .await;
 
-    let entry_a = &service.pool.entries()[0];
+    let provider_a = &service.pool.providers()[0];
     rpc_a.down.store(true, Ordering::Relaxed);
-    wait_for("quarantine", || !entry_a.eligible()).await;
+    wait_for("quarantine", || !provider_a.eligible()).await;
     rpc_a.down.store(false, Ordering::Relaxed);
-    wait_for("readmission", || entry_a.eligible()).await;
+    wait_for("readmission", || provider_a.eligible()).await;
 
     // Back in rotation for real: round robin over two eligible
     // providers must land some of these on the recovered one.

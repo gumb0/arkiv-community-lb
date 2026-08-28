@@ -108,7 +108,7 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
     let mut attempts = 0;
 
     for _ in 0..max_attempts {
-        let Some(entry) = state.pool.next_eligible() else {
+        let Some(provider) = state.pool.next_eligible() else {
             log_outcome(started, attempts, None, "no_healthy_provider");
             return error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -124,19 +124,19 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
         let timeout = remaining.min(state.config.attempt_timeout);
         attempts += 1;
 
-        match state.forwarder.attempt(entry, &body, timeout).await {
+        match state.forwarder.attempt(provider, &body, timeout).await {
             Outcome::Answer(response) => {
-                entry.record_health(true, state.flip_after, HealthSignal::Traffic);
-                entry.record_served();
-                log_outcome(started, attempts, Some(&entry.id), "answered");
+                provider.record_health(true, state.flip_after, HealthSignal::Traffic);
+                provider.record_served();
+                log_outcome(started, attempts, Some(&provider.id), "answered");
                 return response;
             }
             Outcome::TooLarge => {
                 // Response over default 64 MiB cap is provider pathology, not a
                 // client asking for too much, so it counts against the
                 // provider's health like any other non-answer.
-                entry.record_health(false, state.flip_after, HealthSignal::Traffic);
-                log_outcome(started, attempts, Some(&entry.id), "response_too_large");
+                provider.record_health(false, state.flip_after, HealthSignal::Traffic);
+                log_outcome(started, attempts, Some(&provider.id), "response_too_large");
                 return error(
                     StatusCode::BAD_GATEWAY,
                     jsonrpc::RESPONSE_TOO_LARGE,
@@ -145,7 +145,7 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
                 );
             }
             Outcome::NoAnswer => {
-                entry.record_health(false, state.flip_after, HealthSignal::Traffic);
+                provider.record_health(false, state.flip_after, HealthSignal::Traffic);
                 continue;
             }
         }

@@ -148,8 +148,8 @@ async fn start_lb_with(
         .collect();
     tune(&mut config);
     let service = lb::service::start(config).await.expect("service boots");
-    for entry in service.pool.entries() {
-        entry.set_eligible(true);
+    for provider in service.pool.providers() {
+        provider.set_eligible(true);
     }
     let public = format!("http://{}", service.public_addr);
     (service, public)
@@ -359,7 +359,7 @@ async fn oversized_response_is_terminal_not_retried() {
         "re-downloading elsewhere helps nobody"
     );
     assert_eq!(
-        service.pool.entries()[0]
+        service.pool.providers()[0]
             .health_streak
             .load(std::sync::atomic::Ordering::Relaxed),
         -1,
@@ -601,24 +601,24 @@ async fn traffic_failures_alone_quarantine_a_provider() {
 
     // Each request tries the dead provider first: the cursor comes back
     // around to it every time while it is still eligible.
-    let entries = service.pool.entries();
+    let providers = service.pool.providers();
     let (status, _body) = post(&public, request(31)).await;
     assert_eq!(status, 200, "the live provider carries the request");
-    assert!(entries[0].eligible(), "one failure is not yet a verdict");
+    assert!(providers[0].eligible(), "one failure is not yet a verdict");
 
     let (status, _body) = post(&public, request(31)).await;
     assert_eq!(status, 200);
     assert!(
-        !entries[0].eligible(),
+        !providers[0].eligible(),
         "two failures in a row take the dead provider out of rotation"
     );
 
     for _ in 0..2 {
         let (status, _body) = post(&public, request(31)).await;
         assert_eq!(status, 200);
-        assert!(!entries[0].eligible(), "and it stays out");
+        assert!(!providers[0].eligible(), "and it stays out");
     }
-    assert!(entries[1].eligible(), "the answering provider stays in");
+    assert!(providers[1].eligible(), "the answering provider stays in");
 }
 
 #[tokio::test]
@@ -635,13 +635,13 @@ async fn the_served_counter_follows_answers_not_attempts() {
         assert_eq!(status, 200);
     }
 
-    let entries = service.pool.entries();
+    let providers = service.pool.providers();
     assert_eq!(
-        entries[0].served.load(Ordering::Relaxed),
+        providers[0].served.load(Ordering::Relaxed),
         0,
         "a provider that never answered bills nothing, though it was tried"
     );
-    assert_eq!(entries[1].served.load(Ordering::Relaxed), 3);
+    assert_eq!(providers[1].served.load(Ordering::Relaxed), 3);
 }
 
 #[tokio::test]

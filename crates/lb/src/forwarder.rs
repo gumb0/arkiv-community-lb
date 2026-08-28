@@ -14,7 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::{config::Proxy, pool::Entry};
+use crate::{config::Proxy, pool::Provider};
 
 pub struct Forwarder {
     client: reqwest::Client,
@@ -41,13 +41,13 @@ impl Forwarder {
 
     pub async fn attempt(
         &self,
-        entry: &Entry,
+        provider: &Provider,
         body: &Bytes,
         timeout: std::time::Duration,
     ) -> Outcome {
         let sent = self
             .client
-            .post(entry.url.clone())
+            .post(provider.url.clone())
             .header(header::CONTENT_TYPE, "application/json")
             .body(body.clone())
             .timeout(timeout)
@@ -56,14 +56,14 @@ impl Forwarder {
         let mut response = match sent {
             Ok(response) => response,
             Err(error) => {
-                tracing::debug!(provider = %entry.id, %error, "attempt failed");
+                tracing::debug!(provider = %provider.id, %error, "attempt failed");
                 return Outcome::NoAnswer;
             }
         };
 
         let status = response.status();
         if !status.is_success() {
-            tracing::debug!(provider = %entry.id, %status, "non-2xx from provider");
+            tracing::debug!(provider = %provider.id, %status, "non-2xx from provider");
             return Outcome::NoAnswer;
         }
         let cap = self.max_response_size;
@@ -85,7 +85,7 @@ impl Forwarder {
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    tracing::debug!(provider = %entry.id, %error, "body read failed");
+                    tracing::debug!(provider = %provider.id, %error, "body read failed");
                     return Outcome::NoAnswer;
                 }
             }

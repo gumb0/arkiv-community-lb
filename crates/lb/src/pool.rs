@@ -1,19 +1,19 @@
-//! The provider pool: long-lived entries, one per configured provider.
-//! Membership is fixed until restart; everything mutable on an entry is
-//! atomic, so the hot path reads without locks. Probes and traffic both
-//! feed the health streak; only probes bring a provider into rotation.
+//! The provider pool. Membership is fixed until restart, and each
+//! provider is long-lived; everything mutable on it is atomic, so the
+//! hot path reads without locks. Probes and traffic both feed the
+//! health streak; only probes bring a provider into rotation.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
 use reqwest::Url;
 
-use crate::config::Provider;
+use crate::config;
 
 #[derive(Debug)]
-pub struct Entry {
+pub struct Provider {
     pub id: String,
     pub url: Url,
-    /// In or out of rotation. Entries are born ineligible: nothing is
+    /// In or out of rotation. Providers are born ineligible: nothing is
     /// served until the first probes pass.
     eligible: AtomicBool,
     /// Positive = consecutive successes, negative = consecutive
@@ -34,8 +34,8 @@ pub struct InvalidUrl {
     source: url::ParseError,
 }
 
-impl Entry {
-    fn new(provider: &Provider) -> Result<Self, InvalidUrl> {
+impl Provider {
+    fn new(provider: &config::Provider) -> Result<Self, InvalidUrl> {
         let url = Url::parse(&provider.url).map_err(|source| InvalidUrl {
             id: provider.id.clone(),
             url: provider.url.clone(),
@@ -130,34 +130,37 @@ impl std::fmt::Display for HealthSignal {
 
 #[derive(Debug)]
 pub struct Pool {
-    entries: Box<[Entry]>,
+    providers: Box<[Provider]>,
     cursor: AtomicUsize,
 }
 
 impl Pool {
-    pub fn new(providers: &[Provider]) -> Result<Self, InvalidUrl> {
+    pub fn new(providers: &[config::Provider]) -> Result<Self, InvalidUrl> {
         Ok(Self {
-            entries: providers.iter().map(Entry::new).collect::<Result<_, _>>()?,
+            providers: providers
+                .iter()
+                .map(Provider::new)
+                .collect::<Result<_, _>>()?,
             cursor: AtomicUsize::new(0),
         })
     }
 
-    pub fn entries(&self) -> &[Entry] {
-        &self.entries
+    pub fn providers(&self) -> &[Provider] {
+        &self.providers
     }
 
-    /// Round robin over eligible entries. The cursor is the next position
+    /// Round robin over eligible providers. The cursor is the next position
     /// to examine.
-    pub fn next_eligible(&self) -> Option<&Entry> {
-        let len = self.entries.len();
+    pub fn next_eligible(&self) -> Option<&Provider> {
+        let len = self.providers.len();
         if len == 0 {
             return None;
         }
         for _ in 0..len {
             let index = self.cursor.fetch_add(1, Ordering::Relaxed) % len;
-            let entry = &self.entries[index];
-            if entry.eligible() {
-                return Some(entry);
+            let provider = &self.providers[index];
+            if provider.eligible() {
+                return Some(provider);
             }
         }
         None
@@ -169,9 +172,9 @@ mod tests {
     use super::*;
 
     fn pool(ids: &[&str]) -> Pool {
-        let providers: Vec<Provider> = ids
+        let providers: Vec<config::Provider> = ids
             .iter()
-            .map(|id| Provider {
+            .map(|id| config::Provider {
                 id: (*id).to_string(),
                 url: format!("http://127.0.0.1:1/{id}"),
             })
@@ -180,9 +183,9 @@ mod tests {
     }
 
     #[test]
-    fn entries_are_born_ineligible() {
+    fn providers_are_born_ineligible() {
         let pool = pool(&["a", "b"]);
-        assert!(pool.entries().iter().all(|entry| !entry.eligible()));
+        assert!(pool.providers().iter().all(|provider| !provider.eligible()));
         assert!(pool.next_eligible().is_none());
     }
 
@@ -192,9 +195,9 @@ mod tests {
     }
 
     #[test]
-    fn single_eligible_entry_is_always_picked() {
+    fn single_eligible_provider_is_always_picked() {
         let pool = pool(&["a", "b", "c"]);
-        pool.entries()[1].set_eligible(true);
+        pool.providers()[1].set_eligible(true);
         for _ in 0..10 {
             assert_eq!(pool.next_eligible().expect("one eligible").id, "b");
         }
@@ -203,11 +206,11 @@ mod tests {
     #[test]
     fn an_unparsable_url_names_its_provider() {
         let providers = vec![
-            Provider {
+            config::Provider {
                 id: "good".into(),
                 url: "http://127.0.0.1:1".into(),
             },
-            Provider {
+            config::Provider {
                 id: "broken".into(),
                 url: "http://".into(),
             },
@@ -221,37 +224,37 @@ mod tests {
     #[test]
     fn a_streak_of_agreeing_results_flips_eligibility() {
         let pool = pool(&["a"]);
-        let entry = &pool.entries()[0];
+        let provider = &pool.providers()[0];
 
-        entry.record_health(true, 3, HealthSignal::Probe);
-        entry.record_health(true, 3, HealthSignal::Probe);
-        assert!(!entry.eligible(), "two of three is not admission");
-        entry.record_health(true, 3, HealthSignal::Probe);
-        assert!(entry.eligible());
+        provider.record_health(true, 3, HealthSignal::Probe);
+        provider.record_health(true, 3, HealthSignal::Probe);
+        assert!(!provider.eligible(), "two of three is not admission");
+        provider.record_health(true, 3, HealthSignal::Probe);
+        assert!(provider.eligible());
 
-        entry.record_health(false, 3, HealthSignal::Probe);
-        entry.record_health(false, 3, HealthSignal::Probe);
-        assert!(entry.eligible(), "still in rotation until the third");
-        entry.record_health(false, 3, HealthSignal::Probe);
-        assert!(!entry.eligible());
+        provider.record_health(false, 3, HealthSignal::Probe);
+        provider.record_health(false, 3, HealthSignal::Probe);
+        assert!(provider.eligible(), "still in rotation until the third");
+        provider.record_health(false, 3, HealthSignal::Probe);
+        assert!(!provider.eligible());
     }
 
     #[test]
     fn one_disagreeing_result_restarts_the_streak() {
         let pool = pool(&["a"]);
-        let entry = &pool.entries()[0];
+        let provider = &pool.providers()[0];
 
-        entry.record_health(false, 3, HealthSignal::Probe);
-        entry.record_health(false, 3, HealthSignal::Probe);
-        entry.record_health(true, 3, HealthSignal::Probe);
+        provider.record_health(false, 3, HealthSignal::Probe);
+        provider.record_health(false, 3, HealthSignal::Probe);
+        provider.record_health(true, 3, HealthSignal::Probe);
         assert_eq!(
-            entry.health_streak.load(Ordering::Relaxed),
+            provider.health_streak.load(Ordering::Relaxed),
             1,
             "a success wipes the failures rather than counting against them"
         );
-        entry.record_health(false, 3, HealthSignal::Probe);
-        entry.record_health(false, 3, HealthSignal::Probe);
-        assert_eq!(entry.health_streak.load(Ordering::Relaxed), -2);
+        provider.record_health(false, 3, HealthSignal::Probe);
+        provider.record_health(false, 3, HealthSignal::Probe);
+        assert_eq!(provider.health_streak.load(Ordering::Relaxed), -2);
     }
 
     #[test]
@@ -259,8 +262,8 @@ mod tests {
         let pool = pool(&["a", "b", "c", "d"]);
         // Only the outer two are in rotation; the ineligible middle must
         // not skew the split.
-        pool.entries()[0].set_eligible(true);
-        pool.entries()[3].set_eligible(true);
+        pool.providers()[0].set_eligible(true);
+        pool.providers()[3].set_eligible(true);
         let mut picks = std::collections::HashMap::new();
         for _ in 0..100 {
             let id = pool.next_eligible().expect("eligible exist").id.clone();

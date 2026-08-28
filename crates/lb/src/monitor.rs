@@ -13,7 +13,7 @@ use tokio::sync::watch;
 
 use crate::{
     config::Health,
-    pool::{Entry, HealthSignal, Pool},
+    pool::{HealthSignal, Pool, Provider},
 };
 
 /// Probes at most this many providers at once.
@@ -57,28 +57,28 @@ impl Monitor {
         // next one starting as a slot frees up, returning when the last
         // finishes. Interleaved waiting on the Monitor's own task, not
         // threads.
-        futures::stream::iter(self.pool.entries())
-            .for_each_concurrent(CONCURRENT_PROBES, |entry| self.probe(entry))
+        futures::stream::iter(self.pool.providers())
+            .for_each_concurrent(CONCURRENT_PROBES, |provider| self.probe(provider))
             .await;
     }
 
-    async fn probe(&self, entry: &Entry) {
-        let success = match self.block_number(entry).await {
+    async fn probe(&self, provider: &Provider) {
+        let success = match self.block_number(provider).await {
             Some(height) => {
-                entry.height.store(height, Ordering::Relaxed);
+                provider.height.store(height, Ordering::Relaxed);
                 true
             }
             None => false,
         };
-        entry.record_health(success, self.config.flip_after, HealthSignal::Probe);
+        provider.record_health(success, self.config.flip_after, HealthSignal::Probe);
     }
 
     /// One `eth_blockNumber` round trip; any shortfall — transport,
     /// status, or an answer that is not a hex height — is one failure.
-    async fn block_number(&self, entry: &Entry) -> Option<u64> {
+    async fn block_number(&self, provider: &Provider) -> Option<u64> {
         let sent = self
             .client
-            .post(entry.url.clone())
+            .post(provider.url.clone())
             .header(header::CONTENT_TYPE, "application/json")
             .body(r#"{"jsonrpc":"2.0","id":0,"method":"eth_blockNumber","params":[]}"#)
             .timeout(self.config.probe_timeout)
@@ -87,18 +87,18 @@ impl Monitor {
         let response = match sent {
             Ok(response) if response.status().is_success() => response,
             Ok(response) => {
-                tracing::debug!(provider = %entry.id, status = %response.status(), "probe failed");
+                tracing::debug!(provider = %provider.id, status = %response.status(), "probe failed");
                 return None;
             }
             Err(error) => {
-                tracing::debug!(provider = %entry.id, %error, "probe failed");
+                tracing::debug!(provider = %provider.id, %error, "probe failed");
                 return None;
             }
         };
         let body: Value = serde_json::from_slice(&response.bytes().await.ok()?).ok()?;
         let height = hex_quantity(body.get("result")?);
         if height.is_none() {
-            tracing::debug!(provider = %entry.id, "probe answered without a height");
+            tracing::debug!(provider = %provider.id, "probe answered without a height");
         }
         height
     }

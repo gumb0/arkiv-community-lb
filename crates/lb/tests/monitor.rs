@@ -25,6 +25,8 @@ struct Rpc {
     /// Client requests answered. Probes send id 0, the tests' client
     /// sends id 1 — the only way to tell them apart at the fake.
     served: AtomicU64,
+    /// Every request that arrived, probes and errors included.
+    requests: AtomicU64,
 }
 
 async fn rpc_provider(chain_id: u64) -> (SocketAddr, Arc<Rpc>) {
@@ -33,11 +35,13 @@ async fn rpc_provider(chain_id: u64) -> (SocketAddr, Arc<Rpc>) {
         chain_id: AtomicU64::new(chain_id),
         down: AtomicBool::new(false),
         served: AtomicU64::new(0),
+        requests: AtomicU64::new(0),
     });
     let state = rpc.clone();
     let app = Router::new().fallback(move |body: Bytes| {
         let state = state.clone();
         async move {
+            state.requests.fetch_add(1, Ordering::Relaxed);
             if state.down.load(Ordering::Relaxed) {
                 return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "down").into_response();
             }
@@ -416,4 +420,42 @@ async fn a_chain_id_change_after_admission_evicts_and_a_fix_readmits() {
     // readmitted by ordinary probe successes.
     rpc.chain_id.store(CHAIN_ID, Ordering::Relaxed);
     wait_for("readmission after the fix", || provider.eligible()).await;
+}
+
+#[tokio::test]
+async fn a_dead_provider_is_probed_ever_more_rarely() {
+    let (a, rpc_a) = rpc_provider(CHAIN_ID).await;
+    let (b, rpc_b) = rpc_provider(CHAIN_ID).await;
+    let service = start_monitored(&[a, b], |config| {
+        config.health.max_probe_backoff = Duration::from_millis(80);
+    })
+    .await;
+    wait_for("both admitted", || {
+        service
+            .pool
+            .providers()
+            .iter()
+            .all(|provider| provider.eligible())
+    })
+    .await;
+
+    // One dies (still answering 503, so its probes are countable). The
+    // probes thin out toward max_probe_backoff while the live provider
+    // stays on the 20ms beat.
+    rpc_a.down.store(true, Ordering::Relaxed);
+    let dead_before = rpc_a.requests.load(Ordering::Relaxed);
+    let live_before = rpc_b.requests.load(Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let dead = rpc_a.requests.load(Ordering::Relaxed) - dead_before;
+    let live = rpc_b.requests.load(Ordering::Relaxed) - live_before;
+
+    assert!(!service.pool.providers()[0].eligible());
+    assert!(
+        dead >= 3,
+        "backoff caps at max_probe_backoff, it never stops probing: {dead}"
+    );
+    assert!(
+        dead * 2 < live,
+        "a dead provider must be probed much more rarely: dead {dead}, live {live}"
+    );
 }

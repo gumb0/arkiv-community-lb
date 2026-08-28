@@ -3,7 +3,13 @@
 //! hot path reads without locks. Probes and traffic both feed the
 //! health streak; only probes bring a provider into rotation.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::{
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering},
+    },
+    time::Instant,
+};
 
 use reqwest::Url;
 
@@ -24,6 +30,10 @@ pub struct Provider {
     /// Confirmed to be on the same chain as the reference. False until
     /// the first passing check; a mismatch clears it and quarantines.
     pub chain_verified: AtomicBool,
+    /// When the next probe is due. Failing probes past the quarantine
+    /// point push this out. A `Mutex` because `Instant` has no atomic;
+    /// only the Monitor touches it, briefly.
+    next_probe: Mutex<Instant>,
     /// Completed forwards, the billing basis.
     pub served: AtomicU64,
 }
@@ -51,8 +61,16 @@ impl Provider {
             health_streak: AtomicI64::new(0),
             height: AtomicU64::new(0),
             chain_verified: AtomicBool::new(false),
+            next_probe: Mutex::new(Instant::now()),
             served: AtomicU64::new(0),
         })
+    }
+
+    /// The next-probe time, locked. Poisoning is ignored.
+    pub fn next_probe(&self) -> std::sync::MutexGuard<'_, Instant> {
+        self.next_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// One completed forward. Answers, not attempts: this is the

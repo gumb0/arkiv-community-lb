@@ -4,7 +4,10 @@
 //! traffic can both take a provider out of rotation, but only probes
 //! bring one in.
 
-use std::sync::{Arc, atomic::Ordering};
+use std::{
+    sync::{Arc, atomic::Ordering},
+    time::Duration,
+};
 
 use futures::StreamExt;
 use reqwest::header;
@@ -98,6 +101,7 @@ impl Monitor {
     }
 
     async fn probe_all(&self, reference_height: Option<u64>, chain_round: bool) {
+        let now = std::time::Instant::now();
         // Probing one by one would make a round as slow as the sum of
         // all timeouts; probing everyone at once would spike load with a
         // large pool. So: up to CONCURRENT_PROBES probes at once, each
@@ -106,11 +110,31 @@ impl Monitor {
         // threads.
         futures::stream::iter(self.pool.providers())
             .for_each_concurrent(CONCURRENT_PROBES, |provider| async move {
-                if self.chain_cleared(provider, chain_round).await {
-                    self.probe(provider, reference_height).await;
+                let due = *provider.next_probe() <= now;
+                if due && self.chain_cleared(provider, chain_round).await {
+                    let answered = self.probe(provider, reference_height).await;
+                    if !answered {
+                        self.reschedule_unanswered(provider, now);
+                    }
                 }
             })
             .await;
+    }
+
+    /// An unanswered probe pushes the next one out, doubling with the
+    /// failure streak's depth up to `max_probe_backoff`. Quarantine is
+    /// never slowed: the first `flip_after` failures keep full cadence.
+    /// Answered probes change nothing — the streak resets itself, and
+    /// `next_probe` already lies in the past.
+    fn reschedule_unanswered(&self, provider: &Provider, now: std::time::Instant) {
+        // Number of failures is negative `health_streak`, 0 if we're on a healthy streak.
+        let failures = provider
+            .health_streak
+            .load(Ordering::Relaxed)
+            .min(0)
+            .unsigned_abs();
+        let delay = probe_delay(&self.config, failures);
+        *provider.next_probe() = now + delay;
     }
 
     /// Whether this provider may be probed this round: confirmed on the
@@ -148,10 +172,11 @@ impl Monitor {
         }
     }
 
-    async fn probe(&self, provider: &Provider, reference_height: Option<u64>) {
+    /// Returns whether the provider answered — a lagging provider did.
+    async fn probe(&self, provider: &Provider, reference_height: Option<u64>) -> bool {
         let Some(height) = self.query_block_number(&provider.id, &provider.url).await else {
             provider.record_health(false, self.config.flip_after, HealthSignal::Probe);
-            return;
+            return false;
         };
         provider.height.store(height, Ordering::Relaxed);
 
@@ -167,6 +192,7 @@ impl Monitor {
             }
             _ => provider.record_health(true, self.config.flip_after, HealthSignal::Probe),
         }
+        true
     }
 
     async fn query_block_number(&self, id: &str, url: &reqwest::Url) -> Option<u64> {
@@ -219,6 +245,19 @@ impl Monitor {
     }
 }
 
+/// The wait before a failing provider's next probe.
+fn probe_delay(config: &Health, failures: u64) -> Duration {
+    // First `flip_after` failures don't back off the probes -
+    // quarantine is never slowed.
+    let excess =
+        u32::try_from(failures.saturating_sub(u64::from(config.flip_after))).unwrap_or(u32::MAX);
+    // Next probe is after probe_interval * 2^excess, capped at max_probe_backoff.
+    config
+        .probe_interval
+        .saturating_mul(1u32.checked_shl(excess).unwrap_or(u32::MAX))
+        .min(config.max_probe_backoff)
+}
+
 /// A JSON-RPC quantity: a JSON string holding "0x"-prefixed hex.
 fn hex_quantity(value: &Value) -> Option<u64> {
     let hex = value.as_str()?.strip_prefix("0x")?;
@@ -229,6 +268,31 @@ fn hex_quantity(value: &Value) -> Option<u64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn probe_delay_spares_quarantine_then_doubles_to_the_cap() {
+        let config = Health {
+            probe_interval: Duration::from_secs(5),
+            flip_after: 3,
+            max_probe_backoff: Duration::from_secs(60),
+            ..Health::default()
+        };
+        let delay = |failures| probe_delay(&config, failures);
+
+        // Up to and including flip_after: full cadence, quarantine is
+        // never slowed.
+        assert_eq!(delay(0), Duration::from_secs(5));
+        assert_eq!(delay(1), Duration::from_secs(5));
+        assert_eq!(delay(3), Duration::from_secs(5));
+        // Past it: doubling.
+        assert_eq!(delay(4), Duration::from_secs(10));
+        assert_eq!(delay(5), Duration::from_secs(20));
+        assert_eq!(delay(6), Duration::from_secs(40));
+        // The cap, and no overflow however deep the streak goes.
+        assert_eq!(delay(7), Duration::from_secs(60));
+        assert_eq!(delay(1_000_000), Duration::from_secs(60));
+        assert_eq!(delay(u64::MAX), Duration::from_secs(60));
+    }
 
     #[test]
     fn hex_quantities_parse_and_junk_does_not() {

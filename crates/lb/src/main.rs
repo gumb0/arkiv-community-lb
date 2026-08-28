@@ -14,10 +14,13 @@ async fn main() {
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "config.toml".into());
-    let config = match lb::config::Config::load(Path::new(&path)) {
+    let mut config = match lb::config::Config::load(Path::new(&path)) {
         Ok(config) => config,
         Err(error) => fail(&error),
     };
+    config.reference = std::env::var("ARKIV_RPC_URL")
+        .ok()
+        .filter(|url| !url.is_empty());
     let providers = config.providers.len();
 
     let service = match lb::service::start(config).await {

@@ -27,6 +27,12 @@ pub enum StartError {
     },
     #[error(transparent)]
     Provider(#[from] pool::InvalidUrl),
+    #[error("reference url {url:?} does not parse")]
+    Reference {
+        url: String,
+        #[source]
+        source: url::ParseError,
+    },
 }
 
 pub async fn start(config: Config) -> Result<Service, StartError> {
@@ -63,7 +69,23 @@ pub async fn start(config: Config) -> Result<Service, StartError> {
         serve(admin, admin::router(), shutdown.subscribe()),
     ];
     if !config.health.disable_probing {
-        let monitor = monitor::Monitor::new(pool.clone(), client, config.health.clone());
+        let reference = match &config.reference {
+            Some(url) => {
+                Some(
+                    reqwest::Url::parse(url).map_err(|source| StartError::Reference {
+                        url: url.clone(),
+                        source,
+                    })?,
+                )
+            }
+            None => {
+                tracing::warn!(
+                    "no reference endpoint (ARKIV_RPC_URL): chain head lag goes unchecked"
+                );
+                None
+            }
+        };
+        let monitor = monitor::Monitor::new(pool.clone(), client, config.health.clone(), reference);
         tasks.push(tokio::spawn(monitor.run(shutdown.subscribe())));
     }
 

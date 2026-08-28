@@ -26,6 +26,10 @@ pub struct Config {
     pub health: Health,
     pub proxy: Proxy,
     pub providers: Vec<Provider>,
+    /// The reference RPC endpoint. Comes from `ARKIV_RPC_URL` in the
+    /// environment — the same variable the writer sidecar reads.
+    #[serde(skip)]
+    pub reference: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -219,6 +223,12 @@ mod tests {
     fn the_probing_test_hook_is_not_reachable_from_toml() {
         parse("[health]\ndisable_probing = true\n")
             .expect_err("a serde-skipped field must stay unknown to the toml");
+    }
+
+    #[test]
+    fn the_reference_endpoint_is_not_reachable_from_toml() {
+        parse("reference = \"http://example.org\"\n")
+            .expect_err("the reference comes from the environment only");
     }
 
     #[test]

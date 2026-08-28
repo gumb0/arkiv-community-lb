@@ -117,6 +117,7 @@ impl Provider {
 pub enum HealthSignal {
     Probe,
     Traffic,
+    Lag,
 }
 
 impl std::fmt::Display for HealthSignal {
@@ -124,6 +125,7 @@ impl std::fmt::Display for HealthSignal {
         f.write_str(match self {
             Self::Probe => "probe",
             Self::Traffic => "traffic",
+            Self::Lag => "lag",
         })
     }
 }

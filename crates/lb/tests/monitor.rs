@@ -67,7 +67,10 @@ async fn rpc_provider(chain_id: u64) -> (SocketAddr, Arc<Rpc>) {
 const CHAIN_ID: u64 = 1337;
 
 /// Boots the LB with a fast-probing Monitor over the given providers.
-async fn start_monitored(addrs: &[SocketAddr], tune: impl Fn(&mut Config)) -> lb::service::Service {
+async fn start_monitored(
+    addrs: &[SocketAddr],
+    tune: impl FnOnce(&mut Config),
+) -> lb::service::Service {
     let mut config = Config::default();
     config.listen.public = "127.0.0.1:0".parse().expect("addr");
     config.listen.admin = "127.0.0.1:0".parse().expect("addr");
@@ -231,5 +234,112 @@ async fn a_recovered_provider_returns_to_rotation() {
     assert!(
         rpc_a.served.load(Ordering::Relaxed) > before,
         "a readmitted provider serves client traffic again"
+    );
+}
+
+#[tokio::test]
+async fn lagging_behind_the_reference_quarantines_and_catchup_readmits() {
+    let (addr, rpc) = rpc_provider(CHAIN_ID).await;
+    let (ref_addr, reference) = rpc_provider(CHAIN_ID).await;
+    let reference_url = format!("http://{ref_addr}");
+    let service = start_monitored(&[addr], move |config| {
+        config.reference = Some(reference_url);
+        config.health.lag_tolerance_blocks = 3;
+    })
+    .await;
+    let provider = &service.pool.providers()[0];
+    wait_for("admission", || provider.eligible()).await;
+
+    // One block beyond the allowed lag quarantines...
+    rpc.height.store(96, Ordering::Relaxed);
+    reference.height.store(100, Ordering::Relaxed);
+    wait_for("lag quarantine", || !provider.eligible()).await;
+
+    // ...and exactly the allowed lag is healthy.
+    rpc.height.store(97, Ordering::Relaxed);
+    wait_for("readmission at the tolerance", || provider.eligible()).await;
+}
+
+#[tokio::test]
+async fn a_dead_reference_faults_nobody() {
+    let (addr, _rpc) = rpc_provider(CHAIN_ID).await;
+    let (ref_addr, reference) = rpc_provider(CHAIN_ID).await;
+    reference.down.store(true, Ordering::Relaxed);
+    let reference_url = format!("http://{ref_addr}");
+    let service = start_monitored(&[addr], move |config| {
+        config.reference = Some(reference_url);
+        // Any lag would be beyond this tolerance...
+        config.health.lag_tolerance_blocks = 0;
+    })
+    .await;
+
+    // ...but with the reference unreachable there are no lag verdicts:
+    // the provider is admitted and stays.
+    let provider = &service.pool.providers()[0];
+    wait_for("admission", || provider.eligible()).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(provider.eligible(), "a reference outage must fault nobody");
+}
+
+#[tokio::test]
+async fn a_lag_quarantined_provider_readmits_when_the_reference_dies() {
+    let (addr, _rpc) = rpc_provider(CHAIN_ID).await;
+    let (ref_addr, reference) = rpc_provider(CHAIN_ID).await;
+    let reference_url = format!("http://{ref_addr}");
+    let service = start_monitored(&[addr], move |config| {
+        config.reference = Some(reference_url);
+        config.health.lag_tolerance_blocks = 3;
+    })
+    .await;
+    let provider = &service.pool.providers()[0];
+    wait_for("admission", || provider.eligible()).await;
+    reference.height.store(100, Ordering::Relaxed);
+    wait_for("lag quarantine", || !provider.eligible()).await;
+
+    // The reference dies: the cache clears, lag verdicts stop, and the
+    // provider's passing probes readmit it. The accepted loss: without
+    // a reference, a lagging provider cannot be told from a healthy one.
+    reference.down.store(true, Ordering::Relaxed);
+    wait_for("readmission without a reference", || provider.eligible()).await;
+}
+
+#[tokio::test]
+async fn a_lag_quarantined_provider_stops_serving_while_the_other_carries_on() {
+    let (a, rpc_a) = rpc_provider(CHAIN_ID).await;
+    let (b, rpc_b) = rpc_provider(CHAIN_ID).await;
+    let (ref_addr, reference) = rpc_provider(CHAIN_ID).await;
+    let reference_url = format!("http://{ref_addr}");
+    let service = start_monitored(&[a, b], move |config| {
+        config.reference = Some(reference_url);
+        config.health.lag_tolerance_blocks = 3;
+    })
+    .await;
+    wait_for("both admitted", || {
+        service
+            .pool
+            .providers()
+            .iter()
+            .all(|provider| provider.eligible())
+    })
+    .await;
+
+    // The chain advances; one provider stays behind — alive, answering,
+    // and serving stale data if asked.
+    reference.height.store(100, Ordering::Relaxed);
+    rpc_b.height.store(100, Ordering::Relaxed);
+    wait_for("lag quarantine", || !service.pool.providers()[0].eligible()).await;
+
+    // Every answer now comes from the provider at the chain head.
+    let public = format!("http://{}", service.public_addr);
+    let client = reqwest::Client::new();
+    let before = rpc_a.served.load(Ordering::Relaxed);
+    for _ in 0..10 {
+        let answer = block_number(&client, &public).await;
+        assert_eq!(answer["result"], "0x64", "no stale answers");
+    }
+    assert_eq!(
+        rpc_a.served.load(Ordering::Relaxed),
+        before,
+        "a live but stale provider serves nothing"
     );
 }

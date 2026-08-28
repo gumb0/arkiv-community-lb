@@ -343,3 +343,31 @@ async fn a_lag_quarantined_provider_stops_serving_while_the_other_carries_on() {
         "a live but stale provider serves nothing"
     );
 }
+
+#[tokio::test]
+async fn a_pool_larger_than_the_probe_concurrency_cap_is_fully_probed() {
+    // More providers than probe_all runs at once (16): the cap must
+    // queue the rest of a round, never drop them.
+    let mut addrs = Vec::new();
+    for _ in 0..20 {
+        let (addr, _rpc) = rpc_provider(CHAIN_ID).await;
+        addrs.push(addr);
+    }
+    let service = start_monitored(&addrs, |_| {}).await;
+
+    wait_for("all 20 admitted", || {
+        service
+            .pool
+            .providers()
+            .iter()
+            .all(|provider| provider.eligible())
+    })
+    .await;
+    for provider in service.pool.providers() {
+        assert!(
+            provider.height.load(Ordering::Relaxed) >= 1,
+            "a probe reached {}",
+            provider.id
+        );
+    }
+}

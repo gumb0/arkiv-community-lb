@@ -130,7 +130,7 @@ async fn start_lb(addrs: &[SocketAddr]) -> (lb::service::Service, String) {
 /// Like `start_lb`, with a hook to adjust the config first.
 async fn start_lb_with(
     addrs: &[SocketAddr],
-    tune: impl Fn(&mut Config),
+    tune: impl FnOnce(&mut Config),
 ) -> (lb::service::Service, String) {
     let mut config = Config::default();
     config.listen.public = "127.0.0.1:0".parse().expect("addr");

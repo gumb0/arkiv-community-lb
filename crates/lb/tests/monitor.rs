@@ -524,3 +524,88 @@ async fn a_dead_reference_keeps_being_sampled() {
         "a failing reference stays on its full cadence: {asked}"
     );
 }
+
+#[tokio::test]
+async fn health_reports_ready_after_the_first_probe_round() {
+    let (addr, _rpc) = rpc_provider(CHAIN_ID).await;
+    // Slow probes hold the first round back long enough to observe
+    // ready = false.
+    let service = start_monitored(&[addr], |config| {
+        config.health.probe_interval = Duration::from_millis(250);
+    })
+    .await;
+    let admin = format!("http://{}", service.admin_addr);
+    let client = reqwest::Client::new();
+    let health = |client: reqwest::Client, admin: String| async move {
+        let body: Value = client
+            .get(format!("{admin}/health"))
+            .send()
+            .await
+            .expect("health answers")
+            .json()
+            .await
+            .expect("json");
+        body
+    };
+
+    let body = health(client.clone(), admin.clone()).await;
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["ready"], false, "the first round has not finished");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let body = health(client.clone(), admin.clone()).await;
+        if body["ready"] == true {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for ready"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        service.pool.providers()[0].eligible(),
+        "ready means the boot window closed: the healthy provider is already admitted"
+    );
+}
+
+#[tokio::test]
+async fn shutdown_completes_with_a_running_monitor() {
+    let (addr, _rpc) = rpc_provider(CHAIN_ID).await;
+    let service = start_monitored(&[addr], |_| {}).await;
+    wait_for("admission", || service.pool.providers()[0].eligible()).await;
+
+    tokio::time::timeout(Duration::from_secs(5), service.shutdown())
+        .await
+        .expect("shutdown must not hang on the Monitor");
+}
+
+#[tokio::test]
+async fn an_empty_pool_still_becomes_ready() {
+    // No providers configured: the boot window closes trivially, and
+    // ready must not wait for admissions that can never come.
+    let service = start_monitored(&[], |_| {}).await;
+    let admin = format!("http://{}", service.admin_addr);
+    let client = reqwest::Client::new();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let body: Value = client
+            .get(format!("{admin}/health"))
+            .send()
+            .await
+            .expect("health answers")
+            .json()
+            .await
+            .expect("json");
+        if body["ready"] == true {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for ready over an empty pool"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}

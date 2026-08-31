@@ -5,7 +5,10 @@
 //! bring one in.
 
 use std::{
-    sync::{Arc, atomic::Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -34,6 +37,10 @@ pub struct Monitor {
     client: reqwest::Client,
     config: Health,
     reference: Option<reqwest::Url>,
+    /// Set once `flip_after` probe rounds have completed — the boot
+    /// window is closed and every healthy provider has been admitted.
+    /// `/health` shows it.
+    ready: Arc<AtomicBool>,
 }
 
 impl Monitor {
@@ -42,12 +49,14 @@ impl Monitor {
         client: reqwest::Client,
         config: Health,
         reference: Option<reqwest::Url>,
+        ready: Arc<AtomicBool>,
     ) -> Self {
         Self {
             pool,
             client,
             config,
             reference,
+            ready,
         }
     }
 
@@ -61,6 +70,7 @@ impl Monitor {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut reference_height = ReferenceHeight::default();
         let mut last_chain_round: Option<std::time::Instant> = None;
+        let mut rounds: u32 = 0;
         loop {
             tokio::select! {
                 _ = tick.tick() => {
@@ -78,6 +88,13 @@ impl Monitor {
                         false
                     };
                     self.probe_all(reference_height.height, chain_round).await;
+                    // Ready once every healthy provider has had its
+                    // flip_after rounds to be admitted: the boot window
+                    // is closed.
+                    rounds = rounds.saturating_add(1);
+                    if rounds == self.config.flip_after {
+                        self.ready.store(true, Ordering::Relaxed);
+                    }
                 }
                 _ = shutdown.changed() => return,
             }

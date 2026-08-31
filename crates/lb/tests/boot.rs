@@ -8,6 +8,9 @@ use lb::{config::Config, jsonrpc::NO_HEALTHY_PROVIDER};
 #[tokio::test]
 async fn boots_serves_and_shuts_down() {
     let mut config = Config::default();
+    // No Monitor: even over an empty pool a probe round would complete
+    // and flip `ready`, making its assertion below racy.
+    config.health.disable_probing = true;
     config.listen.public = "127.0.0.1:0".parse().expect("addr");
     config.listen.admin = "127.0.0.1:0".parse().expect("addr");
     let service = lb::service::start(config).await.expect("service boots");
@@ -28,6 +31,10 @@ async fn boots_serves_and_shuts_down() {
     assert_eq!(health.status(), 200);
     let body: serde_json::Value = health.json().await.expect("json");
     assert_eq!(body["status"], "ok");
+    assert_eq!(
+        body["ready"], false,
+        "probing is disabled, so ready must stay false"
+    );
 
     // An empty pool answers truthfully on the public listener.
     let response = client

@@ -609,3 +609,30 @@ async fn an_empty_pool_still_becomes_ready() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+
+#[tokio::test]
+async fn a_wrong_chain_provider_among_healthy_ones_changes_nothing_for_them() {
+    let (good_a, _rpc_a) = rpc_provider(CHAIN_ID).await;
+    let (impostor, rpc_impostor) = rpc_provider(999).await;
+    let (good_b, _rpc_b) = rpc_provider(CHAIN_ID).await;
+    let service = start_monitored(&[good_a, impostor, good_b], |_| {}).await;
+
+    let providers = service.pool.providers();
+    wait_for("both healthy providers admitted", || {
+        providers[0].eligible() && providers[2].eligible()
+    })
+    .await;
+
+    let public = format!("http://{}", service.public_addr);
+    let client = reqwest::Client::new();
+    for _ in 0..10 {
+        let answer = block_number(&client, &public).await;
+        assert_eq!(answer["result"], "0x1", "the impostor's neighbors serve");
+    }
+    assert!(!providers[1].eligible(), "the impostor stays out");
+    assert_eq!(
+        rpc_impostor.served.load(Ordering::Relaxed),
+        0,
+        "and never sees a client request"
+    );
+}

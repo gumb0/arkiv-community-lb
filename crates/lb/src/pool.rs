@@ -292,6 +292,31 @@ mod tests {
     }
 
     #[test]
+    fn quarantine_evicts_at_once_and_recovery_starts_from_zero() {
+        let pool = pool(&["a"]);
+        let provider = &pool.providers()[0];
+        for _ in 0..5 {
+            provider.record_health(true, 3, HealthSignal::Probe);
+        }
+        assert!(provider.eligible());
+
+        provider.quarantine(HealthSignal::Chain);
+        assert!(!provider.eligible(), "no failure streak needed");
+        assert_eq!(
+            provider.health_streak.load(Ordering::Relaxed),
+            0,
+            "the old success streak must not survive"
+        );
+
+        // Which is what makes readmission take a full flip_after again.
+        provider.record_health(true, 3, HealthSignal::Probe);
+        provider.record_health(true, 3, HealthSignal::Probe);
+        assert!(!provider.eligible());
+        provider.record_health(true, 3, HealthSignal::Probe);
+        assert!(provider.eligible());
+    }
+
+    #[test]
     fn round_robin_is_even_over_the_eligible() {
         let pool = pool(&["a", "b", "c", "d"]);
         // Only the outer two are in rotation; the ineligible middle must

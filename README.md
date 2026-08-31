@@ -6,11 +6,16 @@ Providers are discovered through an on-chain marketplace, paid in GLM for the
 requests they serve, and checked for integrity — the nodes are permissionless,
 not operator-chosen.
 
-**Status: under construction.** The pieces below exist; the LB service
-itself does not yet.
+**Status: under construction.**
 
 ## What is here
 
+- **The LB service** (`crates/lb/`): round-robin load balancing with
+  failover over a configured provider list, health probing with
+  automatic quarantine and readmission, chain head lag and chain
+  identity checks, probe backoff. The client contract is
+  [docs/ENDPOINT.md](docs/ENDPOINT.md); the architecture note is
+  [docs/PROXY.md](docs/PROXY.md).
 - **Chain-writer sidecar** (`writer/`): entity writes over the official
   Arkiv TS SDK, behind a small HTTP service — wire format and error
   contract in [docs/CHAIN_WRITER.md](docs/CHAIN_WRITER.md). Unit-tested
@@ -22,8 +27,8 @@ itself does not yet.
 
 ## Still to come
 
-- The LB service (Rust): health checking, failover, load balancing across
-  provider nodes, admin API.
+- The admin API: the operator's view of the pool, and direct probing of
+  single providers.
 - A marketplace agent: discovers provider offers on Arkiv and keeps agreements
   alive on-chain.
 - A settle CLI: computes per-period payouts from on-chain records and pays GLM
@@ -46,6 +51,11 @@ Deliberate for the first version, not oversights:
   per method.
 - Nothing limits how many requests a client may send, or how many run at
   once, so memory use scales with concurrency times the response cap.
+- Health is binary: a provider that is slow but still answering keeps
+  its full share of traffic.
+- A provider's chain head lag is measured against a reference endpoint,
+  so while that endpoint is unreachable, one provider falling behind its
+  peers goes unnoticed.
 
 ## License
 

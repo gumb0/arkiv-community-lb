@@ -72,9 +72,17 @@ balancer refuses to start with a smaller value.
 Providers are **born ineligible**: a new entry serves nothing until its
 first probes pass, and the very first contact verifies the chain
 identity — a node on the wrong chain never serves a single request, and
-is flagged as misconfigured rather than failing. The chain check repeats
-periodically, so a provider switched to another chain after admission is
-caught the same way.
+is flagged as misconfigured rather than failing. The expected chain id
+is configuration (`chain_id`; unset means identity goes unchecked). The
+check repeats periodically, so a provider switched to another chain
+after admission is caught the same way — and this is the one verdict
+that skips the `flip_after` rule: a wrong chain id is a certainty, so
+it quarantines on the spot.
+
+Readiness is visible from the outside: the admin `/health` reports
+`ready` once the boot window has closed — every healthy provider has
+had its `flip_after` rounds to be admitted — so tooling waits on it
+instead of sleeping.
 
 Chain height **lag** is judged against the official reference RPC, per provider: a
 provider ahead of the reference or within a tolerance behind it is

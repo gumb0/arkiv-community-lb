@@ -159,6 +159,20 @@ impl Config {
                 "health.probe_interval must be greater than zero".into(),
             ));
         }
+        for (name, interval) in [
+            ("ref_height_interval", self.health.ref_height_interval),
+            ("chainid_check_interval", self.health.chainid_check_interval),
+        ] {
+            // These are only sampled at probe rounds: a value below
+            // probe_interval silently behaves as "every sweep", which
+            // is what zero already says.
+            if !interval.is_zero() && interval < self.health.probe_interval {
+                return Err(ConfigError::Invalid(format!(
+                    "health.{name} is shorter than health.probe_interval: checks happen \
+                     on probe rounds, so use 0 (every round) or at least the probe interval"
+                )));
+            }
+        }
         if self.health.flip_after < 2 {
             return Err(ConfigError::Invalid(format!(
                 "health.flip_after is {}, minimum is 2: a provider's health may \
@@ -238,6 +252,16 @@ mod tests {
     fn zero_chainid_check_interval_means_every_round() {
         let config = parse("[health]\nchainid_check_interval = \"0s\"\n").expect("zero is legal");
         assert!(config.health.chainid_check_interval.is_zero());
+    }
+
+    #[test]
+    fn check_intervals_below_the_probe_interval_are_refused() {
+        for name in ["ref_height_interval", "chainid_check_interval"] {
+            let error = parse(&format!("[health]\n{name} = \"1s\"\n")).expect_err("must refuse");
+            assert!(error.to_string().contains(name), "{error}");
+            parse(&format!("[health]\n{name} = \"5s\"\n"))
+                .expect("equal to probe_interval is fine");
+        }
     }
 
     #[test]

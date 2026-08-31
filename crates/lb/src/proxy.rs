@@ -147,6 +147,7 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
             }
             Outcome::NoAnswer => {
                 provider.record_health(false, state.flip_after, HealthSignal::Traffic);
+                provider.record_transport_failure();
                 continue;
             }
         }

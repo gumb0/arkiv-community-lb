@@ -200,13 +200,16 @@ impl Monitor {
 
     /// Returns whether the provider answered — a lagging provider did.
     async fn probe(&self, provider: &Provider, reference_height: Option<u64>) -> bool {
-        let Some(height) = self.query_block_number(&provider.id, &provider.url).await else {
+        let started = std::time::Instant::now();
+        let height = self.query_block_number(&provider.id, &provider.url).await;
+        provider.record_probe_duration(started.elapsed());
+        let Some(height) = height else {
             provider.record_unanswered_probe();
             provider.record_health(false, self.config.flip_after, HealthSignal::Probe);
             return false;
         };
         provider.record_answered_probe();
-        provider.height.store(height, Ordering::Relaxed);
+        provider.record_height(height);
 
         // Ahead of the reference, or behind it within the tolerance, is
         // healthy; further behind is one failure. No reference height

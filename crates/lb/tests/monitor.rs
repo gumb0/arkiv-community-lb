@@ -152,7 +152,11 @@ async fn probes_admit_a_healthy_provider() {
     );
     wait_for_all_admitted(&service).await;
     assert!(
-        provider.height.load(Ordering::Relaxed) >= 1,
+        provider.last_probe_ms().is_some(),
+        "a passing probe records its round-trip time"
+    );
+    assert!(
+        provider.last_height().is_some_and(|height| height >= 1),
         "a passing probe records the height it saw"
     );
 }
@@ -166,6 +170,10 @@ async fn a_killed_provider_is_quarantined_and_readmitted_on_recovery() {
 
     rpc.down.store(true, Ordering::Relaxed);
     wait_for_eviction(provider).await;
+    assert!(
+        provider.last_probe_ms().is_some(),
+        "failed probes still record how long they took"
+    );
 
     rpc.down.store(false, Ordering::Relaxed);
     wait_for("readmission", || provider.eligible()).await;
@@ -266,6 +274,7 @@ async fn lagging_behind_the_reference_quarantines_and_catchup_readmits() {
     rpc.height.store(96, Ordering::Relaxed);
     reference.height.store(100, Ordering::Relaxed);
     wait_for_eviction(provider).await;
+    assert_eq!(provider.ineligibility_reason(), Some("lag"));
 
     // ...and exactly the allowed lag is healthy.
     rpc.height.store(97, Ordering::Relaxed);
@@ -438,7 +447,7 @@ async fn a_pool_larger_than_the_probe_concurrency_cap_is_fully_probed() {
     wait_for_all_admitted(&service).await;
     for provider in service.pool.providers() {
         assert!(
-            provider.height.load(Ordering::Relaxed) >= 1,
+            provider.last_height().is_some_and(|height| height >= 1),
             "a probe reached {}",
             provider.id
         );
@@ -455,8 +464,8 @@ async fn a_wrong_chain_provider_is_never_admitted() {
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert!(!provider.eligible(), "wrong chain never enters rotation");
     assert_eq!(
-        provider.height.load(Ordering::Relaxed),
-        0,
+        provider.last_height(),
+        None,
         "a wrong-chain provider is not even asked for its height"
     );
     assert_eq!(rpc.served.load(Ordering::Relaxed), 0, "and serves nothing");
@@ -490,6 +499,37 @@ async fn a_provider_padding_its_probe_answers_is_never_admitted() {
     assert!(
         !service.pool.providers()[0].eligible(),
         "an oversized probe answer must count as no answer"
+    );
+}
+
+#[tokio::test]
+async fn an_unanswered_initial_chain_check_changes_nothing_and_keeps_its_cadence() {
+    let (addr, rpc) = rpc_provider(CHAIN_ID).await;
+    rpc.down.store(true, Ordering::Relaxed);
+    let service = start_monitored(&[addr], |_| {}).await;
+    let provider = &service.pool.providers()[0];
+
+    // Many ordinary sweeps pass, but chain identity keeps its own
+    // slower cadence rather than retrying on every sweep.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        rpc.requests.load(Ordering::Relaxed),
+        1,
+        "only the initial chain check was due"
+    );
+
+    // The failed check itself changed nothing: the admin view still
+    // reads "probe" — born ineligible, no passing probe yet.
+    assert_eq!(provider.ineligibility_reason(), Some("probe"));
+    assert_eq!(
+        provider.health_streak.load(Ordering::Relaxed),
+        0,
+        "chain-check transport failure must not feed the height-probe streak"
+    );
+    assert_eq!(
+        provider.last_probe_ms(),
+        None,
+        "the block-height probe never ran"
     );
 }
 
@@ -722,5 +762,43 @@ async fn a_wrong_chain_provider_among_healthy_ones_changes_nothing_for_them() {
         rpc_impostor.served.load(Ordering::Relaxed),
         0,
         "and never sees a client request"
+    );
+}
+
+#[tokio::test]
+async fn nodes_reports_chain_verification_from_a_live_monitor() {
+    let (good, _rpc) = rpc_provider(CHAIN_ID).await;
+    let (impostor, _rpc_impostor) = rpc_provider(999).await;
+    let service = start_monitored(&[good, impostor], |_| {}).await;
+    wait_for("the good provider admitted", || {
+        service.pool.providers()[0].eligible()
+    })
+    .await;
+
+    let admin = format!("http://{}", service.admin_addr);
+    let nodes: Value = reqwest::Client::new()
+        .get(format!("{admin}/nodes"))
+        .send()
+        .await
+        .expect("nodes answers")
+        .json()
+        .await
+        .expect("json");
+
+    let good = &nodes[0];
+    assert_eq!(good["eligible"], true);
+    assert_eq!(good["chain_verified"], true);
+    assert_eq!(good["ineligibility_reason"], Value::Null);
+    assert!(good["last_height"].as_u64().is_some_and(|h| h >= 1));
+    assert!(good["last_probe_ms"].is_u64());
+
+    let impostor = &nodes[1];
+    assert_eq!(impostor["eligible"], false);
+    assert_eq!(impostor["chain_verified"], false);
+    assert_eq!(impostor["ineligibility_reason"], "chain");
+    assert_eq!(
+        impostor["last_height"],
+        Value::Null,
+        "never asked for its height"
     );
 }

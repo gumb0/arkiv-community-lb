@@ -668,6 +668,8 @@ async fn the_served_counter_follows_answers_not_attempts() {
         "a provider that never answered bills nothing, though it was tried"
     );
     assert_eq!(providers[1].served.load(Ordering::Relaxed), 3);
+    assert_eq!(providers[0].transport_failures.load(Ordering::Relaxed), 3);
+    assert_eq!(providers[1].transport_failures.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]

@@ -7,9 +7,9 @@
 use std::{
     sync::{
         Mutex,
-        atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use reqwest::Url;
@@ -26,8 +26,9 @@ pub struct Provider {
     /// Positive = consecutive successes (probes only), negative =
     /// consecutive failures (probes and traffic alike).
     pub health_streak: AtomicI64,
-    /// Last head height a probe returned.
-    pub height: AtomicU64,
+    /// Last head height a probe returned. `u64::MAX` means no
+    /// successful height probe yet.
+    height: AtomicU64,
     /// Confirmed to be on the same chain as the reference. False until
     /// the first passing check; a mismatch clears it and quarantines.
     pub chain_verified: AtomicBool,
@@ -41,6 +42,14 @@ pub struct Provider {
     unanswered_probe_streak: AtomicU32,
     /// Completed forwards, the billing basis.
     pub served: AtomicU64,
+    /// Client-traffic attempts that did not produce a provider answer.
+    pub transport_failures: AtomicU64,
+    /// Source of the most recent health signal. Starts as `Probe`:
+    /// born-ineligible means no passing probe yet.
+    last_health_source: AtomicU8,
+    /// Round-trip time of the last block-height probe. `u64::MAX`
+    /// means this provider has not been probed yet.
+    last_probe_ms: AtomicU64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -64,11 +73,14 @@ impl Provider {
             url,
             eligible: AtomicBool::new(false),
             health_streak: AtomicI64::new(0),
-            height: AtomicU64::new(0),
+            height: AtomicU64::new(u64::MAX),
             chain_verified: AtomicBool::new(false),
             next_probe: Mutex::new(Instant::now()),
             unanswered_probe_streak: AtomicU32::new(0),
             served: AtomicU64::new(0),
+            transport_failures: AtomicU64::new(0),
+            last_health_source: AtomicU8::new(HealthSignal::Probe as u8),
+            last_probe_ms: AtomicU64::new(u64::MAX),
         })
     }
 
@@ -100,6 +112,55 @@ impl Provider {
         self.served.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// One client-traffic attempt that produced no provider answer.
+    pub fn record_transport_failure(&self) {
+        self.transport_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records one block-height probe's round-trip time.
+    pub fn record_probe_duration(&self, duration: Duration) {
+        // u64::MAX would read back as "never probed", so clamp to -1.
+        let millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX - 1);
+        self.last_probe_ms.store(millis, Ordering::Relaxed);
+    }
+
+    pub fn last_probe_ms(&self) -> Option<u64> {
+        match self.last_probe_ms.load(Ordering::Relaxed) {
+            u64::MAX => None,
+            millis => Some(millis),
+        }
+    }
+
+    /// Records a successfully decoded head height.
+    pub fn record_height(&self, height: u64) {
+        // u64::MAX would read back as "never probed", so clamp to -1.
+        self.height
+            .store(height.min(u64::MAX - 1), Ordering::Relaxed);
+    }
+
+    pub fn last_height(&self) -> Option<u64> {
+        match self.height.load(Ordering::Relaxed) {
+            u64::MAX => None,
+            height => Some(height),
+        }
+    }
+
+    /// Why this provider is out of rotation, for the admin view: the
+    /// source of its latest health signal — for a fresh provider,
+    /// `probe`, meaning no passing probe yet. `None` while eligible.
+    pub fn ineligibility_reason(&self) -> Option<&'static str> {
+        if self.eligible() {
+            return None;
+        }
+        HealthSignal::from_code(self.last_health_source.load(Ordering::Relaxed))
+            .map(HealthSignal::as_str)
+    }
+
+    fn record_health_source(&self, source: HealthSignal) {
+        self.last_health_source
+            .store(source as u8, Ordering::Relaxed);
+    }
+
     pub fn eligible(&self) -> bool {
         self.eligible.load(Ordering::Relaxed)
     }
@@ -113,6 +174,8 @@ impl Provider {
     /// success and failure does not flap in and out.
     /// Every flip logs one event naming its source.
     pub fn record_health(&self, success: bool, flip_after: u32, source: HealthSignal) {
+        self.record_health_source(source);
+
         let step = |streak: i64| {
             if success {
                 streak.max(0).saturating_add(1)
@@ -145,6 +208,7 @@ impl Provider {
     /// recovery starts from zero once the cause is fixed.
     pub fn quarantine(&self, source: HealthSignal) {
         self.health_streak.store(0, Ordering::Relaxed);
+        self.record_health_source(source);
         self.set_eligible_and_log(false, source);
     }
 
@@ -165,21 +229,38 @@ impl Provider {
 
 /// Where a health signal came from, for the flip log line.
 #[derive(Debug, Clone, Copy)]
+#[repr(u8)]
 pub enum HealthSignal {
-    Probe,
-    Traffic,
-    Lag,
-    Chain,
+    Probe = 1,
+    Traffic = 2,
+    Lag = 3,
+    Chain = 4,
 }
 
-impl std::fmt::Display for HealthSignal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl HealthSignal {
+    fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Probe),
+            2 => Some(Self::Traffic),
+            3 => Some(Self::Lag),
+            4 => Some(Self::Chain),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
             Self::Probe => "probe",
             Self::Traffic => "traffic",
             Self::Lag => "lag",
             Self::Chain => "chain",
-        })
+        }
+    }
+}
+
+impl std::fmt::Display for HealthSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

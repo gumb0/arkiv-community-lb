@@ -4,7 +4,11 @@
 
 use std::time::Duration;
 
-use lb::{config::Config, jsonrpc::NO_HEALTHY_PROVIDER};
+use lb::{
+    config::{Config, Provider},
+    jsonrpc::NO_HEALTHY_PROVIDER,
+    pool::HealthSignal,
+};
 
 #[tokio::test]
 async fn boots_serves_and_shuts_down() {
@@ -36,6 +40,16 @@ async fn boots_serves_and_shuts_down() {
         body["ready"], false,
         "probing is disabled, so ready must stay false"
     );
+
+    let nodes: serde_json::Value = client
+        .get(format!("{admin}/nodes"))
+        .send()
+        .await
+        .expect("nodes answers")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(nodes, serde_json::json!([]), "an empty pool is visible");
 
     // An empty pool answers truthfully on the public listener.
     let response = client
@@ -71,6 +85,99 @@ async fn boots_serves_and_shuts_down() {
     tokio::time::timeout(Duration::from_secs(5), service.shutdown())
         .await
         .expect("shutdown completes");
+}
+
+#[tokio::test]
+async fn nodes_is_a_current_view_of_the_pool() {
+    let mut config = Config::default();
+    config.health.disable_probing = true;
+    config.listen.public = "127.0.0.1:0".parse().expect("addr");
+    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    config.providers = vec![Provider {
+        id: "node-1".into(),
+        url: "http://127.0.0.1:18545".into(),
+    }];
+    let service = lb::service::start(config).await.expect("service boots");
+    let admin = format!("http://{}", service.admin_addr);
+    let client = reqwest::Client::new();
+
+    let initial: serde_json::Value = client
+        .get(format!("{admin}/nodes"))
+        .send()
+        .await
+        .expect("nodes answers")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        initial,
+        serde_json::json!([{
+            "id": "node-1",
+            "url": "http://127.0.0.1:18545/",
+            "eligible": false,
+            "ineligibility_reason": "probe",
+            "chain_verified": false,
+            "health_streak": 0,
+            "last_height": null,
+            "served": 0,
+            "transport_failures": 0,
+            "last_probe_ms": null
+        }])
+    );
+
+    // Change the entry after the first request. The next response must
+    // load the atomics again, not serve a cached snapshot.
+    let provider = &service.pool.providers()[0];
+    provider.record_health(false, 3, HealthSignal::Traffic);
+    let before_flip: serde_json::Value = client
+        .get(format!("{admin}/nodes"))
+        .send()
+        .await
+        .expect("nodes answers")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(before_flip[0]["eligible"], false);
+    assert_eq!(before_flip[0]["health_streak"], -1);
+    assert_eq!(
+        before_flip[0]["ineligibility_reason"], "traffic",
+        "the latest signal is visible even when eligibility did not flip"
+    );
+
+    provider.record_probe_duration(Duration::from_millis(7));
+    provider.record_height(0);
+    for _ in 0..3 {
+        provider.record_health(true, 3, HealthSignal::Probe);
+    }
+    provider.record_served();
+    provider.record_served();
+    provider.record_transport_failure();
+
+    let current: serde_json::Value = client
+        .get(format!("{admin}/nodes"))
+        .send()
+        .await
+        .expect("nodes answers")
+        .json()
+        .await
+        .expect("json");
+    let node = &current[0];
+    assert_eq!(node["id"], "node-1");
+    assert_eq!(node["url"], "http://127.0.0.1:18545/");
+    assert_eq!(node["eligible"], true);
+    assert_eq!(
+        node["ineligibility_reason"],
+        serde_json::Value::Null,
+        "an eligible provider has no reason to be out"
+    );
+    assert_eq!(node["chain_verified"], false);
+    assert_eq!(node["health_streak"], 3);
+    assert_eq!(node["last_height"], 0, "genesis height is not 'unknown'");
+    assert_eq!(node["served"], 2);
+    assert_eq!(node["transport_failures"], 1);
+    assert_eq!(node["last_probe_ms"], 7);
+
+    service.shutdown().await;
 }
 
 #[tokio::test]

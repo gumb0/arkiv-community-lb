@@ -68,7 +68,11 @@ pub async fn start(config: Config) -> Result<Service, StartError> {
     let (shutdown, _) = watch::channel(false);
     let mut tasks = vec![
         serve(public, proxy::router(state), shutdown.subscribe()),
-        serve(admin, admin::router(ready.clone()), shutdown.subscribe()),
+        serve(
+            admin,
+            admin::router(pool.clone(), ready.clone()),
+            shutdown.subscribe(),
+        ),
     ];
     if !config.health.disable_probing {
         let reference = match &config.reference {

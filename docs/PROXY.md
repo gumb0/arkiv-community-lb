@@ -23,6 +23,49 @@ atomic, so the hot path reads it without locks. Selection is plain round
 robin over eligible entries; when a full lap finds none, the client gets
 the no-healthy-provider error.
 
+## Admin node view
+
+`GET /nodes` on the admin listener returns a JSON array in configured
+provider order. It reads the provider entries on every request; there is
+no separate snapshot or cache.
+
+```json
+[
+  {
+    "id": "node-1",
+    "url": "http://127.0.0.1:18545/",
+    "eligible": true,
+    "ineligibility_reason": null,
+    "chain_verified": true,
+    "health_streak": 4,
+    "last_height": 12345,
+    "served": 98,
+    "transport_failures": 2,
+    "last_probe_ms": 12
+  }
+]
+```
+
+- `ineligibility_reason` says why a provider is out of rotation:
+  `probe`, `traffic`, `lag`, or `chain` — the source of its latest
+  health signal. It is `null` while the provider is eligible. A fresh
+  provider reads `probe`: born ineligible, no passing probe yet.
+- `chain_verified` says the provider passed its last chain-identity
+  check. It stays `false` when no `chain_id` is configured.
+- `health_streak` is positive for consecutive successes and negative
+  for consecutive failures.
+- `last_height` is the last successfully decoded block height, or
+  `null` before one is observed. Height zero is reported as zero.
+- `served` counts completed public forwards, the billing basis.
+- `transport_failures` counts public forwarding attempts that produced
+  no provider answer, such as connection errors, timeouts, non-2xx
+  statuses, and incomplete response bodies.
+- `last_probe_ms` is the round-trip time of the latest provider
+  `eth_blockNumber` health probe, including failed attempts, measured
+  in whole milliseconds. It is `null` before the first probe; a
+  round trip shorter than one millisecond is reported as zero. It remains
+  `null` when an unanswered chain check prevents the height probe.
+
 ## Forwarding and the credential boundary
 
 The Proxy forwards the request body untouched and builds fresh headers —

@@ -1,5 +1,6 @@
-//! Boots the real service in-process and checks the two listeners from
-//! the outside.
+//! The service's wiring, checked from the outside: both listeners
+//! bind and route independently, a zero-config boot answers
+//! truthfully, and shutdown completes.
 
 use std::time::Duration;
 

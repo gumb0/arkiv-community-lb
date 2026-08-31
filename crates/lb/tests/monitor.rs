@@ -459,3 +459,68 @@ async fn a_dead_provider_is_probed_ever_more_rarely() {
         "a dead provider must be probed much more rarely: dead {dead}, live {live}"
     );
 }
+
+#[tokio::test]
+async fn the_reference_is_asked_on_its_own_cadence() {
+    let probe_interval = Duration::from_millis(20);
+    let ref_height_interval = Duration::from_millis(100);
+    let (addr, rpc) = rpc_provider(CHAIN_ID).await;
+    let (ref_addr, reference) = rpc_provider(CHAIN_ID).await;
+    let reference_url = format!("http://{ref_addr}");
+    let service = start_monitored(&[addr], move |config| {
+        config.reference = Some(reference_url);
+        config.health.probe_interval = probe_interval;
+        config.health.ref_height_interval = ref_height_interval;
+    })
+    .await;
+    let provider = &service.pool.providers()[0];
+    wait_for("admission", || provider.eligible()).await;
+
+    let reference_before = reference.requests.load(Ordering::Relaxed);
+    let provider_before = rpc.requests.load(Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let reference_asked = reference.requests.load(Ordering::Relaxed) - reference_before;
+    let provider_probed = rpc.requests.load(Ordering::Relaxed) - provider_before;
+
+    assert!(
+        reference_asked >= 2,
+        "the reference is still sampled: {reference_asked}"
+    );
+    // The provider is probed every round; the reference is asked once
+    // per `rounds_per_ask` rounds. If the interval were ignored, the two
+    // counts would be equal — the factor 2 is slack for timing jitter,
+    // keeping the bar halfway between the two behaviors.
+    let rounds_per_ask =
+        u64::try_from(ref_height_interval.as_millis() / probe_interval.as_millis()).expect("small");
+    assert!(
+        reference_asked * rounds_per_ask < provider_probed * 2,
+        "one reference ask per {rounds_per_ask} probe rounds, give or take: \
+         reference {reference_asked}, provider {provider_probed}"
+    );
+}
+
+#[tokio::test]
+async fn a_dead_reference_keeps_being_sampled() {
+    // Deliberately no backoff for the reference: it is the operator's
+    // own endpoint, and lag checks must resume the moment it returns.
+    let (addr, _rpc) = rpc_provider(CHAIN_ID).await;
+    let (ref_addr, reference) = rpc_provider(CHAIN_ID).await;
+    reference.down.store(true, Ordering::Relaxed);
+    let reference_url = format!("http://{ref_addr}");
+    let service = start_monitored(&[addr], move |config| {
+        config.reference = Some(reference_url);
+    })
+    .await;
+    let provider = &service.pool.providers()[0];
+    wait_for("admission", || provider.eligible()).await;
+
+    let before = reference.requests.load(Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let asked = reference.requests.load(Ordering::Relaxed) - before;
+    // Full cadence is ~15 asks in this window (300ms / 20ms rounds);
+    // provider-style backoff would leave ~5. The bar sits between.
+    assert!(
+        asked >= 10,
+        "a failing reference stays on its full cadence: {asked}"
+    );
+}

@@ -9,6 +9,7 @@ use tokio::{net::TcpListener, sync::watch, task::JoinHandle};
 
 use crate::{admin, config::Config, forwarder::Forwarder, monitor, pool, proxy};
 
+#[derive(Debug)]
 pub struct Service {
     pub public_addr: SocketAddr,
     pub admin_addr: SocketAddr,

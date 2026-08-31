@@ -72,3 +72,16 @@ async fn boots_serves_and_shuts_down() {
         .await
         .expect("shutdown completes");
 }
+
+#[tokio::test]
+async fn a_bad_reference_url_refuses_to_start() {
+    let mut config = Config::default();
+    config.listen.public = "127.0.0.1:0".parse().expect("addr");
+    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    config.reference = Some("not a url".into());
+
+    let error = lb::service::start(config)
+        .await
+        .expect_err("must refuse a reference that cannot be probed");
+    assert!(error.to_string().contains("not a url"), "{error}");
+}

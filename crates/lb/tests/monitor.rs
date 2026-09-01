@@ -120,6 +120,26 @@ async fn wait_for(what: &str, condition: impl Fn() -> bool) {
     }
 }
 
+/// Polls until every configured provider is in rotation.
+async fn wait_for_all_admitted(service: &lb::service::Service) {
+    wait_for("every provider admitted", || {
+        service
+            .pool
+            .providers()
+            .iter()
+            .all(|provider| provider.eligible())
+    })
+    .await;
+}
+
+/// Polls until the provider leaves rotation.
+async fn wait_for_eviction(provider: &lb::pool::Provider) {
+    wait_for(&format!("eviction of {}", provider.id), || {
+        !provider.eligible()
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn probes_admit_a_healthy_provider() {
     let (addr, _rpc) = rpc_provider(CHAIN_ID).await;
@@ -130,7 +150,7 @@ async fn probes_admit_a_healthy_provider() {
         !provider.eligible(),
         "born ineligible: nothing is served before the first probes pass"
     );
-    wait_for("admission", || provider.eligible()).await;
+    wait_for_all_admitted(&service).await;
     assert!(
         provider.height.load(Ordering::Relaxed) >= 1,
         "a passing probe records the height it saw"
@@ -142,10 +162,10 @@ async fn a_killed_provider_is_quarantined_and_readmitted_on_recovery() {
     let (addr, rpc) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[addr], |_| {}).await;
     let provider = &service.pool.providers()[0];
-    wait_for("admission", || provider.eligible()).await;
+    wait_for_all_admitted(&service).await;
 
     rpc.down.store(true, Ordering::Relaxed);
-    wait_for("quarantine", || !provider.eligible()).await;
+    wait_for_eviction(provider).await;
 
     rpc.down.store(false, Ordering::Relaxed);
     wait_for("readmission", || provider.eligible()).await;
@@ -168,8 +188,7 @@ async fn the_boot_window_answers_no_healthy_provider_then_serves() {
     assert_eq!(first["error"]["code"], -32051);
 
     // ...and the window closes by itself.
-    let provider = &service.pool.providers()[0];
-    wait_for("admission", || provider.eligible()).await;
+    wait_for_all_admitted(&service).await;
     let served = block_number(&client, &public).await;
     assert_eq!(served["result"], "0x1", "the provider's answer, relayed");
 }
@@ -179,14 +198,7 @@ async fn failover_keeps_serving_while_a_provider_dies() {
     let (a, rpc_a) = rpc_provider(CHAIN_ID).await;
     let (b, _rpc_b) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[a, b], |_| {}).await;
-    wait_for("both admitted", || {
-        service
-            .pool
-            .providers()
-            .iter()
-            .all(|provider| provider.eligible())
-    })
-    .await;
+    wait_for_all_admitted(&service).await;
 
     let public = format!("http://{}", service.public_addr);
     let client = reqwest::Client::new();
@@ -214,18 +226,11 @@ async fn a_recovered_provider_returns_to_rotation() {
     let (a, rpc_a) = rpc_provider(CHAIN_ID).await;
     let (b, _rpc_b) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[a, b], |_| {}).await;
-    wait_for("both admitted", || {
-        service
-            .pool
-            .providers()
-            .iter()
-            .all(|provider| provider.eligible())
-    })
-    .await;
+    wait_for_all_admitted(&service).await;
 
     let provider_a = &service.pool.providers()[0];
     rpc_a.down.store(true, Ordering::Relaxed);
-    wait_for("quarantine", || !provider_a.eligible()).await;
+    wait_for_eviction(provider_a).await;
     rpc_a.down.store(false, Ordering::Relaxed);
     wait_for("readmission", || provider_a.eligible()).await;
 
@@ -255,12 +260,12 @@ async fn lagging_behind_the_reference_quarantines_and_catchup_readmits() {
     })
     .await;
     let provider = &service.pool.providers()[0];
-    wait_for("admission", || provider.eligible()).await;
+    wait_for_all_admitted(&service).await;
 
     // One block beyond the allowed lag quarantines...
     rpc.height.store(96, Ordering::Relaxed);
     reference.height.store(100, Ordering::Relaxed);
-    wait_for("lag quarantine", || !provider.eligible()).await;
+    wait_for_eviction(provider).await;
 
     // ...and exactly the allowed lag is healthy.
     rpc.height.store(97, Ordering::Relaxed);
@@ -283,7 +288,7 @@ async fn a_dead_reference_faults_nobody() {
     // ...but with the reference unreachable there are no lag verdicts:
     // the provider is admitted and stays.
     let provider = &service.pool.providers()[0];
-    wait_for("admission", || provider.eligible()).await;
+    wait_for_all_admitted(&service).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(provider.eligible(), "a reference outage must fault nobody");
 }
@@ -299,9 +304,9 @@ async fn a_lag_quarantined_provider_readmits_when_the_reference_dies() {
     })
     .await;
     let provider = &service.pool.providers()[0];
-    wait_for("admission", || provider.eligible()).await;
+    wait_for_all_admitted(&service).await;
     reference.height.store(100, Ordering::Relaxed);
-    wait_for("lag quarantine", || !provider.eligible()).await;
+    wait_for_eviction(provider).await;
 
     // The reference dies: the cache clears, lag verdicts stop, and the
     // provider's passing probes readmit it. The accepted loss: without
@@ -321,20 +326,13 @@ async fn a_lag_quarantined_provider_stops_serving_while_the_other_carries_on() {
         config.health.lag_tolerance_blocks = 3;
     })
     .await;
-    wait_for("both admitted", || {
-        service
-            .pool
-            .providers()
-            .iter()
-            .all(|provider| provider.eligible())
-    })
-    .await;
+    wait_for_all_admitted(&service).await;
 
     // The chain advances; one provider stays behind — alive, answering,
     // and serving stale data if asked.
     reference.height.store(100, Ordering::Relaxed);
     rpc_b.height.store(100, Ordering::Relaxed);
-    wait_for("lag quarantine", || !service.pool.providers()[0].eligible()).await;
+    wait_for_eviction(&service.pool.providers()[0]).await;
 
     // Every answer now comes from the provider at the chain head.
     let public = format!("http://{}", service.public_addr);
@@ -362,14 +360,7 @@ async fn a_lagging_provider_is_evicted_even_under_live_traffic() {
         config.health.lag_tolerance_blocks = 3;
     })
     .await;
-    wait_for("both admitted", || {
-        service
-            .pool
-            .providers()
-            .iter()
-            .all(|provider| provider.eligible())
-    })
-    .await;
+    wait_for_all_admitted(&service).await;
 
     // Client traffic hammers throughout, and the lagging provider
     // answers every request it gets. Those answers must not keep
@@ -385,10 +376,7 @@ async fn a_lagging_provider_is_evicted_even_under_live_traffic() {
 
     reference.height.store(100, Ordering::Relaxed);
     rpc_b.height.store(100, Ordering::Relaxed);
-    wait_for("lag eviction under traffic", || {
-        !service.pool.providers()[0].eligible()
-    })
-    .await;
+    wait_for_eviction(&service.pool.providers()[0]).await;
     hammer.abort();
     assert!(
         rpc_a.served.load(Ordering::Relaxed) > 0,
@@ -401,14 +389,7 @@ async fn traffic_failures_do_not_slow_the_probes_down() {
     let (a, rpc_a) = rpc_provider(CHAIN_ID).await;
     let (b, _rpc_b) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[a, b], |_| {}).await;
-    wait_for("both admitted", || {
-        service
-            .pool
-            .providers()
-            .iter()
-            .all(|provider| provider.eligible())
-    })
-    .await;
+    wait_for_all_admitted(&service).await;
 
     // The provider dies, and a concurrent burst of traffic lands a
     // pile of failures on its health streak before quarantine flips it
@@ -418,7 +399,7 @@ async fn traffic_failures_do_not_slow_the_probes_down() {
     let public = format!("http://{}", service.public_addr);
     let client = reqwest::Client::new();
     futures::future::join_all((0..30).map(|_| block_number(&client, &public))).await;
-    wait_for("quarantine", || !service.pool.providers()[0].eligible()).await;
+    wait_for_eviction(&service.pool.providers()[0]).await;
 
     // The backoff input is the unanswered-probe streak, which grows by
     // one per probe round — the health streak took the burst instead.
@@ -454,14 +435,7 @@ async fn a_pool_larger_than_the_probe_concurrency_cap_is_fully_probed() {
     }
     let service = start_monitored(&addrs, |_| {}).await;
 
-    wait_for("all 20 admitted", || {
-        service
-            .pool
-            .providers()
-            .iter()
-            .all(|provider| provider.eligible())
-    })
-    .await;
+    wait_for_all_admitted(&service).await;
     for provider in service.pool.providers() {
         assert!(
             provider.height.load(Ordering::Relaxed) >= 1,
@@ -496,12 +470,12 @@ async fn a_chain_id_change_after_admission_evicts_and_a_fix_readmits() {
     })
     .await;
     let provider = &service.pool.providers()[0];
-    wait_for("admission", || provider.eligible()).await;
+    wait_for_all_admitted(&service).await;
 
     // The node is switched to another chain: the next chain round
     // evicts it, and probe successes must not bring it back.
     rpc.chain_id.store(999, Ordering::Relaxed);
-    wait_for("chain eviction", || !provider.eligible()).await;
+    wait_for_eviction(provider).await;
     tokio::time::sleep(Duration::from_millis(120)).await;
     assert!(
         !provider.eligible(),
@@ -522,14 +496,7 @@ async fn a_dead_provider_is_probed_ever_more_rarely() {
         config.health.max_probe_backoff = Duration::from_millis(80);
     })
     .await;
-    wait_for("both admitted", || {
-        service
-            .pool
-            .providers()
-            .iter()
-            .all(|provider| provider.eligible())
-    })
-    .await;
+    wait_for_all_admitted(&service).await;
 
     // One dies (still answering 503, so its probes are countable). The
     // probes thin out toward max_probe_backoff while the live provider
@@ -565,8 +532,7 @@ async fn the_reference_is_asked_on_its_own_cadence() {
         config.health.ref_height_interval = ref_height_interval;
     })
     .await;
-    let provider = &service.pool.providers()[0];
-    wait_for("admission", || provider.eligible()).await;
+    wait_for_all_admitted(&service).await;
 
     let reference_before = reference.requests.load(Ordering::Relaxed);
     let provider_before = rpc.requests.load(Ordering::Relaxed);
@@ -603,8 +569,7 @@ async fn a_dead_reference_keeps_being_sampled() {
         config.reference = Some(reference_url);
     })
     .await;
-    let provider = &service.pool.providers()[0];
-    wait_for("admission", || provider.eligible()).await;
+    wait_for_all_admitted(&service).await;
 
     let before = reference.requests.load(Ordering::Relaxed);
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -666,7 +631,7 @@ async fn health_reports_ready_after_the_first_probe_round() {
 async fn shutdown_completes_with_a_running_monitor() {
     let (addr, _rpc) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[addr], |_| {}).await;
-    wait_for("admission", || service.pool.providers()[0].eligible()).await;
+    wait_for_all_admitted(&service).await;
 
     tokio::time::timeout(Duration::from_secs(5), service.shutdown())
         .await

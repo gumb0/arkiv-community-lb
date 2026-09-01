@@ -44,6 +44,19 @@ adversarial — integrity checking is a first-class concern, not an add-on.
   host's long-running processes.
 - Client headers are never forwarded to providers, and a provider's JSON-RPC
   error is an answer, not a failure — passed through, never retried elsewhere.
+  An answer always arrives as HTTP 2xx; a non-2xx status means the node did
+  not answer (its tunnel may be speaking in its place) and fails over like a
+  transport error, never reaching the client.
+- **The method denylist is code, not configuration** (`denylist.rs`): retries
+  are replay-safe only because every non-replay-safe method is on it, so an
+  operator must not be able to void that from the toml.
+- **Health is one shared streak per provider**, fed by probes and traffic
+  alike: either source can quarantine, only probes admit or readmit (an
+  ineligible provider receives no traffic). Provider state is atomics on the
+  pool entry, mutated only through its methods (`record_health`,
+  `record_served`, `quarantine`) — never raw from other modules — and every
+  eligibility flip logs exactly one event naming its source. Scheduling
+  state (cadences, backoff clocks) stays inside the Monitor task.
 - **LB-generated JSON-RPC errors** use codes −32050…−32055 and every message
   starts with `lb: ` — the prefix is applied in `jsonrpc.rs` and nowhere
   else. Standard codes (−32700, −32601, …) are always a provider's answer;
@@ -78,7 +91,13 @@ adversarial — integrity checking is a first-class concern, not an add-on.
 - The LB is built as a library so integration tests run the real service
   in-process against fake providers — fast, on every change. Never combine
   tokio's paused time with real sockets; scale durations and poll conditions
-  instead.
+  instead. Assertions about cadence or load compare counters gathered over
+  the same window (ratios, or bars derived from the configured intervals) —
+  never absolute wall-clock counts, which flake on a slow CI machine.
+- **Test-only switches are `#[serde(skip)]` config fields** (for example
+  `health.disable_probing`), unreachable from the toml so an operator cannot
+  flip them — and each carries a parse test proving the toml refuses its
+  name.
 - The heavier rig tier uses real node containers and the provider tooling from
   `arkiv-community-node`, located at `../node` by default (env-var
   overridable). The rig invokes the same scripts and CLIs that ship — no

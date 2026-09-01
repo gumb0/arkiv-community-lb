@@ -58,6 +58,12 @@ Deliberate for the first version, not oversights:
 - A provider's chain head lag is measured against a reference endpoint,
   so while that endpoint is unreachable, one provider falling behind its
   peers goes unnoticed.
+- Failover retries draw from the shared round-robin cursor rather than
+  remembering which providers a request already tried, so a small share
+  of the requests in flight at the moment a provider dies can spend
+  their whole retry budget on it and fail, even though a healthy
+  provider was available. It takes heavily concurrent traffic to hit,
+  and quarantine closes the window after a few failures.
 
 ## License
 

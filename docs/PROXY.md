@@ -32,16 +32,17 @@ is relayed within a size cap; a provider's JSON-RPC error is an answer,
 returned to the client, never retried elsewhere.
 
 Transport failures are retried on the next provider within a small
-budget, all under one request deadline (each attempt gets the smaller of
-the attempt timeout and the time remaining). This is failover: in the
-short window when a provider is already dead but not yet quarantined,
-the client's request moves to the next provider and the client never
-notices. The budget is the other half: when the request itself is the
-problem, it can hit only a few providers before it fails, instead of
-walking the whole fleet. Retrying blindly is safe
-only because every method the endpoint admits is replay-safe — the
-denylist excludes stateful methods, and a repeated raw transaction
-deduplicates by hash.
+budget, all under one request deadline (each attempt gets the smaller
+of the attempt timeout and the time remaining). This is failover: in
+the short window when a provider is already dead but not yet
+quarantined, the client's request moves to another provider and the
+client almost never notices — the rare miss under heavily concurrent
+traffic is a known limitation (see the README). The budget is the
+other half: when the request itself is the problem, it can hit only a
+few providers before it fails, instead of walking the whole fleet.
+Retrying blindly is safe only because every method the endpoint admits
+is replay-safe — the denylist excludes stateful methods, and a
+repeated raw transaction deduplicates by hash.
 
 ## Health
 

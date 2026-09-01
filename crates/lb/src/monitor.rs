@@ -187,7 +187,14 @@ impl Monitor {
                 provider.chain_verified.store(false, Ordering::Relaxed);
                 provider.quarantine(HealthSignal::Chain);
             }
-            None => {}
+            None => {
+                // A verified provider keeps its verdict, so only the
+                // unverified one has a consequence to report: it sits
+                // out until the next chain round.
+                if !provider.chain_verified.load(Ordering::Relaxed) {
+                    tracing::info!(provider = %provider.id, "chain check unanswered");
+                }
+            }
         }
     }
 

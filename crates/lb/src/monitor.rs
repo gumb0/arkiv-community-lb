@@ -98,6 +98,9 @@ impl Monitor {
                     // is closed.
                     rounds = rounds.saturating_add(1);
                     if rounds == self.config.flip_after {
+                        if !self.pool.providers().iter().any(Provider::eligible) {
+                            tracing::warn!("boot window closed with no provider admitted");
+                        }
                         self.ready.store(true, Ordering::Relaxed);
                     }
                 }

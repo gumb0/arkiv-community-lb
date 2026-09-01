@@ -214,11 +214,20 @@ impl Config {
                     "provider id {id:?} appears twice"
                 )));
             }
-            if !provider.url.starts_with("http://") && !provider.url.starts_with("https://") {
-                return Err(ConfigError::Invalid(format!(
-                    "provider {id:?}: url {:?} is not http(s)",
-                    provider.url
-                )));
+            match reqwest::Url::parse(&provider.url) {
+                Err(error) => {
+                    return Err(ConfigError::Invalid(format!(
+                        "provider {id:?}: url {:?} does not parse: {error}",
+                        provider.url
+                    )));
+                }
+                Ok(url) if url.scheme() != "http" && url.scheme() != "https" => {
+                    return Err(ConfigError::Invalid(format!(
+                        "provider {id:?}: url {:?} is not http(s)",
+                        provider.url
+                    )));
+                }
+                Ok(_) => {}
             }
         }
         Ok(())
@@ -332,10 +341,29 @@ mod tests {
     }
 
     #[test]
-    fn non_http_url_is_refused() {
+    fn non_http_schemes_are_refused() {
+        for url in [
+            "ftp://x",
+            "ws://127.0.0.1:8546",
+            "wss://example.org",
+            "file:///etc/hosts",
+            "unix:/var/run/node.sock",
+        ] {
+            let error = parse(&format!(
+                "[[providers]]\nid = \"node-1\"\nurl = \"{url}\"\n"
+            ))
+            .expect_err("must refuse");
+            assert!(error.to_string().contains("http"), "{url}: {error}");
+        }
+    }
+
+    #[test]
+    fn an_unparsable_url_is_refused_with_the_provider_named() {
+        // "http://" passes a prefix check but is not a URL: no host.
         let error =
-            parse("[[providers]]\nid = \"node-1\"\nurl = \"ftp://x\"\n").expect_err("must refuse");
-        assert!(error.to_string().contains("http"), "{error}");
+            parse("[[providers]]\nid = \"node-1\"\nurl = \"http://\"\n").expect_err("must refuse");
+        assert!(error.to_string().contains("node-1"), "{error}");
+        assert!(error.to_string().contains("does not parse"), "{error}");
     }
 
     #[test]

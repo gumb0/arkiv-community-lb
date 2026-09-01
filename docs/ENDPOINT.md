@@ -66,6 +66,13 @@ reach the client.
 | −32054 | request too large | 413 |
 | −32055 | overloaded | 429 |
 
+An LB error echoes the request's `id` when the body yields one.
+**Known limitation:** for a batch request, an LB error is still a
+single error object with `id: null`, not a JSON-RPC response array —
+treat a top-level object in a batch response as an error for the whole
+batch. (Answers from a node are unaffected: a batch answered by a node
+arrives as the array the node sent.)
+
 ## Limits
 
 - **Request bodies: 2 MiB.** Far above the chain's own transaction size

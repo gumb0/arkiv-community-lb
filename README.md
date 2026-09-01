@@ -49,6 +49,10 @@ Deliberate for the first version, not oversights:
   JSON parse, so it can refuse a request that merely mentions a refused
   name ([docs/ENDPOINT.md](docs/ENDPOINT.md)) and cannot count requests
   per method.
+- An error the load balancer itself generates for a batch request is a
+  single JSON-RPC error object with `id: null`, not a response array
+  ([docs/ENDPOINT.md](docs/ENDPOINT.md)); batches a node answers arrive
+  as the node's array.
 - Nothing limits how many requests a client may send, or how many run at
   once, so memory use scales with concurrency times the response cap.
 - Health is binary and probes are the judge: a provider that answers

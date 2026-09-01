@@ -154,10 +154,27 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        if self.health.probe_interval.is_zero() {
-            return Err(ConfigError::Invalid(
-                "health.probe_interval must be greater than zero".into(),
-            ));
+        for (name, duration) in [
+            ("health.probe_interval", self.health.probe_interval),
+            ("health.probe_timeout", self.health.probe_timeout),
+            ("proxy.attempt_timeout", self.proxy.attempt_timeout),
+            ("proxy.request_timeout", self.proxy.request_timeout),
+        ] {
+            if duration.is_zero() {
+                return Err(ConfigError::Invalid(format!(
+                    "{name} must be greater than zero"
+                )));
+            }
+        }
+        for (name, size) in [
+            ("proxy.max_request_size", self.proxy.max_request_size),
+            ("proxy.max_response_size", self.proxy.max_response_size),
+        ] {
+            if size.as_u64() == 0 {
+                return Err(ConfigError::Invalid(format!(
+                    "{name} must be greater than zero"
+                )));
+            }
         }
         for (name, interval) in [
             ("ref_height_interval", self.health.ref_height_interval),
@@ -237,9 +254,19 @@ mod tests {
     }
 
     #[test]
-    fn zero_probe_interval_is_refused() {
-        let error = parse("[health]\nprobe_interval = \"0s\"\n").expect_err("must refuse");
-        assert!(error.to_string().contains("probe_interval"), "{error}");
+    fn zero_durations_and_sizes_are_refused() {
+        for (section, field) in [
+            ("health", "probe_interval = \"0s\""),
+            ("health", "probe_timeout = \"0s\""),
+            ("proxy", "attempt_timeout = \"0s\""),
+            ("proxy", "request_timeout = \"0s\""),
+            ("proxy", "max_request_size = \"0B\""),
+            ("proxy", "max_response_size = \"0B\""),
+        ] {
+            let error = parse(&format!("[{section}]\n{field}\n")).expect_err("must refuse");
+            let name = field.split(' ').next().expect("field name");
+            assert!(error.to_string().contains(name), "{error}");
+        }
     }
 
     #[test]

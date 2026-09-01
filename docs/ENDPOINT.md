@@ -32,7 +32,7 @@ generally work; the lists below are what is deliberately blocked.
 
 | Group | Methods | Why |
 |---|---|---|
-| Node control | `admin_*`, `engine_*`, `miner_*` | They do things to a node |
+| Node control | `admin_*`, `engine_*`, `miner_*`, `debug_set*`, `debug_verbosity`, `debug_vmodule`, `debug_freezeClient` | They do things to a node; the rest of `debug_` stays served |
 | Accounts and signing | `eth_sendTransaction`, `eth_sign*`, `eth_accounts`, `personal_*` | Community nodes hold no user keys |
 | Per-node state | `eth_newFilter` and the other filter methods, `eth_subscribe`, `eth_unsubscribe` | They bind state to one node, which does not work behind a load balancer |
 

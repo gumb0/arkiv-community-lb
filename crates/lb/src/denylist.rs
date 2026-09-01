@@ -19,6 +19,11 @@ const DENIED: &[&str] = &[
     "admin_",
     "engine_",
     "miner_",
+    // debug_'s own control names; its read side stays served.
+    "debug_set",
+    "debug_verbosity",
+    "debug_vmodule",
+    "debug_freezeclient",
     // Keys: community nodes hold none.
     "eth_sendtransaction",
     "eth_sign",
@@ -67,6 +72,11 @@ mod tests {
             "admin_peers",
             "engine_forkchoiceUpdatedV3",
             "miner_start",
+            "debug_setHead",
+            "debug_setTrieFlushInterval",
+            "debug_verbosity",
+            "debug_vmodule",
+            "debug_freezeClient",
             "eth_sendTransaction",
             "eth_sign",
             "eth_signTypedData_v4",

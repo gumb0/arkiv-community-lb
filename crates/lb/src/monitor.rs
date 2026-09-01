@@ -1,8 +1,8 @@
 //! The Monitor: the probe loop. One task, one sweep per probe interval.
-//! Probe outcomes feed the same health streak that traffic outcomes do,
-//! and an ineligible provider receives no traffic — so probes and
-//! traffic can both take a provider out of rotation, but only probes
-//! bring one in.
+//! Probe outcomes drive the health streak both ways; traffic adds only
+//! failures, and an ineligible provider receives no traffic — so probes
+//! and traffic can both take a provider out of rotation, but only
+//! probes bring one in.
 
 use std::{
     sync::{
@@ -139,18 +139,12 @@ impl Monitor {
     }
 
     /// An unanswered probe pushes the next one out, doubling with the
-    /// failure streak's depth up to `max_probe_backoff`. Quarantine is
-    /// never slowed: the first `flip_after` failures keep full cadence.
-    /// Answered probes change nothing — the streak resets itself, and
-    /// `next_probe` already lies in the past.
+    /// unanswered streak's depth up to `max_probe_backoff`. Quarantine
+    /// is never slowed: the first `flip_after` failures keep full
+    /// cadence. The streak is its own counter — the health streak
+    /// would count traffic failures into the delay.
     fn reschedule_unanswered(&self, provider: &Provider, now: std::time::Instant) {
-        // Number of failures is negative `health_streak`, 0 if we're on a healthy streak.
-        let failures = provider
-            .health_streak
-            .load(Ordering::Relaxed)
-            .min(0)
-            .unsigned_abs();
-        let delay = probe_delay(&self.config, failures);
+        let delay = probe_delay(&self.config, provider.unanswered_probe_streak());
         *provider.next_probe() = now + delay;
     }
 
@@ -192,9 +186,11 @@ impl Monitor {
     /// Returns whether the provider answered — a lagging provider did.
     async fn probe(&self, provider: &Provider, reference_height: Option<u64>) -> bool {
         let Some(height) = self.query_block_number(&provider.id, &provider.url).await else {
+            provider.record_unanswered_probe();
             provider.record_health(false, self.config.flip_after, HealthSignal::Probe);
             return false;
         };
+        provider.record_answered_probe();
         provider.height.store(height, Ordering::Relaxed);
 
         // Ahead of the reference, or behind it within the tolerance, is
@@ -263,11 +259,10 @@ impl Monitor {
 }
 
 /// The wait before a failing provider's next probe.
-fn probe_delay(config: &Health, failures: u64) -> Duration {
+fn probe_delay(config: &Health, failures: u32) -> Duration {
     // First `flip_after` failures don't back off the probes -
     // quarantine is never slowed.
-    let excess =
-        u32::try_from(failures.saturating_sub(u64::from(config.flip_after))).unwrap_or(u32::MAX);
+    let excess = failures.saturating_sub(config.flip_after);
     // Next probe is after probe_interval * 2^excess, capped at max_probe_backoff.
     config
         .probe_interval
@@ -308,7 +303,7 @@ mod tests {
         // The cap, and no overflow however deep the streak goes.
         assert_eq!(delay(7), Duration::from_secs(60));
         assert_eq!(delay(1_000_000), Duration::from_secs(60));
-        assert_eq!(delay(u64::MAX), Duration::from_secs(60));
+        assert_eq!(delay(u32::MAX), Duration::from_secs(60));
     }
 
     #[test]

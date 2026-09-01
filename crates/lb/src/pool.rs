@@ -1,12 +1,13 @@
 //! The provider pool. Membership is fixed until restart, and each
 //! provider is long-lived; everything mutable on it is atomic, so the
-//! hot path reads without locks. Probes and traffic both feed the
-//! health streak; only probes bring a provider into rotation.
+//! hot path reads without locks. Health successes come only from
+//! probes; traffic adds only failures — so traffic can take a provider
+//! out of rotation, but never bring one in.
 
 use std::{
     sync::{
         Mutex,
-        atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -22,8 +23,8 @@ pub struct Provider {
     /// In or out of rotation. Providers are born ineligible: nothing is
     /// served until the first probes pass.
     eligible: AtomicBool,
-    /// Positive = consecutive successes, negative = consecutive
-    /// failures, fed by probes and traffic alike.
+    /// Positive = consecutive successes (probes only), negative =
+    /// consecutive failures (probes and traffic alike).
     pub health_streak: AtomicI64,
     /// Last head height a probe returned.
     pub height: AtomicU64,
@@ -34,6 +35,10 @@ pub struct Provider {
     /// point push this out. A `Mutex` because `Instant` has no atomic;
     /// only the Monitor touches it, briefly.
     next_probe: Mutex<Instant>,
+    /// Consecutive unanswered probes, the backoff input. Kept apart
+    /// from the health streak so traffic failures cannot deepen the
+    /// backoff.
+    unanswered_probe_streak: AtomicU32,
     /// Completed forwards, the billing basis.
     pub served: AtomicU64,
 }
@@ -62,6 +67,7 @@ impl Provider {
             height: AtomicU64::new(0),
             chain_verified: AtomicBool::new(false),
             next_probe: Mutex::new(Instant::now()),
+            unanswered_probe_streak: AtomicU32::new(0),
             served: AtomicU64::new(0),
         })
     }
@@ -71,6 +77,21 @@ impl Provider {
         self.next_probe
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// One more probe gone unanswered.
+    pub fn record_unanswered_probe(&self) {
+        self.unanswered_probe_streak.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// An answered probe ends the unanswered streak.
+    pub fn record_answered_probe(&self) {
+        self.unanswered_probe_streak.store(0, Ordering::Relaxed);
+    }
+
+    /// Depth of the unanswered-probe streak.
+    pub fn unanswered_probe_streak(&self) -> u32 {
+        self.unanswered_probe_streak.load(Ordering::Relaxed)
     }
 
     /// One completed forward. Answers, not attempts: this is the

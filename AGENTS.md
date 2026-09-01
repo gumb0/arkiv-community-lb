@@ -50,13 +50,16 @@ adversarial — integrity checking is a first-class concern, not an add-on.
 - **The method denylist is code, not configuration** (`denylist.rs`): retries
   are replay-safe only because every non-replay-safe method is on it, so an
   operator must not be able to void that from the toml.
-- **Health is one shared streak per provider**, fed by probes and traffic
-  alike: either source can quarantine, only probes admit or readmit (an
-  ineligible provider receives no traffic). Provider state is atomics on the
+- **Health is one shared streak per provider**: failures come from probes
+  and traffic alike, successes only from probes — either source can
+  quarantine, only probes admit or readmit (an ineligible provider
+  receives no traffic). An oversized response costs no health tick: the
+  breach may be the query's own fault. Provider state is atomics on the
   pool entry, mutated only through its methods (`record_health`,
   `record_served`, `quarantine`) — never raw from other modules — and every
   eligibility flip logs exactly one event naming its source. Scheduling
-  state (cadences, backoff clocks) stays inside the Monitor task.
+  state (cadences, backoff clocks, the unanswered-probe streak behind
+  the backoff) is written only by the Monitor.
 - **LB-generated JSON-RPC errors** use codes −32050…−32055 and every message
   starts with `lb: ` — the prefix is applied in `jsonrpc.rs` and nowhere
   else. Standard codes (−32700, −32601, …) are always a provider's answer;

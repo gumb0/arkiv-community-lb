@@ -362,8 +362,8 @@ async fn oversized_response_is_terminal_not_retried() {
         service.pool.providers()[0]
             .health_streak
             .load(std::sync::atomic::Ordering::Relaxed),
-        -1,
-        "past the cap means a misbehaving provider, so it costs a health tick"
+        0,
+        "a cap breach may be the query's fault, so it costs no health tick"
     );
 }
 
@@ -619,6 +619,32 @@ async fn traffic_failures_alone_quarantine_a_provider() {
         assert!(!providers[0].eligible(), "and it stays out");
     }
     assert!(providers[1].eligible(), "the answering provider stays in");
+}
+
+#[tokio::test]
+async fn answered_traffic_earns_no_health_credit() {
+    use std::sync::atomic::Ordering;
+
+    let answer = br#"{"jsonrpc":"2.0","id":51,"result":"ok"}"#;
+    let (live, _fake) = fake_provider(answer, Duration::ZERO).await;
+    let (service, public) = start_lb(&[live]).await;
+
+    for _ in 0..5 {
+        let (status, _body) = post(&public, request(51)).await;
+        assert_eq!(status, 200);
+    }
+
+    let provider = &service.pool.providers()[0];
+    assert_eq!(
+        provider.health_streak.load(Ordering::Relaxed),
+        0,
+        "served answers must not build a success streak: only probes admit"
+    );
+    assert_eq!(
+        provider.served.load(Ordering::Relaxed),
+        5,
+        "billing still counts every answer"
+    );
 }
 
 #[tokio::test]

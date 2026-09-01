@@ -126,16 +126,17 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
 
         match state.forwarder.attempt(provider, &body, timeout).await {
             Outcome::Answer(response) => {
-                provider.record_health(true, state.flip_after, HealthSignal::Traffic);
+                // No health credit for an answer: successes count only
+                // from probes, so served traffic cannot outvote the
+                // Monitor's verdicts or readmit a quarantined provider.
                 provider.record_served();
                 log_outcome(started, attempts, Some(&provider.id), "answered");
                 return response;
             }
             Outcome::TooLarge => {
-                // Response over default 64 MiB cap is provider pathology, not a
-                // client asking for too much, so it counts against the
-                // provider's health like any other non-answer.
-                provider.record_health(false, state.flip_after, HealthSignal::Traffic);
+                // No health tick: a cap breach can follow from the query
+                // as easily as from the provider, and the same query
+                // would tick every provider alike.
                 log_outcome(started, attempts, Some(&provider.id), "response_too_large");
                 return error(
                     StatusCode::BAD_GATEWAY,

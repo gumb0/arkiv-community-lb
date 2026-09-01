@@ -352,6 +352,98 @@ async fn a_lag_quarantined_provider_stops_serving_while_the_other_carries_on() {
 }
 
 #[tokio::test]
+async fn a_lagging_provider_is_evicted_even_under_live_traffic() {
+    let (a, rpc_a) = rpc_provider(CHAIN_ID).await;
+    let (b, rpc_b) = rpc_provider(CHAIN_ID).await;
+    let (ref_addr, reference) = rpc_provider(CHAIN_ID).await;
+    let reference_url = format!("http://{ref_addr}");
+    let service = start_monitored(&[a, b], move |config| {
+        config.reference = Some(reference_url);
+        config.health.lag_tolerance_blocks = 3;
+    })
+    .await;
+    wait_for("both admitted", || {
+        service
+            .pool
+            .providers()
+            .iter()
+            .all(|provider| provider.eligible())
+    })
+    .await;
+
+    // Client traffic hammers throughout, and the lagging provider
+    // answers every request it gets. Those answers must not keep
+    // resetting the streak its lag failures build.
+    let public = format!("http://{}", service.public_addr);
+    let hammer = tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        loop {
+            let _ = block_number(&client, &public).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    });
+
+    reference.height.store(100, Ordering::Relaxed);
+    rpc_b.height.store(100, Ordering::Relaxed);
+    wait_for("lag eviction under traffic", || {
+        !service.pool.providers()[0].eligible()
+    })
+    .await;
+    hammer.abort();
+    assert!(
+        rpc_a.served.load(Ordering::Relaxed) > 0,
+        "the lagging provider really was serving before its eviction"
+    );
+}
+
+#[tokio::test]
+async fn traffic_failures_do_not_slow_the_probes_down() {
+    let (a, rpc_a) = rpc_provider(CHAIN_ID).await;
+    let (b, _rpc_b) = rpc_provider(CHAIN_ID).await;
+    let service = start_monitored(&[a, b], |_| {}).await;
+    wait_for("both admitted", || {
+        service
+            .pool
+            .providers()
+            .iter()
+            .all(|provider| provider.eligible())
+    })
+    .await;
+
+    // The provider dies, and a concurrent burst of traffic lands a
+    // pile of failures on its health streak before quarantine flips it
+    // out: every request in the burst selects its first provider
+    // before the first failure reports back.
+    rpc_a.down.store(true, Ordering::Relaxed);
+    let public = format!("http://{}", service.public_addr);
+    let client = reqwest::Client::new();
+    futures::future::join_all((0..30).map(|_| block_number(&client, &public))).await;
+    wait_for("quarantine", || !service.pool.providers()[0].eligible()).await;
+
+    // The backoff input is the unanswered-probe streak, which grows by
+    // one per probe round — the health streak took the burst instead.
+    let provider = &service.pool.providers()[0];
+    let streak = provider.health_streak.load(Ordering::Relaxed);
+    let unanswered = i64::from(provider.unanswered_probe_streak());
+    assert!(streak <= -10, "the burst dug a deep streak: {streak}");
+    assert!(
+        unanswered < -streak / 2,
+        "backoff counts probes, not the burst: {unanswered} vs {streak}"
+    );
+
+    // So the probes keep their cadence: delays double per unanswered
+    // probe from probe_interval (20ms here), while a delay computed
+    // from the streak would jump straight to max_probe_backoff — the
+    // default 5 minutes — and the probes waited on here would never
+    // come.
+    let before = rpc_a.requests.load(Ordering::Relaxed);
+    wait_for("probes keep their cadence", || {
+        rpc_a.requests.load(Ordering::Relaxed) - before >= 3
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_pool_larger_than_the_probe_concurrency_cap_is_fully_probed() {
     // More providers than probe_all runs at once (16): the cap must
     // queue the rest of a round, never drop them.

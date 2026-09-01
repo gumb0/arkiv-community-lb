@@ -51,8 +51,10 @@ Deliberate for the first version, not oversights:
   per method.
 - Nothing limits how many requests a client may send, or how many run at
   once, so memory use scales with concurrency times the response cap.
-- Health is binary: a provider that is slow but still answering keeps
-  its full share of traffic.
+- Health is binary and probes are the judge: a provider that answers
+  its probes within the probe timeout keeps its full share of traffic,
+  however slow its answers; one consistently slower than the probe
+  timeout leaves rotation entirely.
 - A provider's chain head lag is measured against a reference endpoint,
   so while that endpoint is unreachable, one provider falling behind its
   peers goes unnoticed.

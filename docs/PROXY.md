@@ -47,10 +47,15 @@ deduplicates by hash.
 
 One background loop probes every provider on a fixed interval with a
 cheap JSON-RPC call; probe outcomes and live traffic outcomes feed the
-same per-provider health counter. A run of consecutive failures quarantines; a
-run of consecutive successes readmits. There are no weights and no
-scores — eligibility is binary. Quarantined providers keep being probed,
-with backoff once a provider looks abandoned; recovery is automatic.
+same per-provider health counter, with one asymmetry: traffic records
+only failures. A served answer proves the provider handled that one
+request — not that it is on the right chain or at the chain head — so
+answers earn no health credit and cannot outvote the probes. A run of
+consecutive failures quarantines; a run of consecutive probe successes
+readmits. There are no weights and no scores — eligibility is binary.
+Quarantined providers keep being probed, with backoff once a provider
+looks abandoned; the backoff follows the run of unanswered probes, so
+traffic failures never slow the probing down. Recovery is automatic.
 
 The rule for the flag is simple: it changes only after `flip_after`
 results in a row agree. This one rule does two jobs.

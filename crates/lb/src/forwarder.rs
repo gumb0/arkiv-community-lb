@@ -16,6 +16,8 @@ use axum::{
 
 use crate::{config::Proxy, pool::Provider};
 
+/// Cloning shares the connection pool: the client inside is an `Arc`.
+#[derive(Clone)]
 pub struct Forwarder {
     client: reqwest::Client,
     max_response_size: usize,

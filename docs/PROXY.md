@@ -66,6 +66,19 @@ no separate snapshot or cache.
   round trip shorter than one millisecond is reported as zero. It remains
   `null` when an unanswered chain check prevents the height probe.
 
+## Pinned forward
+
+`POST /node/{id}` on the admin listener forwards one JSON-RPC request
+to that provider, ignoring eligibility — the way an operator reaches a
+quarantined node and asks it directly. One attempt, no failover: a
+provider that does not answer is a 502, not somebody else's answer.
+The forward changes no state — no health tick, no served count — so
+diagnosing a node cannot bill it or readmit it. Refusals — the method
+denylist, both size caps, an empty body — get exactly the public
+endpoint's answers, so the operator sees what a client would see (and
+the admin port is not a way around the denylist). An unknown id is a
+404.
+
 ## Forwarding and the credential boundary
 
 The Proxy forwards the request body untouched and builds fresh headers —

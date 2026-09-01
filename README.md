@@ -13,8 +13,10 @@ not operator-chosen.
 - **The LB service** (`crates/lb/`): round-robin load balancing with
   failover over a configured provider list, health probing with
   automatic quarantine and readmission, chain head lag and chain
-  identity checks, probe backoff, and an admin health/pool view on
-  `/health` and `/nodes`. The client contract is
+  identity checks, probe backoff, and an admin API: health and pool
+  views on `/health` and `/nodes`, plus pinned forwarding to one
+  provider on `/node/{id}` — including providers outside rotation.
+  The client contract is
   [docs/ENDPOINT.md](docs/ENDPOINT.md); the architecture note is
   [docs/PROXY.md](docs/PROXY.md).
 - **Chain-writer sidecar** (`writer/`): entity writes over the official
@@ -28,8 +30,6 @@ not operator-chosen.
 
 ## Still to come
 
-- Pinned admin forwarding for querying one provider directly, including
-  providers outside rotation.
 - A marketplace agent: discovers provider offers on Arkiv and keeps agreements
   alive on-chain.
 - A settle CLI: computes per-period payouts from on-chain records and pays GLM

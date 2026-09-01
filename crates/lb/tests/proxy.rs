@@ -734,6 +734,130 @@ async fn preflight_is_answered_without_a_provider() {
     assert_eq!(fake.requests(), 0);
 }
 
+/// The admin listener's pinned forward: `POST /node/{id}`.
+async fn post_pinned(service: &lb::service::Service, id: &str, body: Value) -> (u16, Value) {
+    let url = format!("http://{}/node/{id}", service.admin_addr);
+    post(&url, body).await
+}
+
+#[tokio::test]
+async fn pinned_forward_reaches_an_ineligible_provider_and_changes_nothing() {
+    let answer = br#"{"jsonrpc":"2.0","id":61,"result":"0x2a"}"#;
+    let (addr, fake) = fake_provider(answer, Duration::ZERO).await;
+    let (service, _public) = start_lb(&[addr]).await;
+    let provider = &service.pool.providers()[0];
+    provider.set_eligible(false);
+
+    let (status, body) = post_pinned(&service, "p0", request(61)).await;
+    assert_eq!(status, 200, "eligibility does not gate a pinned forward");
+    assert_eq!(body["result"], "0x2a");
+
+    let seen = fake.seen.lock().expect("seen");
+    let (headers, request_body) = &seen[0];
+    assert_eq!(
+        serde_json::from_slice::<Value>(request_body).expect("json"),
+        request(61),
+        "request body crosses untouched"
+    );
+    assert!(
+        headers.get("authorization").is_none(),
+        "client credentials must not cross here either"
+    );
+    assert!(!provider.eligible(), "a diagnostic answer readmits nobody");
+    assert_eq!(
+        provider.served.load(Ordering::Relaxed),
+        0,
+        "diagnostics are not billed"
+    );
+    assert_eq!(provider.health_streak.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn pinned_forward_to_an_unknown_id_is_404() {
+    let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
+    let (service, _public) = start_lb(&[addr]).await;
+
+    let (status, body) = post_pinned(&service, "nope", request(62)).await;
+    assert_eq!(status, 404); // Not Found
+    let message = body["error"].as_str().expect("message");
+    assert!(message.contains("nope"), "{message}");
+    assert_eq!(fake.requests(), 0);
+}
+
+#[tokio::test]
+async fn pinned_forward_still_refuses_denied_methods() {
+    let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
+    let (service, _public) = start_lb(&[addr]).await;
+
+    let denied = json!({"jsonrpc": "2.0", "id": 63, "method": "admin_peers", "params": []});
+    let (status, body) = post_pinned(&service, "p0", denied).await;
+    assert_eq!(status, 200, "same envelope as the public endpoint");
+    assert_eq!(body["error"]["code"], METHOD_DENIED);
+    assert_eq!(body["id"], 63);
+    assert_eq!(
+        fake.requests(),
+        0,
+        "the admin port is not a way around the denylist"
+    );
+}
+
+#[tokio::test]
+async fn pinned_forward_to_a_dead_provider_answers_502_without_failover() {
+    let dead = dead_addr().await;
+    let answer = br#"{"jsonrpc":"2.0","id":64,"result":"ok"}"#;
+    let (live, live_fake) = fake_provider(answer, Duration::ZERO).await;
+    let (service, _public) = start_lb(&[dead, live]).await;
+
+    let (status, body) = post_pinned(&service, "p0", request(64)).await;
+    assert_eq!(status, 502); // Bad Gateway
+    assert_eq!(body["error"], "provider did not answer");
+    assert_eq!(
+        live_fake.requests(),
+        0,
+        "no failover: the operator asked this node in particular"
+    );
+    let provider = &service.pool.providers()[0];
+    assert!(
+        provider.eligible(),
+        "a failed diagnostic quarantines nobody"
+    );
+    assert_eq!(provider.transport_failures.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn pinned_forward_refuses_an_oversized_request_like_the_public_endpoint() {
+    let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
+    let (service, _public) = start_lb_with(&[addr], |config| {
+        config.proxy.max_request_size = bytesize::ByteSize::b(256);
+    })
+    .await;
+
+    let big =
+        json!({"jsonrpc": "2.0", "id": 1, "method": "eth_call", "params": ["x".repeat(1024)]});
+    let (status, body) = post_pinned(&service, "p0", big).await;
+    assert_eq!(status, 413); // Payload Too Large
+    assert_eq!(
+        body["error"]["code"], REQUEST_TOO_LARGE,
+        "the public envelope, so the operator sees what a client would see"
+    );
+    assert_eq!(fake.requests(), 0);
+}
+
+#[tokio::test]
+async fn pinned_forward_answers_an_oversized_response_with_the_public_envelope() {
+    let huge = vec![b'x'; 4096];
+    let (big, _fake) = fake_provider(&huge, Duration::ZERO).await;
+    let (service, _public) = start_lb_with(&[big], |config| {
+        config.proxy.max_response_size = bytesize::ByteSize::b(1024);
+    })
+    .await;
+
+    let (status, body) = post_pinned(&service, "p0", request(65)).await;
+    assert_eq!(status, 502); // Bad Gateway
+    assert_eq!(body["error"]["code"], RESPONSE_TOO_LARGE);
+    assert_eq!(body["id"], 65, "the envelope echoes the request id");
+}
+
 #[tokio::test]
 async fn a_batch_relays_untouched() {
     let answer =

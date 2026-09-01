@@ -59,6 +59,19 @@ async fn handle(
     State(state): State<Arc<ProxyState>>,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
+    match check_request(body) {
+        Ok(body) => forward_with_failover(&state, body).await,
+        Err(refusal) => refusal,
+    }
+}
+
+/// The refusals answered before any provider is involved. Shared with
+/// the admin pinned forward, so both ports answer them the same way.
+// The Err is as large as a Response, but this path moves Responses
+// by value everywhere already; boxing would trade a stack copy for
+// a heap allocation per refused request.
+#[allow(clippy::result_large_err)]
+pub(crate) fn check_request(body: Result<Bytes, BytesRejection>) -> Result<Bytes, Response> {
     let body = match body {
         Ok(body) => body,
         // Over the size limit gets the LB's own envelope; any other
@@ -66,36 +79,36 @@ async fn handle(
         // error) keeps the rejection's answer — there is usually nobody
         // left to read it.
         Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
-            return error(
+            return Err(error(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 jsonrpc::REQUEST_TOO_LARGE,
                 "request too large",
                 &[],
-            );
+            ));
         }
-        Err(rejection) => return rejection.into_response(),
+        Err(rejection) => return Err(rejection.into_response()),
     };
     // A healthy node answers empty body with 400,
     // which would lead to failover below and return NO_HEALTHY_PROVIDER.
     if body.is_empty() {
-        return (
+        return Err((
             StatusCode::BAD_REQUEST,
             "Empty request body: expected a JSON-RPC request.\n",
         )
-            .into_response();
+            .into_response());
     }
     // Denied before selection: a refused request reaches no provider and
     // ticks nobody's health.
     if let Some(name) = denylist::denied(&body) {
         tracing::info!(method_prefix = %name, outcome = %"denied", "request");
-        return error(
+        return Err(error(
             StatusCode::OK,
             jsonrpc::METHOD_DENIED,
             &format!("method not supported: {name}"),
             &body,
-        );
+        ));
     }
-    forward_with_failover(&state, body).await
+    Ok(body)
 }
 
 /// Forwards with failover: attempts across providers within the retry budget, all
@@ -190,7 +203,7 @@ fn log_outcome(started: Instant, attempts: u32, provider: Option<&str>, outcome:
 
 /// An LB error as a response: envelope, `lb: ` prefix, id echoed when the
 /// request body yields one.
-fn error(status: StatusCode, code: i32, message: &str, request_body: &[u8]) -> Response {
+pub(crate) fn error(status: StatusCode, code: i32, message: &str, request_body: &[u8]) -> Response {
     let id = jsonrpc::extract_id(request_body);
     (
         status,

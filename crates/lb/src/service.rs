@@ -57,9 +57,11 @@ pub async fn start(config: Config) -> Result<Service, StartError> {
     // One client for everything outbound — forwards and probes go to the
     // same providers, so they share one connection pool.
     let client = reqwest::Client::new();
+    // One forwarder for both listeners: same client, same caps.
+    let forwarder = Forwarder::new(client.clone(), &config.proxy);
     let state = Arc::new(proxy::ProxyState {
         pool: pool.clone(),
-        forwarder: Forwarder::new(client.clone(), &config.proxy),
+        forwarder: forwarder.clone(),
         config: config.proxy.clone(),
         flip_after: config.health.flip_after,
     });
@@ -70,7 +72,7 @@ pub async fn start(config: Config) -> Result<Service, StartError> {
         serve(public, proxy::router(state), shutdown.subscribe()),
         serve(
             admin,
-            admin::router(pool.clone(), ready.clone()),
+            admin::router(pool.clone(), ready.clone(), forwarder, &config.proxy),
             shutdown.subscribe(),
         ),
     ];

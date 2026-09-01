@@ -463,6 +463,37 @@ async fn a_wrong_chain_provider_is_never_admitted() {
 }
 
 #[tokio::test]
+async fn a_provider_padding_its_probe_answers_is_never_admitted() {
+    // A valid quantity envelope (the right chain id, even) inflated far
+    // past any honest probe answer: without the read cap this parses
+    // fine and the provider gets in.
+    let padding = "x".repeat(200 * 1024);
+    let body = format!(r#"{{"jsonrpc":"2.0","id":0,"result":"0x539","padding":"{padding}"}}"#);
+    let app = axum::Router::new().fallback(move || {
+        let body = body.clone();
+        async move {
+            (
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+
+    let service = start_monitored(&[addr], |_| {}).await;
+    // Ten-plus rounds of opportunity.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(
+        !service.pool.providers()[0].eligible(),
+        "an oversized probe answer must count as no answer"
+    );
+}
+
+#[tokio::test]
 async fn a_chain_id_change_after_admission_evicts_and_a_fix_readmits() {
     let (addr, rpc) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[addr], |config| {

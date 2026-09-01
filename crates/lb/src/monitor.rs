@@ -25,6 +25,11 @@ use crate::{
 /// Probes at most this many providers at once.
 const CONCURRENT_PROBES: usize = 16;
 
+/// Probe answers are read to at most this many bytes. A real answer is
+/// a quantity envelope of tens of bytes; reading further would hand a
+/// hostile provider a memory lever, one buffer per probe.
+const PROBE_RESPONSE_CAP: usize = 4 * 1024;
+
 /// The reference's last known height, and when it was last asked for.
 #[derive(Default)]
 struct ReferenceHeight {
@@ -238,7 +243,7 @@ impl Monitor {
             .timeout(self.config.probe_timeout)
             .send()
             .await;
-        let response = match sent {
+        let mut response = match sent {
             Ok(response) if response.status().is_success() => response,
             Ok(response) => {
                 tracing::debug!(provider = %id, status = %response.status(), "probe failed");
@@ -249,7 +254,15 @@ impl Monitor {
                 return None;
             }
         };
-        let body: Value = serde_json::from_slice(&response.bytes().await.ok()?).ok()?;
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.ok()? {
+            if body.len() + chunk.len() > PROBE_RESPONSE_CAP {
+                tracing::debug!(provider = %id, "probe answered over the size cap");
+                return None;
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let body: Value = serde_json::from_slice(&body).ok()?;
         let quantity = hex_quantity(body.get("result")?);
         if quantity.is_none() {
             tracing::debug!(provider = %id, "probe answered without a quantity");

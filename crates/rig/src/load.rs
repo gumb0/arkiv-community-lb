@@ -78,7 +78,7 @@ pub async fn run(target: &str, concurrency: usize, duration: Duration) -> Stats 
 
     let mut total = Stats::default();
     for worker in workers.collect::<Vec<_>>() {
-        total = total.merge(worker.await.expect("worker paniced"));
+        total = total.merge(worker.await.expect("worker panicked"));
     }
     total
 }

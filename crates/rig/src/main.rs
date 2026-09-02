@@ -31,22 +31,51 @@ const LB_ADMIN: &str = "127.0.0.1:18701";
 /// own 60 s), and admission needs flip_after probe rounds on top.
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Scenario order for `rig all`: quick smokes first, the acceptance
+/// scenario last.
+const SCENARIOS: [&str; 5] = [
+    "boot",
+    "distribution",
+    "denylist",
+    "forward-to-node",
+    "kill-recover",
+];
+
 #[tokio::main]
 async fn main() {
     match std::env::args().nth(1).as_deref() {
-        Some("boot") => boot().await,
-        Some("denylist") => denylist().await,
-        Some("distribution") => distribution().await,
-        Some("forward-to-node") => forward_to_node().await,
-        Some("kill-recover") => kill_recover().await,
+        Some("all") => all().await,
         Some("load") => load_command(std::env::args().skip(2)).await,
+        Some(name) if SCENARIOS.contains(&name) => scenario(name).await,
         _ => usage(),
     }
 }
 
+async fn scenario(name: &str) {
+    match name {
+        "boot" => boot().await,
+        "denylist" => denylist().await,
+        "distribution" => distribution().await,
+        "forward-to-node" => forward_to_node().await,
+        "kill-recover" => kill_recover().await,
+        _ => unreachable!("scenario {name} is listed but not dispatched"),
+    }
+}
+
+/// Every scenario in sequence, each on its own fresh stack; the first
+/// failure ends the run.
+async fn all() {
+    for name in SCENARIOS {
+        println!("rig: === {name} ===");
+        scenario(name).await;
+    }
+    println!("rig: all scenarios passed");
+}
+
 fn usage() -> ! {
     eprintln!(
-        "usage: rig boot\n       rig denylist\n       rig distribution\n       rig forward-to-node\n       rig kill-recover\n       rig load --target <url> [--concurrency N] [--duration SECONDS]"
+        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--concurrency N] [--duration SECONDS]",
+        SCENARIOS.join(" | ")
     );
     std::process::exit(2);
 }

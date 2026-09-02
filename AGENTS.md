@@ -103,9 +103,9 @@ adversarial — integrity checking is a first-class concern, not an add-on.
   name.
 - The heavier rig tier (`crates/rig/`) drives the shipped `arkiv-lb`
   binary over real dev-node containers, started through
-  `scripts/dev-node.sh` — never the Docker API directly. The rig
-  invokes the same scripts and configs that ship — no parallel
-  test-only implementations. It runs by hand (`cargo run -p rig --
+  `scripts/dev-node.sh` — never the Docker API directly. Shipped
+  components (the binary, the config format) are used as they are,
+  never reimplemented for tests. It runs by hand (`cargo run -p rig --
   all`) or through the on-demand `rig` CI workflow; it is not part of
   the push gate. Scenarios that need the real provider tooling will
   take it from `arkiv-community-node` checked out at `../node`.

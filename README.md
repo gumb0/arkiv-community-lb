@@ -32,7 +32,8 @@ not operator-chosen.
   method denial, admin forward to a quarantined node, kill and
   recovery under load. `rig all` runs every scenario; `rig load` is a
   standalone load generator pointable at any endpoint. Runs locally
-  and as an on-demand CI workflow.
+  and as an on-demand CI workflow. The testing approach across the
+  repository is [docs/TESTING.md](docs/TESTING.md).
 
 ## Still to come
 

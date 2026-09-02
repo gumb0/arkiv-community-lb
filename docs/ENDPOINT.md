@@ -9,9 +9,10 @@ The endpoint speaks JSON-RPC 2.0 over HTTP POST, single requests and
 batches, with permissive CORS — browser applications can call it
 directly. No API key, no registration.
 
-POST is the only method it serves. Any other method gets a plain-text
-405 with `Allow: POST, OPTIONS`, and a POST with an empty body a
-plain-text 400; neither reaches a node. Everything else this endpoint
+POST to the root path is the only request it serves. Any other path
+gets a plain-text 404, any other method a plain-text 405 with
+`Allow: POST, OPTIONS`, and a POST with an empty body a plain-text
+400; none of these reaches a node. Everything else this endpoint
 returns is JSON-RPC.
 
 ## Served methods

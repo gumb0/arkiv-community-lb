@@ -32,14 +32,24 @@ pub struct ProxyState {
 
 pub fn router(state: Arc<ProxyState>) -> Router {
     let max_request = state.config.max_request_size.as_u64() as usize;
-    // Catch-all: JSON-RPC clients POST to /, but nothing else lives on
-    // this listener either. Any other method goes to the 405 answer.
+    // Only the root path serves. Any other path — say, an admin route
+    // sent to the wrong port — gets a 404 instead of a silently
+    // load-balanced answer. Any other method goes to the 405 answer.
     Router::new()
-        .fallback(post(handle).fallback(method_not_allowed))
+        .route("/", post(handle).fallback(method_not_allowed))
+        .fallback(not_found)
         .layer(DefaultBodyLimit::max(max_request))
         // Needed to make requests from inside the browser work.
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+async fn not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        "Nothing here: the JSON-RPC endpoint is the root path.\n",
+    )
+        .into_response()
 }
 
 /// A non-POST was never a JSON-RPC request: a browser opening the

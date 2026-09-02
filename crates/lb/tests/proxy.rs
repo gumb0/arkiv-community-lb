@@ -534,6 +534,30 @@ async fn get_is_answered_by_the_lb_not_a_provider() {
 }
 
 #[tokio::test]
+async fn only_the_root_path_serves_on_the_public_listener() {
+    let answer = br#"{"jsonrpc":"2.0","id":23,"result":"ok"}"#;
+    let (addr, fake) = fake_provider(answer, Duration::ZERO).await;
+    let (_service, public) = start_lb(&[addr]).await;
+
+    // Admin paths on the wrong port: /node/{id} in particular would
+    // otherwise be load-balanced and look like a pinned answer.
+    for path in ["/nodes", "/node/p0", "/rpc"] {
+        let response = client()
+            .post(format!("{public}{path}"))
+            .json(&request(23))
+            .send()
+            .await
+            .expect("lb answers");
+        assert_eq!(response.status(), 404, "{path}"); // Not Found
+    }
+    assert_eq!(fake.requests(), 0, "nothing off the root path is forwarded");
+
+    let (status, body) = post(&public, request(23)).await;
+    assert_eq!(status, 200, "the root path still serves");
+    assert_eq!(body["result"], "ok");
+}
+
+#[tokio::test]
 async fn empty_body_is_refused_without_spending_the_budget() {
     let (addr, fake) = fake_provider(b"{}", Duration::ZERO).await;
     let (_service, public) = start_lb(&[addr]).await;

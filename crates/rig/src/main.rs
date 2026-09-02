@@ -35,6 +35,7 @@ const READY_TIMEOUT: Duration = Duration::from_secs(120);
 async fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("boot") => boot().await,
+        Some("denylist") => denylist().await,
         Some("distribution") => distribution().await,
         Some("kill-recover") => kill_recover().await,
         Some("load") => load_command(std::env::args().skip(2)).await,
@@ -44,7 +45,7 @@ async fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rig boot\n       rig distribution\n       rig kill-recover\n       rig load --target <url> [--concurrency N] [--duration SECONDS]"
+        "usage: rig boot\n       rig denylist\n       rig distribution\n       rig kill-recover\n       rig load --target <url> [--concurrency N] [--duration SECONDS]"
     );
     std::process::exit(2);
 }
@@ -178,19 +179,10 @@ async fn distribution() {
     report(&stats, Duration::from_secs(5));
     assert_eq!(stats.failed, 0, "a healthy fleet must serve everything");
 
-    let nodes = fetch_nodes().await;
-    let served: Vec<u64> = stack
-        .0
-        .nodes()
-        .iter()
-        .map(|node| {
-            let count = provider(&nodes, &node.id)["served"]
-                .as_u64()
-                .expect("served is a number");
-            println!("rig: {} served {count}", node.id);
-            count
-        })
-        .collect();
+    let served = served_counts(&stack.0).await;
+    for (node, count) in stack.0.nodes().iter().zip(&served) {
+        println!("rig: {} served {count}", node.id);
+    }
 
     assert_eq!(
         served.iter().sum::<u64>(),
@@ -208,6 +200,70 @@ async fn distribution() {
 
     drop(stack);
     println!("rig: ok");
+}
+
+/// A refused method is answered by the LB itself: the error envelope
+/// comes back, no provider is involved, nothing is billed — and the
+/// endpoint keeps serving allowed methods.
+async fn denylist() {
+    let stack = start_stack().await;
+    let client = reqwest::Client::new();
+    let url = format!("http://{LB_PUBLIC}");
+
+    let denied = serde_json::json!(
+        {"jsonrpc": "2.0", "id": 7, "method": "admin_peers", "params": []}
+    );
+    let response = client
+        .post(&url)
+        .json(&denied)
+        .send()
+        .await
+        .expect("lb answers");
+    assert_eq!(response.status(), 200, "a denial is an answered request");
+    let body: serde_json::Value = response.json().await.expect("json");
+    // -32050: the method-denied code from the client contract
+    // (docs/ENDPOINT.md).
+    assert_eq!(body["error"]["code"], -32050, "{body}");
+    assert_eq!(body["id"], 7, "the request id is echoed");
+    println!("rig: admin_peers refused: {}", body["error"]["message"]);
+
+    let allowed = serde_json::json!(
+        {"jsonrpc": "2.0", "id": 8, "method": "eth_blockNumber", "params": []}
+    );
+    let response = client
+        .post(&url)
+        .json(&allowed)
+        .send()
+        .await
+        .expect("lb answers");
+    let body: serde_json::Value = response.json().await.expect("json");
+    assert!(
+        body.get("result").is_some(),
+        "allowed methods still serve: {body}"
+    );
+
+    assert_eq!(
+        served_counts(&stack.0).await.iter().sum::<u64>(),
+        1,
+        "the refusal reached no provider; the allowed request reached one"
+    );
+
+    drop(stack);
+    println!("rig: ok");
+}
+
+/// Per-provider served counts from `/nodes`, in fleet order.
+async fn served_counts(fleet: &Fleet) -> Vec<u64> {
+    let nodes = fetch_nodes().await;
+    fleet
+        .nodes()
+        .iter()
+        .map(|node| {
+            provider(&nodes, &node.id)["served"]
+                .as_u64()
+                .expect("served is a number")
+        })
+        .collect()
 }
 
 /// One `/nodes` answer.

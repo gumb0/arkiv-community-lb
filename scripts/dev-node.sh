@@ -29,7 +29,7 @@ converts durations at that rate); ask in blocks if you change the interval.
 Environment:
   DEV_NODE_BLOCK_TIME  seal interval (default 2s; see the note above)
   DEV_NODE_PORT    host port for JSON-RPC (default 8645)
-  DEV_NODE_IMAGE   image (default ghcr.io/arkiv-network/arkiv-reth-dev:latest)
+  DEV_NODE_IMAGE   image (default: the digest-pinned arkiv-reth-dev v0.1.0)
   DEV_NODE_NAME    container name (default arkiv-dev-node)
 
 The image lives in a credentialed registry, so `docker login ghcr.io` with a

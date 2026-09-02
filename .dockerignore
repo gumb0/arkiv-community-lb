@@ -1,0 +1,6 @@
+# The image builds from source: only the workspace manifests and the
+# crates enter the build context.
+*
+!Cargo.toml
+!Cargo.lock
+!crates

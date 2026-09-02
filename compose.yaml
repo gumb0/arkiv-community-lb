@@ -1,9 +1,28 @@
-# The LB host stack. Will eventually hold every service that runs on the
-# LB box (the LB itself, the chain-writer sidecar); for now only the
-# tunnel server.
+# The LB host stack: every service that runs on the LB box. The
+# chain-writer sidecar joins later.
 name: arkiv-community-lb
 
 services:
+  # The LB itself, built from this workspace. Copy config.example.toml
+  # to config.toml and adjust; the Arkiv reference endpoint comes from
+  # ARKIV_RPC_URL / ARKIV_API_KEY in .env (a real environment variable
+  # beats the file). Host networking so tunneled providers are plain
+  # loopback URLs.
+  lb:
+    build: .
+    network_mode: host
+    volumes:
+      - ./config.toml:/etc/arkiv-lb/config.toml:ro
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      ARKIV_RPC_URL: ${ARKIV_RPC_URL:-}
+      ARKIV_API_KEY: ${ARKIV_API_KEY:-}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
   # The tunnel server NAT'd provider nodes connect to (docs/TUNNELING.md).
   # Usage: copy tunnel/frps.toml.example to tunnel/frps.toml, set a real
   # token, then `docker compose up -d`.

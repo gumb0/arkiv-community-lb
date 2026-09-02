@@ -91,6 +91,13 @@ fn report(stats: &load::Stats, elapsed: Duration) {
     }
 }
 
+/// One HTTP client for everything but the load loop (which has its own
+/// timeout policy): every scenario call rides one connection pool.
+fn client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 /// The workspace root, from the rig crate's own location — correct
 /// regardless of the directory the rig is invoked from.
 fn workspace_root() -> PathBuf {
@@ -208,7 +215,7 @@ async fn distribution() {
 /// endpoint keeps serving allowed methods.
 async fn denylist() {
     let stack = start_stack().await;
-    let client = reqwest::Client::new();
+    let client = client();
     let url = format!("http://{LB_PUBLIC}");
 
     let denied = serde_json::json!(
@@ -260,7 +267,7 @@ async fn denylist() {
 async fn forward_to_node() {
     let stack = start_stack().await;
     let victim = &stack.0.nodes()[0];
-    let client = reqwest::Client::new();
+    let client = client();
     let node_url = format!("http://{LB_ADMIN}/node/{}", victim.id);
     let ask = serde_json::json!(
         {"jsonrpc": "2.0", "id": 9, "method": "eth_blockNumber", "params": []}
@@ -334,7 +341,7 @@ async fn served_counts(fleet: &Fleet) -> Vec<u64> {
 
 /// One `/nodes` answer.
 async fn fetch_nodes() -> serde_json::Value {
-    reqwest::Client::new()
+    client()
         .get(format!("http://{LB_ADMIN}/nodes"))
         .send()
         .await
@@ -442,7 +449,7 @@ impl Drop for Lb {
 /// and every healthy provider is admitted.
 async fn wait_ready(lb: &mut Lb) {
     let started = Instant::now();
-    let client = reqwest::Client::new();
+    let client = client();
     let url = format!("http://{LB_ADMIN}/health");
     loop {
         // A refused start (a taken port, a bad config) fails here and

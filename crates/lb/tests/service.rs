@@ -81,6 +81,17 @@ async fn boots_serves_and_shuts_down() {
         .await
         .expect("answers");
     assert_eq!(unknown.status(), 404); // Not Found
+    let rpc_on_admin = client
+        .post(format!("{admin}/"))
+        .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}))
+        .send()
+        .await
+        .expect("answers");
+    assert_eq!(
+        rpc_on_admin.status(),
+        404, // Not Found
+        "the admin listener must not serve JSON-RPC"
+    );
 
     tokio::time::timeout(Duration::from_secs(5), service.shutdown())
         .await

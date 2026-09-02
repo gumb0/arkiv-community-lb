@@ -1,0 +1,19 @@
+# The rig tier: every scenario against real dev-node containers under
+# the shipped binary. On demand only — it boots a full stack per
+# scenario and takes minutes, so it is a button, not a gate; the gate
+# stays tests/ci.sh in ci.yml.
+name: rig
+on: workflow_dispatch
+
+jobs:
+  rig:
+    runs-on: ubuntu-latest
+    env:
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Log in to ghcr.io
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+      - run: cargo build --workspace
+      - run: cargo run -p rig -- all

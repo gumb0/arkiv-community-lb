@@ -27,6 +27,12 @@ not operator-chosen.
 - **Tunnel server stack** (`compose.yaml`, `tunnel/`): how NAT'd providers
   reach the LB — decision and measurements in
   [docs/TUNNELING.md](docs/TUNNELING.md).
+- **The test rig** (`crates/rig/`): scenarios that drive the shipped
+  LB binary over real dev-node containers — boot, load distribution,
+  method denial, admin forward to a quarantined node, kill and
+  recovery under load. `rig all` runs every scenario; `rig load` is a
+  standalone load generator pointable at any endpoint. Runs locally
+  and as an on-demand CI workflow.
 
 ## Still to come
 
@@ -34,8 +40,6 @@ not operator-chosen.
   alive on-chain.
 - A settle CLI: computes per-period payouts from on-chain records and pays GLM
   on Polygon.
-- A test rig that drives the whole system — real node containers, fault
-  injection, end-to-end demo scenarios.
 
 The node-operator side lives in the companion repo,
 [arkiv-community-node](https://github.com/gumb0/arkiv-community-node).

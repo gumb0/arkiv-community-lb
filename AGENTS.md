@@ -101,10 +101,14 @@ adversarial — integrity checking is a first-class concern, not an add-on.
   `health.disable_probing`), unreachable from the toml so an operator cannot
   flip them — and each carries a parse test proving the toml refuses its
   name.
-- The heavier rig tier uses real node containers and the provider tooling from
-  `arkiv-community-node`, located at `../node` by default (env-var
-  overridable). The rig invokes the same scripts and CLIs that ship — no
-  parallel test-only implementations.
+- The heavier rig tier (`crates/rig/`) drives the shipped `arkiv-lb`
+  binary over real dev-node containers, started through
+  `scripts/dev-node.sh` — never the Docker API directly. The rig
+  invokes the same scripts and configs that ship — no parallel
+  test-only implementations. It runs by hand (`cargo run -p rig --
+  all`) or through the on-demand `rig` CI workflow; it is not part of
+  the push gate. Scenarios that need the real provider tooling will
+  take it from `arkiv-community-node` checked out at `../node`.
 - In the TS writer package, `src/` is what ships (the writer module and the
   HTTP service) and `probes/` holds the scripts that are run by hand against a
   live network with a funded key — the smokes and the one-off experiments.

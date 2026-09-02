@@ -9,7 +9,7 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
       - run: ./tests/ci.sh
 
@@ -18,15 +18,15 @@ jobs:
   compose:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: docker compose config -q
 
   # The writer package: types, then the tests that need no chain.
   writer:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: npm, cache-dependency-path: writer/package-lock.json }
       - run: npm ci
         working-directory: writer
@@ -56,9 +56,9 @@ jobs:
             echo "found=no" >> "$GITHUB_OUTPUT"
             echo "No GHCR_TOKEN secret, so the dev-node image cannot be pulled." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: steps.cred.outputs.found == 'yes'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: steps.cred.outputs.found == 'yes'
         with: { node-version: 22, cache: npm, cache-dependency-path: writer/package-lock.json }
       - run: npm ci

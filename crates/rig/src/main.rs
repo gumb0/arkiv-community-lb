@@ -13,6 +13,7 @@ use std::{
 };
 
 mod fleet;
+mod load;
 
 use fleet::Fleet;
 
@@ -32,10 +33,55 @@ const READY_TIMEOUT: Duration = Duration::from_secs(120);
 async fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("boot") => boot().await,
-        _ => {
-            eprintln!("usage: rig boot");
-            std::process::exit(2);
+        Some("load") => load_command(std::env::args().skip(2)).await,
+        _ => usage(),
+    }
+}
+
+fn usage() -> ! {
+    eprintln!(
+        "usage: rig boot\n       rig load --target <url> [--concurrency N] [--duration SECONDS]"
+    );
+    std::process::exit(2);
+}
+
+async fn load_command(mut args: impl Iterator<Item = String>) {
+    let mut target = None;
+    let mut concurrency = 4;
+    let mut duration = Duration::from_secs(10);
+    while let Some(flag) = args.next() {
+        let value = args.next().unwrap_or_else(|| usage());
+        match flag.as_str() {
+            "--target" => target = Some(value),
+            "--concurrency" => concurrency = value.parse().unwrap_or_else(|_| usage()),
+            "--duration" => {
+                duration = Duration::from_secs(value.parse().unwrap_or_else(|_| usage()))
+            }
+            _ => usage(),
         }
+    }
+    let Some(target) = target else { usage() };
+
+    println!("rig: load on {target}: {concurrency} workers for {duration:?}");
+    let started = Instant::now();
+    let stats = load::run(&target, concurrency, duration).await;
+    report(&stats, started.elapsed());
+    if stats.failed > 0 {
+        std::process::exit(1);
+    }
+}
+
+fn report(stats: &load::Stats, elapsed: Duration) {
+    println!(
+        "rig: {} requests in {:.1}s ({:.0}/s), {} ok, {} failed",
+        stats.sent,
+        elapsed.as_secs_f64(),
+        stats.sent as f64 / elapsed.as_secs_f64(),
+        stats.ok,
+        stats.failed
+    );
+    if let Some(reason) = &stats.first_failure {
+        println!("rig: first failure: {reason}");
     }
 }
 

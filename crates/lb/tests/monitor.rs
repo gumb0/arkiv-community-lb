@@ -802,3 +802,39 @@ async fn nodes_reports_chain_verification_from_a_live_monitor() {
         "never asked for its height"
     );
 }
+
+#[tokio::test]
+async fn nodes_reflects_a_live_kill() {
+    let (a, rpc_a) = rpc_provider(CHAIN_ID).await;
+    let (b, _rpc_b) = rpc_provider(CHAIN_ID).await;
+    let service = start_monitored(&[a, b], |_| {}).await;
+    wait_for_all_admitted(&service).await;
+
+    rpc_a.down.store(true, Ordering::Relaxed);
+
+    // The rig drives its assertions from /nodes alone, so the kill must
+    // become visible over HTTP — no pool access.
+    let admin = format!("http://{}", service.admin_addr);
+    let client = reqwest::Client::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let nodes = loop {
+        let nodes: Value = client
+            .get(format!("{admin}/nodes"))
+            .send()
+            .await
+            .expect("nodes answers")
+            .json()
+            .await
+            .expect("json");
+        if nodes[0]["eligible"] == false {
+            break nodes;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for /nodes to show the kill"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    assert_eq!(nodes[0]["ineligibility_reason"], "probe");
+    assert_eq!(nodes[1]["eligible"], true, "the survivor stays in");
+}

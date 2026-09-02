@@ -136,9 +136,19 @@ fn workspace_root() -> PathBuf {
         .expect("workspace root resolves")
 }
 
+/// A running stack: the LB over its fleet. Dropping it tears both
+/// down — fields drop in declaration order, so the LB stops before
+/// the containers it probes.
+struct Stack {
+    // Never read, held for its Drop: the process dies with the stack.
+    #[allow(dead_code)]
+    lb: Lb,
+    fleet: Fleet,
+}
+
 /// Fleet up, LB booted over it and ready — where every scenario
-/// starts. Dropping the pair tears it down, LB first.
-async fn start_stack() -> (Fleet, Lb) {
+/// starts.
+async fn start_stack() -> Stack {
     let root = workspace_root();
     let fleet = Fleet::start(&root, NODES, BASE_PORT);
     let chain_id = fleet.chain_id();
@@ -147,7 +157,7 @@ async fn start_stack() -> (Fleet, Lb) {
     let config = render_config(&root, &fleet, chain_id);
     let mut lb = Lb::spawn(&root, &config);
     wait_ready(&mut lb).await;
-    (fleet, lb)
+    Stack { lb, fleet }
 }
 
 async fn boot() {
@@ -160,7 +170,7 @@ async fn boot() {
 /// notice nothing, the pool notices fast; restart it — it returns.
 async fn kill_recover() {
     let stack = start_stack().await;
-    let victim = &stack.0.nodes()[0];
+    let victim = &stack.fleet.nodes()[0];
 
     println!("rig: load on http://{LB_PUBLIC}: 4 workers for 15s");
     let load_started = Instant::now();
@@ -216,8 +226,8 @@ async fn distribution() {
     report(&stats, Duration::from_secs(5));
     assert_eq!(stats.failed, 0, "a healthy fleet must serve everything");
 
-    let served = served_counts(&stack.0).await;
-    for (node, count) in stack.0.nodes().iter().zip(&served) {
+    let served = served_counts(&stack.fleet).await;
+    for (node, count) in stack.fleet.nodes().iter().zip(&served) {
         println!("rig: {} served {count}", node.id);
     }
 
@@ -280,7 +290,7 @@ async fn denylist() {
     );
 
     assert_eq!(
-        served_counts(&stack.0).await.iter().sum::<u64>(),
+        served_counts(&stack.fleet).await.iter().sum::<u64>(),
         1,
         "the refusal reached no provider; the allowed request reached one"
     );
@@ -295,7 +305,7 @@ async fn denylist() {
 /// billing.
 async fn forward_to_node() {
     let stack = start_stack().await;
-    let victim = &stack.0.nodes()[0];
+    let victim = &stack.fleet.nodes()[0];
     let client = client();
     let node_url = format!("http://{LB_ADMIN}/node/{}", victim.id);
     let ask = serde_json::json!(
@@ -345,7 +355,7 @@ async fn forward_to_node() {
     );
 
     assert_eq!(
-        served_counts(&stack.0).await.iter().sum::<u64>(),
+        served_counts(&stack.fleet).await.iter().sum::<u64>(),
         0,
         "admin forwards are not billed"
     );

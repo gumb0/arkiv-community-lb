@@ -13,6 +13,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: ./tests/ci.sh
 
+  # The compose file parses and interpolates — catches a broken stack
+  # definition before a deploy does.
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config -q
+
   # The writer package: types, then the tests that need no chain.
   writer:
     runs-on: ubuntu-latest

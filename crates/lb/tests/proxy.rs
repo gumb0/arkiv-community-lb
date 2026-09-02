@@ -614,7 +614,7 @@ async fn near_miss_methods_are_served() {
 
 #[tokio::test]
 async fn traffic_failures_alone_quarantine_a_provider() {
-    // No Monitor exists yet: this flip comes from traffic outcomes only.
+    // Probing is disabled here: this flip comes from traffic outcomes only.
     let dead = dead_addr().await;
     let answer = br#"{"jsonrpc":"2.0","id":31,"result":"ok"}"#;
     let (live, _live_fake) = fake_provider(answer, Duration::ZERO).await;

@@ -26,7 +26,7 @@ pub struct ProxyState {
     pub pool: Arc<Pool>,
     pub forwarder: Forwarder,
     pub config: Proxy,
-    /// Health is flipped after this amount of consecutive fails / successes
+    /// Threshold for health flips; the Proxy only ever records failures.
     pub flip_after: u32,
 }
 

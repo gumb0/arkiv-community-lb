@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn params_carrying_a_denied_name_are_rejected() {
         // The accepted false positive, pinned so it cannot change by
-        // accident: only the shallow-parse upgrade should fix it.
+        // accident.
         let body = br#"{"id":1,"method":"arkiv_query","params":["owner = 'admin_bot'"]}"#;
         assert_eq!(denied(body), Some("admin_"));
     }

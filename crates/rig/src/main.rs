@@ -35,6 +35,7 @@ const READY_TIMEOUT: Duration = Duration::from_secs(120);
 async fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("boot") => boot().await,
+        Some("distribution") => distribution().await,
         Some("kill-recover") => kill_recover().await,
         Some("load") => load_command(std::env::args().skip(2)).await,
         _ => usage(),
@@ -43,7 +44,7 @@ async fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rig boot\n       rig kill-recover\n       rig load --target <url> [--concurrency N] [--duration SECONDS]"
+        "usage: rig boot\n       rig distribution\n       rig kill-recover\n       rig load --target <url> [--concurrency N] [--duration SECONDS]"
     );
     std::process::exit(2);
 }
@@ -167,6 +168,60 @@ async fn kill_recover() {
     println!("rig: ok");
 }
 
+/// Load over a healthy fleet lands on every provider, and the /nodes
+/// served counters account for every answered request.
+async fn distribution() {
+    let stack = start_stack().await;
+
+    println!("rig: load on http://{LB_PUBLIC}: 4 workers for 5s");
+    let stats = load::run(&format!("http://{LB_PUBLIC}"), 4, Duration::from_secs(5)).await;
+    report(&stats, Duration::from_secs(5));
+    assert_eq!(stats.failed, 0, "a healthy fleet must serve everything");
+
+    let nodes = fetch_nodes().await;
+    let served: Vec<u64> = stack
+        .0
+        .nodes()
+        .iter()
+        .map(|node| {
+            let count = provider(&nodes, &node.id)["served"]
+                .as_u64()
+                .expect("served is a number");
+            println!("rig: {} served {count}", node.id);
+            count
+        })
+        .collect();
+
+    assert_eq!(
+        served.iter().sum::<u64>(),
+        stats.ok,
+        "every answered request is billed to exactly one provider"
+    );
+    let (min, max) = (
+        *served.iter().min().expect("nodes"),
+        *served.iter().max().expect("nodes"),
+    );
+    assert!(min > 0, "round robin must reach every provider");
+    // Not a statistical test — only a guard against a broken cursor
+    // pinning the traffic to one provider.
+    assert!(max <= 2 * min, "share spread too wide: {served:?}");
+
+    drop(stack);
+    println!("rig: ok");
+}
+
+/// One `/nodes` answer.
+async fn fetch_nodes() -> serde_json::Value {
+    reqwest::Client::new()
+        .get(format!("http://{LB_ADMIN}/nodes"))
+        .send()
+        .await
+        .expect("/nodes answers")
+        .json()
+        .await
+        .expect("/nodes is json")
+}
+
 /// The row for one provider id in a `/nodes` answer.
 fn provider<'a>(nodes: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
     nodes
@@ -177,16 +232,13 @@ fn provider<'a>(nodes: &'a serde_json::Value, id: &str) -> &'a serde_json::Value
         .expect("known provider id")
 }
 
-/// Polls `/nodes` until the condition holds; panics after `timeout`.
+/// Polls `/nodes` until the condition holds; panics after `timeout` —
+/// or right away when `/nodes` stops answering, which after a
+/// successful boot means the LB is gone.
 async fn wait_nodes(what: &str, timeout: Duration, condition: impl Fn(&serde_json::Value) -> bool) {
     let started = Instant::now();
-    let client = reqwest::Client::new();
-    let url = format!("http://{LB_ADMIN}/nodes");
     loop {
-        if let Ok(response) = client.get(&url).send().await
-            && let Ok(nodes) = response.json::<serde_json::Value>().await
-            && condition(&nodes)
-        {
+        if condition(&fetch_nodes().await) {
             return;
         }
         assert!(started.elapsed() < timeout, "timed out waiting for: {what}");

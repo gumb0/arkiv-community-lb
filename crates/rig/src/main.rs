@@ -22,8 +22,11 @@ use fleet::Fleet;
 const BASE_PORT: u16 = 18650;
 const NODES: usize = 3;
 
-const LB_PUBLIC: &str = "127.0.0.1:18545";
-const LB_ADMIN: &str = "127.0.0.1:19545";
+// Not 18545/18546: config.example.toml uses those as its example
+// provider (tunnel) ports, so on a dev machine they may be real
+// forwarded ports.
+const LB_PUBLIC: &str = "127.0.0.1:18700";
+const LB_ADMIN: &str = "127.0.0.1:18701";
 
 /// Boot cover: image pulls are done by then (the script waits out its
 /// own 60 s), and admission needs flip_after probe rounds on top.
@@ -101,8 +104,8 @@ async fn boot() {
     println!("rig: fleet of {NODES} up, chain id {chain_id}");
 
     let config = render_config(&root, &fleet, chain_id);
-    let lb = Lb::spawn(&root, &config);
-    wait_ready(&lb).await;
+    let mut lb = Lb::spawn(&root, &config);
+    wait_ready(&mut lb).await;
 
     // Drop order tears the LB down before the fleet.
     drop(lb);
@@ -182,11 +185,19 @@ impl Drop for Lb {
 
 /// Polls the admin `/health` until `ready` — the boot window is closed
 /// and every healthy provider is admitted.
-async fn wait_ready(lb: &Lb) {
+async fn wait_ready(lb: &mut Lb) {
     let started = Instant::now();
     let client = reqwest::Client::new();
     let url = format!("http://{LB_ADMIN}/health");
     loop {
+        // A refused start (a taken port, a bad config) fails here and
+        // now, not at the timeout.
+        if let Ok(Some(status)) = lb.child.try_wait() {
+            panic!(
+                "arkiv-lb exited during boot ({status}) — see {}",
+                lb.log.display()
+            );
+        }
         if let Ok(response) = client.get(&url).send().await
             && let Ok(body) = response.json::<serde_json::Value>().await
             && body["ready"] == true

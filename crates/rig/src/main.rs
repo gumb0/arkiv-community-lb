@@ -124,7 +124,12 @@ fn report(stats: &load::Stats, elapsed: Duration) {
 /// timeout policy): every scenario call rides one connection pool.
 fn client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("client")
+    })
 }
 
 /// The workspace root, from the rig crate's own location — correct

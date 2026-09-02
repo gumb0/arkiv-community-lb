@@ -1,10 +1,9 @@
 //! The rig: drives the shipped LB binary against real node containers.
 //!
-//! Every scenario starts a fleet of dev-node containers through the
-//! same `scripts/dev-node.sh` operators use, renders a config for
-//! them, boots `arkiv-lb`, waits until it reports ready, and tears
-//! everything down again. `rig boot` is that and nothing more — the
-//! smallest scenario.
+//! Every scenario starts a fleet of dev-node containers through
+//! `scripts/dev-node.sh`, renders a config for them, boots `arkiv-lb`,
+//! waits until it reports ready, and tears everything down again.
+//! `rig boot` is that and nothing more — the smallest scenario.
 
 use std::{
     path::{Path, PathBuf},

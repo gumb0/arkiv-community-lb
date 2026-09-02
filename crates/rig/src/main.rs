@@ -240,8 +240,9 @@ async fn distribution() {
     let stack = start_stack().await;
 
     println!("rig: load on http://{LB_PUBLIC}: 4 workers for 5s");
+    let started = Instant::now();
     let stats = load::run(&format!("http://{LB_PUBLIC}"), 4, Duration::from_secs(5)).await;
-    report(&stats, Duration::from_secs(5));
+    report(&stats, started.elapsed());
     assert_eq!(stats.failed, 0, "a healthy fleet must serve everything");
 
     let served = served_counts(&stack.fleet).await;

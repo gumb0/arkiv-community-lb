@@ -43,11 +43,25 @@ const SCENARIOS: [&str; 5] = [
 
 #[tokio::main]
 async fn main() {
-    match std::env::args().nth(1).as_deref() {
-        Some("all") => all().await,
-        Some("load") => load_command(std::env::args().skip(2)).await,
-        Some(name) if SCENARIOS.contains(&name) => scenario(name).await,
-        _ => usage(),
+    let run = async {
+        match std::env::args().nth(1).as_deref() {
+            Some("all") => all().await,
+            Some("load") => load_command(std::env::args().skip(2)).await,
+            Some(name) if SCENARIOS.contains(&name) => scenario(name).await,
+            _ => usage(),
+        }
+    };
+    // Ctrl-C cancels the run at its current await point; the cancelled
+    // future drops whatever it holds, so the stack tears down through
+    // the same drops as any other ending. The exit must come after the
+    // select! expression — that is where the losing future is dropped.
+    let interrupted = tokio::select! {
+        _ = run => false,
+        _ = tokio::signal::ctrl_c() => true,
+    };
+    if interrupted {
+        println!("rig: interrupted");
+        std::process::exit(130);
     }
 }
 

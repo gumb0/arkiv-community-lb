@@ -37,6 +37,7 @@ async fn main() {
         Some("boot") => boot().await,
         Some("denylist") => denylist().await,
         Some("distribution") => distribution().await,
+        Some("forward-to-node") => forward_to_node().await,
         Some("kill-recover") => kill_recover().await,
         Some("load") => load_command(std::env::args().skip(2)).await,
         _ => usage(),
@@ -45,7 +46,7 @@ async fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rig boot\n       rig denylist\n       rig distribution\n       rig kill-recover\n       rig load --target <url> [--concurrency N] [--duration SECONDS]"
+        "usage: rig boot\n       rig denylist\n       rig distribution\n       rig forward-to-node\n       rig kill-recover\n       rig load --target <url> [--concurrency N] [--duration SECONDS]"
     );
     std::process::exit(2);
 }
@@ -246,6 +247,71 @@ async fn denylist() {
         served_counts(&stack.0).await.iter().sum::<u64>(),
         1,
         "the refusal reached no provider; the allowed request reached one"
+    );
+
+    drop(stack);
+    println!("rig: ok");
+}
+
+/// The operator's side door: a quarantined provider is out of rotation
+/// but still reachable one-off through the admin listener — dead it
+/// answers 502, alive it answers as itself, and neither touches
+/// billing.
+async fn forward_to_node() {
+    let stack = start_stack().await;
+    let victim = &stack.0.nodes()[0];
+    let client = reqwest::Client::new();
+    let node_url = format!("http://{LB_ADMIN}/node/{}", victim.id);
+    let ask = serde_json::json!(
+        {"jsonrpc": "2.0", "id": 9, "method": "eth_blockNumber", "params": []}
+    );
+
+    victim.stop();
+    wait_nodes(
+        "the kill shows in /nodes",
+        Duration::from_secs(30),
+        |nodes| provider(nodes, &victim.id)["eligible"] == false,
+    )
+    .await;
+    println!("rig: {} killed and quarantined", victim.id);
+
+    let response = client
+        .post(&node_url)
+        .json(&ask)
+        .send()
+        .await
+        .expect("admin answers");
+    assert_eq!(response.status(), 502, "a dead node has no answer to relay");
+    println!("rig: admin forward to the dead node: 502");
+
+    // Started again, the node answers admin forwards long before the
+    // probes readmit it — that is the whole point of the side door.
+    victim.start();
+    let response = client
+        .post(&node_url)
+        .json(&ask)
+        .send()
+        .await
+        .expect("admin answers");
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = response.json().await.expect("json");
+    assert!(body.get("result").is_some(), "{body}");
+    assert_eq!(body["id"], 9, "the node's own answer, id included");
+    // Readmission needs flip_after probe successes.
+    assert_eq!(
+        provider(&fetch_nodes().await, &victim.id)["eligible"],
+        false,
+        "the answer came from a provider still out of rotation"
+    );
+    println!(
+        "rig: admin forward reached the quarantined node: {}",
+        body["result"]
+    );
+
+    assert_eq!(
+        served_counts(&stack.0).await.iter().sum::<u64>(),
+        0,
+        "admin forwards are not billed"
     );
 
     drop(stack);

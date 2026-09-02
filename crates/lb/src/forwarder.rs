@@ -76,7 +76,7 @@ impl Forwarder {
             return Outcome::TooLarge;
         }
 
-        let mut collected = Vec::new();
+        let mut collected = Vec::with_capacity(response.content_length().unwrap_or(0) as usize);
         loop {
             match response.chunk().await {
                 Ok(Some(chunk)) => {

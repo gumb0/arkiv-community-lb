@@ -22,9 +22,8 @@ use fleet::Fleet;
 const BASE_PORT: u16 = 18650;
 const NODES: usize = 3;
 
-// Not 18545/18546: config.example.toml uses those as its example
-// provider (tunnel) ports, so on a dev machine they may be real
-// forwarded ports.
+// Not 18545/18546: those are the documented tunnel-port examples, so
+// on a dev machine they may be real forwarded ports.
 const LB_PUBLIC: &str = "127.0.0.1:18700";
 const LB_ADMIN: &str = "127.0.0.1:18701";
 
@@ -36,6 +35,7 @@ const READY_TIMEOUT: Duration = Duration::from_secs(120);
 async fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("boot") => boot().await,
+        Some("kill-recover") => kill_recover().await,
         Some("load") => load_command(std::env::args().skip(2)).await,
         _ => usage(),
     }
@@ -43,7 +43,7 @@ async fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rig boot\n       rig load --target <url> [--concurrency N] [--duration SECONDS]"
+        "usage: rig boot\n       rig kill-recover\n       rig load --target <url> [--concurrency N] [--duration SECONDS]"
     );
     std::process::exit(2);
 }
@@ -97,7 +97,9 @@ fn workspace_root() -> PathBuf {
         .expect("workspace root resolves")
 }
 
-async fn boot() {
+/// Fleet up, LB booted over it and ready — where every scenario
+/// starts. Dropping the pair tears it down, LB first.
+async fn start_stack() -> (Fleet, Lb) {
     let root = workspace_root();
     let fleet = Fleet::start(&root, NODES, BASE_PORT);
     let chain_id = fleet.chain_id();
@@ -106,11 +108,90 @@ async fn boot() {
     let config = render_config(&root, &fleet, chain_id);
     let mut lb = Lb::spawn(&root, &config);
     wait_ready(&mut lb).await;
+    (fleet, lb)
+}
 
-    // Drop order tears the LB down before the fleet.
-    drop(lb);
-    drop(fleet);
+async fn boot() {
+    let stack = start_stack().await;
+    drop(stack);
     println!("rig: ok");
+}
+
+/// The acceptance scenario: kill a provider mid-load — the clients
+/// notice nothing, the pool notices fast; restart it — it returns.
+async fn kill_recover() {
+    let stack = start_stack().await;
+    let victim = &stack.0.nodes()[0];
+
+    println!("rig: load on http://{LB_PUBLIC}: 4 workers for 15s");
+    let load_started = Instant::now();
+    let load = tokio::spawn(async {
+        load::run(&format!("http://{LB_PUBLIC}"), 4, Duration::from_secs(15)).await
+    });
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    victim.stop();
+    println!("rig: killed {} under load", victim.id);
+
+    let killed = Instant::now();
+    wait_nodes(
+        "the kill shows in /nodes",
+        Duration::from_secs(30),
+        |nodes| provider(nodes, &victim.id)["eligible"] == false,
+    )
+    .await;
+    println!(
+        "rig: quarantined {:.1}s after the kill",
+        killed.elapsed().as_secs_f32()
+    );
+
+    let stats = load.await.expect("load task");
+    report(&stats, load_started.elapsed());
+    assert_eq!(stats.failed, 0, "clients must not see the kill");
+    assert!(stats.sent > 0, "the load must actually have run");
+
+    victim.start();
+    println!("rig: restarted {}", victim.id);
+    let restarted = Instant::now();
+    wait_nodes(
+        "readmission shows in /nodes",
+        Duration::from_secs(120),
+        |nodes| provider(nodes, &victim.id)["eligible"] == true,
+    )
+    .await;
+    println!(
+        "rig: readmitted {:.1}s after the restart",
+        restarted.elapsed().as_secs_f32()
+    );
+
+    drop(stack);
+    println!("rig: ok");
+}
+
+/// The row for one provider id in a `/nodes` answer.
+fn provider<'a>(nodes: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+    nodes
+        .as_array()
+        .expect("/nodes is an array")
+        .iter()
+        .find(|node| node["id"] == id)
+        .expect("known provider id")
+}
+
+/// Polls `/nodes` until the condition holds; panics after `timeout`.
+async fn wait_nodes(what: &str, timeout: Duration, condition: impl Fn(&serde_json::Value) -> bool) {
+    let started = Instant::now();
+    let client = reqwest::Client::new();
+    let url = format!("http://{LB_ADMIN}/nodes");
+    loop {
+        if let Ok(response) = client.get(&url).send().await
+            && let Ok(nodes) = response.json::<serde_json::Value>().await
+            && condition(&nodes)
+        {
+            return;
+        }
+        assert!(started.elapsed() < timeout, "timed out waiting for: {what}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 /// Writes the LB config for this fleet under `target/rig/`. Everything

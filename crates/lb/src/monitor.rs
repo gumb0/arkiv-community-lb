@@ -42,6 +42,8 @@ pub struct Monitor {
     client: reqwest::Client,
     config: Health,
     reference: Option<reqwest::Url>,
+    /// Bearer token for the reference. Providers never see it.
+    reference_key: Option<String>,
     /// Set once `flip_after` probe rounds have completed — the boot
     /// window is closed and every healthy provider has been admitted.
     /// `/health` shows it.
@@ -54,6 +56,7 @@ impl Monitor {
         client: reqwest::Client,
         config: Health,
         reference: Option<reqwest::Url>,
+        reference_key: Option<String>,
         ready: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -61,6 +64,7 @@ impl Monitor {
             client,
             config,
             reference,
+            reference_key,
             ready,
         }
     }
@@ -122,7 +126,9 @@ impl Monitor {
             return;
         }
         reference_height.asked = Some(std::time::Instant::now());
-        reference_height.height = self.query_block_number("reference", url).await;
+        reference_height.height = self
+            .query_block_number("reference", url, self.reference_key.as_deref())
+            .await;
     }
 
     async fn probe_all(&self, reference_height: Option<u64>, chain_round: bool) {
@@ -201,7 +207,9 @@ impl Monitor {
     /// Returns whether the provider answered — a lagging provider did.
     async fn probe(&self, provider: &Provider, reference_height: Option<u64>) -> bool {
         let started = std::time::Instant::now();
-        let height = self.query_block_number(&provider.id, &provider.url).await;
+        let height = self
+            .query_block_number(&provider.id, &provider.url, None)
+            .await;
         provider.record_probe_duration(started.elapsed());
         let Some(height) = height else {
             provider.record_unanswered_probe();
@@ -226,11 +234,17 @@ impl Monitor {
         true
     }
 
-    async fn query_block_number(&self, id: &str, url: &reqwest::Url) -> Option<u64> {
+    async fn query_block_number(
+        &self,
+        id: &str,
+        url: &reqwest::Url,
+        bearer: Option<&str>,
+    ) -> Option<u64> {
         self.query(
             id,
             url,
             r#"{"jsonrpc":"2.0","id":0,"method":"eth_blockNumber","params":[]}"#,
+            bearer,
         )
         .await
     }
@@ -240,6 +254,7 @@ impl Monitor {
             id,
             url,
             r#"{"jsonrpc":"2.0","id":0,"method":"eth_chainId","params":[]}"#,
+            None,
         )
         .await
     }
@@ -247,15 +262,23 @@ impl Monitor {
     /// One probe round trip for a quantity-valued method; any
     /// shortfall — transport, status, or an answer that is not a hex
     /// quantity — is one failure.
-    async fn query(&self, id: &str, url: &reqwest::Url, body: &'static str) -> Option<u64> {
-        let sent = self
+    async fn query(
+        &self,
+        id: &str,
+        url: &reqwest::Url,
+        body: &'static str,
+        bearer: Option<&str>,
+    ) -> Option<u64> {
+        let mut request = self
             .client
             .post(url.clone())
             .header(header::CONTENT_TYPE, "application/json")
             .body(body)
-            .timeout(self.config.probe_timeout)
-            .send()
-            .await;
+            .timeout(self.config.probe_timeout);
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
+        let sent = request.send().await;
         let mut response = match sent {
             Ok(response) if response.status().is_success() => response,
             Ok(response) => {

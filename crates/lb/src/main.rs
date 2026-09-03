@@ -21,6 +21,9 @@ async fn main() {
     config.reference = std::env::var("ARKIV_RPC_URL")
         .ok()
         .filter(|url| !url.is_empty());
+    config.reference_key = std::env::var("ARKIV_API_KEY")
+        .ok()
+        .filter(|key| !key.is_empty());
     let providers = config.providers.len();
 
     let service = match lb::service::start(config).await {

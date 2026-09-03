@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use axum::{Router, body::Bytes, response::IntoResponse};
+use axum::{Router, body::Bytes, http::HeaderMap, response::IntoResponse};
 use lb::config::{Config, Provider};
 use serde_json::{Value, json};
 
@@ -27,6 +27,8 @@ struct Rpc {
     served: AtomicU64,
     /// Every request that arrived, probes and errors included.
     requests: AtomicU64,
+    /// The last `Authorization` header seen, if any request carried one.
+    authorization: std::sync::Mutex<Option<String>>,
 }
 
 async fn rpc_provider(chain_id: u64) -> (SocketAddr, Arc<Rpc>) {
@@ -36,12 +38,17 @@ async fn rpc_provider(chain_id: u64) -> (SocketAddr, Arc<Rpc>) {
         down: AtomicBool::new(false),
         served: AtomicU64::new(0),
         requests: AtomicU64::new(0),
+        authorization: std::sync::Mutex::new(None),
     });
     let state = rpc.clone();
-    let app = Router::new().fallback(move |body: Bytes| {
+    let app = Router::new().fallback(move |headers: HeaderMap, body: Bytes| {
         let state = state.clone();
         async move {
             state.requests.fetch_add(1, Ordering::Relaxed);
+            if let Some(value) = headers.get("authorization") {
+                *state.authorization.lock().expect("authorization") =
+                    Some(value.to_str().unwrap_or_default().to_string());
+            }
             if state.down.load(Ordering::Relaxed) {
                 return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "down").into_response();
             }
@@ -279,6 +286,50 @@ async fn lagging_behind_the_reference_quarantines_and_catchup_readmits() {
     // ...and exactly the allowed lag is healthy.
     rpc.height.store(97, Ordering::Relaxed);
     wait_for("readmission at the tolerance", || provider.eligible()).await;
+}
+
+#[tokio::test]
+async fn the_reference_key_reaches_the_reference_and_no_provider() {
+    let (addr, rpc) = rpc_provider(CHAIN_ID).await;
+    let (ref_addr, reference) = rpc_provider(CHAIN_ID).await;
+    let reference_url = format!("http://{ref_addr}");
+    let service = start_monitored(&[addr], move |config| {
+        config.reference = Some(reference_url);
+        config.reference_key = Some("k-1".into());
+    })
+    .await;
+    wait_for_all_admitted(&service).await;
+
+    assert_eq!(
+        *reference.authorization.lock().expect("authorization"),
+        Some("Bearer k-1".to_string())
+    );
+    assert_eq!(
+        *rpc.authorization.lock().expect("authorization"),
+        None,
+        "the key is the reference's alone"
+    );
+}
+
+#[tokio::test]
+async fn without_a_key_the_reference_is_asked_unauthenticated() {
+    let (addr, _rpc) = rpc_provider(CHAIN_ID).await;
+    let (ref_addr, reference) = rpc_provider(CHAIN_ID).await;
+    let reference_url = format!("http://{ref_addr}");
+    let service = start_monitored(&[addr], move |config| {
+        config.reference = Some(reference_url);
+    })
+    .await;
+    wait_for_all_admitted(&service).await;
+
+    assert!(
+        reference.requests.load(Ordering::Relaxed) > 0,
+        "the reference was asked"
+    );
+    assert_eq!(
+        *reference.authorization.lock().expect("authorization"),
+        None
+    );
 }
 
 #[tokio::test]

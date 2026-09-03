@@ -30,6 +30,10 @@ pub struct Config {
     /// environment — the same variable the writer sidecar reads.
     #[serde(skip)]
     pub reference: Option<String>,
+    /// Bearer token for the reference endpoint, from `ARKIV_API_KEY`;
+    /// sent to the reference only, never to a provider.
+    #[serde(skip)]
+    pub reference_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -304,6 +308,11 @@ mod tests {
     fn the_reference_endpoint_is_not_reachable_from_toml() {
         parse("reference = \"http://example.org\"\n")
             .expect_err("the reference comes from the environment only");
+    }
+
+    #[test]
+    fn the_reference_key_is_not_reachable_from_toml() {
+        parse("reference_key = \"secret\"\n").expect_err("the key comes from the environment only");
     }
 
     #[test]

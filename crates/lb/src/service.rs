@@ -101,6 +101,7 @@ pub async fn start(config: Config) -> Result<Service, StartError> {
             client,
             config.health.clone(),
             reference,
+            config.reference_key.clone(),
             ready,
         );
         tasks.push(tokio::spawn(monitor.run(shutdown.subscribe())));

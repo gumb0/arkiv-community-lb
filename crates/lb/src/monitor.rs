@@ -125,10 +125,22 @@ impl Monitor {
         if !due {
             return;
         }
+        let first_ask = reference_height.asked.is_none();
+        let was_answered = reference_height.height.is_some();
         reference_height.asked = Some(std::time::Instant::now());
         reference_height.height = self
             .query_block_number("reference", url, self.reference_key.as_deref())
             .await;
+        // Logged on change only, so a silent reference shows once at
+        // the default level instead of once per ask at debug.
+        let answered = reference_height.height.is_some();
+        if first_ask || answered != was_answered {
+            if answered {
+                tracing::info!("reference answered: chain head lag is checked");
+            } else {
+                tracing::warn!("reference unanswered: chain head lag goes unchecked");
+            }
+        }
     }
 
     async fn probe_all(&self, reference_height: Option<u64>, chain_round: bool) {

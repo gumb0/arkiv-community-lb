@@ -93,7 +93,9 @@ async fn one_request(client: &reqwest::Client, target: &str, method: &str) -> Re
         .map_err(|error| format!("{method}: {error}"))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("{method}: HTTP {status}"));
+        let body = response.text().await.unwrap_or_default();
+        let body = body.get(..200).unwrap_or(&body);
+        return Err(format!("{method}: HTTP {status}: {body}"));
     }
     let body: Value = response
         .json()

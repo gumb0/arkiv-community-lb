@@ -76,16 +76,21 @@ in `/nodes`.
 ## Day to day
 
 - Logs: `docker compose logs -f lb` (rotation is capped in the compose
-  file). Default level is info; `RUST_LOG=info,lb=debug` in `.env`
-  adds the per-attempt and per-probe lines.
+  file). Default level is info. For debug detail — per-attempt and
+  per-probe lines — set `RUST_LOG=info,lb=debug` in `.env` and apply
+  it with `docker compose up -d`; set it back the same way.
 - Admin API from a workstation: the port is loopback-only by design,
   so forward it — `ssh -L 9545:127.0.0.1:9545 <box>` — and read
   `http://127.0.0.1:9545/nodes` locally. A JSON-RPC request POSTed to
   `http://127.0.0.1:9545/node/{id}` is forwarded to that one provider,
   eligibility ignored.
-- Config changes: edit `config.toml`, then `docker compose restart lb`.
-- Update: `git pull` (or check out a release tag), then
-  `docker compose up -d --build`.
+- `config.toml` changes: `docker compose restart lb` — the file is
+  mounted in and read at startup; no rebuild.
+- `.env` changes (`RUST_LOG`, the reference endpoint):
+  `docker compose up -d` — a restart is not enough, the values enter
+  the container when it is created. No rebuild either.
+- Code updates: `git pull` (or check out a release tag), then
+  `docker compose up -d --build` — `--build` is only ever needed here.
 - Reboot safety: Docker's enabled service plus `restart:
   unless-stopped` bring the stack back on boot; there is no systemd
   unit to manage.

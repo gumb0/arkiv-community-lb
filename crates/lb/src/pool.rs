@@ -299,7 +299,10 @@ impl Pool {
                 return Some(provider);
             }
         }
-        None
+        // Concurrent selections advance the cursor too, so the lap
+        // above may have sampled the same index twice and missed an
+        // eligible provider.
+        self.providers.iter().find(|provider| provider.eligible())
     }
 }
 
@@ -336,6 +339,32 @@ mod tests {
         pool.providers()[1].set_eligible(true);
         for _ in 0..10 {
             assert_eq!(pool.next_eligible().expect("one eligible").id, "b");
+        }
+    }
+
+    /// Selections racing on the cursor may sample the same index more
+    /// than once within one lap — a lap of samples is not a lap of
+    /// providers. The eligible provider must be found regardless.
+    #[test]
+    fn a_lone_eligible_provider_is_always_found_under_contention() {
+        let pool = std::sync::Arc::new(pool(&["dead", "live"]));
+        pool.providers()[1].set_eligible(true);
+
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let pool = pool.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..100_000 {
+                        assert!(
+                            pool.next_eligible().is_some(),
+                            "an eligible provider exists and must be found"
+                        );
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("selection thread");
         }
     }
 

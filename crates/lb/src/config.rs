@@ -81,7 +81,7 @@ impl Default for Health {
             probe_timeout: Duration::from_secs(2),
             flip_after: 3,
             max_probe_backoff: Duration::from_secs(5 * 60),
-            ref_height_interval: Duration::ZERO,
+            ref_height_interval: Duration::from_secs(30),
             chainid_check_interval: Duration::from_secs(5 * 60),
             chain_id: None,
             lag_tolerance_blocks: 30,
@@ -251,7 +251,7 @@ mod tests {
         let config = parse("").expect("empty config is valid");
         assert_eq!(config.health.probe_interval, Duration::from_secs(5));
         assert_eq!(config.health.flip_after, 3);
-        assert_eq!(config.health.ref_height_interval, Duration::ZERO);
+        assert_eq!(config.health.ref_height_interval, Duration::from_secs(30));
         assert_eq!(config.health.lag_tolerance_blocks, 30);
         assert_eq!(config.proxy.max_retries, 2);
         assert_eq!(config.proxy.max_response_size, ByteSize::mib(64));

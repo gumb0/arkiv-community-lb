@@ -90,6 +90,9 @@ async fn start_monitored(
     config.health.probe_interval = Duration::from_millis(20);
     config.health.flip_after = 2;
     config.health.chain_id = Some(CHAIN_ID);
+    // Every sweep: lag tests move heights and expect the next sweep to
+    // see the reference move with them.
+    config.health.ref_height_interval = Duration::ZERO;
     config.providers = addrs
         .iter()
         .enumerate()

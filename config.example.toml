@@ -28,8 +28,9 @@ flip_after = 3
 # If a provider is persistently dead, its probes get less frequent,
 # up to this cadence.
 max_probe_backoff = "5m"
-# How often the chain height from reference RPC is sampled; 0 = every probe sweep.
-ref_height_interval = "0s"
+# How often the chain height from reference RPC is sampled; 0 = every
+# probe sweep. A lagging provider is noticed at most this much later.
+ref_height_interval = "30s"
 # How often providers are checked to be on the right chain;
 # 0 = every probe sweep.
 chainid_check_interval = "5m"

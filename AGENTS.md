@@ -77,7 +77,7 @@ adversarial — integrity checking is a first-class concern, not an add-on.
 - Service images are built locally from pinned upstream releases, checksum
   verified in the Dockerfile — no third-party image in the trust chain.
 - Secrets and machine-local configuration stay untracked; the committed
-  reference is an `.example` file beside them (`tunnel/frps.toml.example`,
+  reference is an `.example` file beside them (`tunnel/frps.example.toml`,
   `.env.example`, `config.example.toml`).
 - **`config.example.toml` is the single place config fields are
   documented** — every value there is the code's default, a test keeps it

@@ -91,7 +91,7 @@ on the provider side.
 
 ## Server config
 
-`tunnel/frps.toml.example`. Points that matter: the control port is the
+`tunnel/frps.example.toml`. Points that matter: the control port is the
 only firewall opening; forwarded provider ports bind to loopback
 (the LB is their only client); the admission hook is present but
 commented until the marketplace lands.

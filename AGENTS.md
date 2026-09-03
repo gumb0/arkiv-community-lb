@@ -73,7 +73,8 @@ adversarial — integrity checking is a first-class concern, not an add-on.
 ## Deployment
 
 - `compose.yaml` at the repository root is the **LB host stack**: every service
-  that runs on the LB box belongs in it (so far only the tunnel server).
+  that runs on the LB box belongs in it (the LB and the tunnel server;
+  the chain-writer sidecar joins later).
 - Service images are built locally from pinned upstream releases, checksum
   verified in the Dockerfile — no third-party image in the trust chain.
 - Secrets and machine-local configuration stay untracked; the committed

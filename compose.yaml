@@ -28,8 +28,8 @@ services:
   # token, then `docker compose up -d`.
   tunnel:
     build: ./tunnel
-    # Host networking because the LB runs on the host for now, to be
-    # revisited later.
+    # Host networking, like the LB: the forwarded provider ports bind
+    # on host loopback, where the LB reaches them.
     network_mode: host
     volumes:
       - ./tunnel/frps.toml:/etc/frp/frps.toml:ro

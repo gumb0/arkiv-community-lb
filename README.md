@@ -24,9 +24,10 @@ not operator-chosen.
   contract in [docs/CHAIN_WRITER.md](docs/CHAIN_WRITER.md). Unit-tested
   without a chain; live smoke tests run against a throwaway local node
   (`scripts/dev-node.sh`) in CI.
-- **Tunnel server stack** (`compose.yaml`, `tunnel/`): how NAT'd providers
-  reach the LB — decision and measurements in
-  [docs/TUNNELING.md](docs/TUNNELING.md).
+- **The host stack** (`compose.yaml`, `Dockerfile`, `tunnel/`): the LB
+  and the tunnel server for NAT'd providers, deployed together —
+  operations in [docs/RUNBOOK.md](docs/RUNBOOK.md), the tunnel decision
+  and measurements in [docs/TUNNELING.md](docs/TUNNELING.md).
 - **The test rig** (`crates/rig/`): scenarios that drive the shipped
   LB binary over real dev-node containers — boot, load distribution,
   method denial, admin forward to a quarantined node, kill and

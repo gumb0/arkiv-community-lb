@@ -4,8 +4,8 @@ All entity writes go through one small sidecar: a Node service
 (`writer/src/service.ts`) that wraps the official
 [Arkiv TS SDK](https://github.com/Arkiv-Network/arkiv-sdk-js) behind five
 HTTP routes. Chain reads never go through it — the Rust side reads with
-plain JSON-RPC. The wire format and the error contract below are what the 
-Rust `ArkivWriter` client codes against.
+plain JSON-RPC. The wire format and the error contract below are what the
+Rust side will code against.
 
 ## Why a sidecar
 
@@ -17,9 +17,9 @@ its own, so instead the write path crosses one process boundary and stays on
 the official code.
 
 The service is deliberately thin. It holds the deployment's Arkiv key and
-translates HTTP requests into SDK calls — nothing else. Down, it looks
-exactly like the chain being down, and every write path degrades for that
-already.
+translates HTTP requests into SDK calls — nothing else. When it is down,
+the LB sees the same failure as a chain outage, which every write path
+already has to handle.
 
 ## Schema-blind
 
@@ -155,6 +155,6 @@ Two tiers with different needs, in different directories:
   time.
 
 `scripts/dev-node.sh` raises a local throwaway chain (the upstream
-`arkiv-reth-dev` image, pinned to the release the devnet runs, 250 ms
-blocks) so probes need no devnet and spend no devnet gas. CI runs the two
-smoke probes against it.
+`arkiv-reth-dev` image, pinned to the release the devnet runs, sealing
+every 2 s like the devnet) so probes need no devnet and spend no devnet
+gas. CI runs the two smoke probes against it.

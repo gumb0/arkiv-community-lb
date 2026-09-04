@@ -177,6 +177,10 @@ a fast restart.
   would refuse to judge lag while the reference is on another network,
   instead of letting a wrong reference URL quarantine every correct
   provider.
+- **Latency-aware selection.** Weighting selection by observed latency
+  (a moving average per provider, with power-of-two-choices or smooth
+  weighted round robin) would shift traffic away from slow providers;
+  health would still decide who is eligible at all.
 - **A parsed method allowlist and per-method counters.** The denylist
   is a text search over the body, chosen so the forwarded request stays
   byte-identical. A shallow parse of the method field would turn it

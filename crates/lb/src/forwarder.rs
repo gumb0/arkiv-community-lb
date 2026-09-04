@@ -76,6 +76,8 @@ impl Forwarder {
             return Outcome::TooLarge;
         }
 
+        // The declared length is provider-controlled, but it passed the
+        // cap check above, so the reservation is bounded by the cap.
         let mut collected = Vec::with_capacity(response.content_length().unwrap_or(0) as usize);
         loop {
             match response.chunk().await {

@@ -24,9 +24,9 @@ and node image, so they run by hand when a pin moves, not on every
 push. `writer/tests/` is reserved for suites CI can run unattended;
 `writer/probes/` holds what is run by hand against a live network.
 
-**3. The rig.** Real everything: dev-node containers, the shipped
-`arkiv-lb` binary as a separate process, real config file, real
-sockets. It runs by hand or through the on-demand `rig` CI workflow;
+**3. The rig.** Real containers, the shipped `arkiv-lb` binary as a
+separate process, a real config file, real sockets. It runs by hand or
+through the on-demand `rig` CI workflow;
 it is deliberately not a gate — it boots a full stack per scenario
 and takes minutes.
 

@@ -11,14 +11,15 @@ not operator-chosen.
 ## What is here
 
 - **The LB service** (`crates/lb/`): round-robin load balancing with
-  failover over a configured provider list, health probing with
-  automatic quarantine and readmission, chain head lag and chain
-  identity checks, probe backoff, and an admin API: health and pool
-  views on `/health` and `/nodes`, plus pinned forwarding to one
-  provider on `/node/{id}` — including providers outside rotation.
-  The client contract is
-  [docs/ENDPOINT.md](docs/ENDPOINT.md); the architecture note is
-  [docs/PROXY.md](docs/PROXY.md).
+  failover over a configured provider list. Health probing quarantines
+  and readmits providers automatically, checks chain identity and
+  chain head lag, and backs off from dead providers. An admin API
+  serves health and pool views on `/health` and `/nodes`, plus pinned
+  forwarding to one provider on `/node/{id}`, including providers
+  outside rotation. To run it locally: copy `config.example.toml` to
+  `config.toml`, list your providers, `cargo run --bin arkiv-lb`.
+  The client contract is [docs/ENDPOINT.md](docs/ENDPOINT.md); the
+  architecture note is [docs/PROXY.md](docs/PROXY.md).
 - **Chain-writer sidecar** (`writer/`): entity writes over the official
   Arkiv TS SDK, behind a small HTTP service — wire format and error
   contract in [docs/CHAIN_WRITER.md](docs/CHAIN_WRITER.md). Unit-tested
@@ -62,16 +63,16 @@ Deliberate for the first version, not oversights:
   as the node's array.
 - Nothing limits how many requests a client may send, or how many run at
   once, so memory use scales with concurrency times the response cap.
-- Health is binary and probes are the judge: a provider that answers
-  its probes within the probe timeout keeps its full share of traffic,
+- Health is binary and probes decide it: a provider that answers its
+  probes within the probe timeout keeps its full share of traffic,
   however slow its answers; one consistently slower than the probe
   timeout leaves rotation entirely.
 - A provider's chain head lag is measured against a reference endpoint,
   so while that endpoint is unreachable, one provider falling behind its
   peers goes unnoticed.
 - Failover retries draw from the shared round-robin cursor rather than
-  remembering which providers a request already tried, so a small share
-  of the requests in flight at the moment a provider dies can spend
+  remembering which providers a request already tried. So at the moment
+  a provider dies, a small share of the requests in flight can spend
   their whole retry budget on it and fail, even though a healthy
   provider was available. It takes heavily concurrent traffic to hit,
   and quarantine closes the window after a few failures.

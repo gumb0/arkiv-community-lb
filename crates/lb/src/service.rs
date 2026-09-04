@@ -116,6 +116,30 @@ pub async fn start(config: Config) -> Result<Service, StartError> {
     })
 }
 
+/// Resolves when the process is asked to stop: Ctrl-C, or SIGTERM —
+/// what `docker stop` sends.
+pub async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "cannot wait for ctrl-c");
+        }
+    };
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => tracing::error!(%error, "cannot wait for SIGTERM"),
+        }
+    };
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+}
+
 fn serve(
     listener: TcpListener,
     router: axum::Router,

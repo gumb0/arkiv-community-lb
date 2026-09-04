@@ -56,7 +56,8 @@ max_retries = 2
 max_request_size = "2MiB"
 # Max provider response size that will be relayed to the user.
 # Generous on purpose: sized to clear any legitimate arkiv_query page,
-# so hitting it means a misbehaving provider.
+# so a breach is either an unusually heavy query or a misbehaving
+# provider.
 max_response_size = "64MiB"
 
 # One block per provider. id is the stable handle (lowercase letters,

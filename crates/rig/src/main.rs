@@ -6,8 +6,13 @@
 //! `rig boot` is that and nothing more — the smallest scenario.
 
 use std::{
+    future::Future,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -42,18 +47,21 @@ const SCENARIOS: [&str; 5] = [
 
 #[tokio::main]
 async fn main() {
-    let run = async {
-        match std::env::args().nth(1).as_deref() {
-            Some("all") => all().await,
-            Some("load") => load_command(std::env::args().skip(2)).await,
-            Some(name) if SCENARIOS.contains(&name) => scenario(name).await,
-            _ => usage(),
-        }
-    };
-    // Ctrl-C cancels the run at its current await point; the cancelled
-    // future drops whatever it holds, so the stack tears down through
-    // the same drops as any other ending. The exit must come after the
-    // select! expression — that is where the losing future is dropped.
+    match std::env::args().nth(1).as_deref() {
+        Some("all") => cancel_on_ctrl_c(all()).await,
+        // The load command owns its Ctrl-C instead: the workers stop,
+        // and the report still covers everything sent so far.
+        Some("load") => load_command(std::env::args().skip(2)).await,
+        Some(name) if SCENARIOS.contains(&name) => cancel_on_ctrl_c(scenario(name)).await,
+        _ => usage(),
+    }
+}
+
+/// Ctrl-C cancels the run at its current await point; the cancelled
+/// future drops whatever it holds, so the stack tears down through
+/// the same drops as any other ending. The exit must come after the
+/// select! expression — that is where the losing future is dropped.
+async fn cancel_on_ctrl_c(run: impl Future<Output = ()>) {
     let interrupted = tokio::select! {
         _ = run => false,
         _ = tokio::signal::ctrl_c() => true,
@@ -111,9 +119,20 @@ async fn load_command(mut args: impl Iterator<Item = String>) {
     let Some(target) = target else { usage() };
 
     println!("rig: load on {target}: {concurrency} workers for {duration:?}");
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            flag.store(true, Ordering::Relaxed);
+        }
+    });
     let started = Instant::now();
-    let stats = load::run(&target, concurrency, duration).await;
+    let stats = load::run(&target, concurrency, duration, stop.clone()).await;
     report(&stats, started.elapsed());
+    if stop.load(Ordering::Relaxed) {
+        println!("rig: interrupted");
+        std::process::exit(130);
+    }
     if stats.failed > 0 {
         std::process::exit(1);
     }
@@ -204,7 +223,13 @@ async fn kill_recover() {
     println!("rig: load on http://{LB_PUBLIC}: 4 workers for 15s");
     let load_started = Instant::now();
     let load = tokio::spawn(async {
-        load::run(&format!("http://{LB_PUBLIC}"), 4, Duration::from_secs(15)).await
+        load::run(
+            &format!("http://{LB_PUBLIC}"),
+            4,
+            Duration::from_secs(15),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
     });
     tokio::time::sleep(Duration::from_secs(2)).await;
     victim.stop();
@@ -252,7 +277,13 @@ async fn distribution() {
 
     println!("rig: load on http://{LB_PUBLIC}: 4 workers for 5s");
     let started = Instant::now();
-    let stats = load::run(&format!("http://{LB_PUBLIC}"), 4, Duration::from_secs(5)).await;
+    let stats = load::run(
+        &format!("http://{LB_PUBLIC}"),
+        4,
+        Duration::from_secs(5),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await;
     report(&stats, started.elapsed());
     assert_eq!(stats.failed, 0, "a healthy fleet must serve everything");
 

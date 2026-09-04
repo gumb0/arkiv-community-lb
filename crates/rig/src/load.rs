@@ -3,7 +3,13 @@
 //! purpose — the scenarios point it at the rig's LB, an operator can
 //! point the same command at a deployed one.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use serde_json::{Value, json};
 
@@ -57,9 +63,15 @@ impl Stats {
     }
 }
 
-/// Runs `concurrency` workers against `target` until `duration` is up;
-/// every worker loops as fast as its answers come back.
-pub async fn run(target: &str, concurrency: usize, duration: Duration) -> Stats {
+/// Runs `concurrency` workers against `target` until `duration` is up
+/// or `stop` turns true; every worker loops as fast as its answers
+/// come back, and finishes its request in flight before stopping.
+pub async fn run(
+    target: &str,
+    concurrency: usize,
+    duration: Duration,
+    stop: Arc<AtomicBool>,
+) -> Stats {
     let client = reqwest::Client::builder()
         // A hung target must not stall a worker past the run.
         .timeout(Duration::from_secs(10))
@@ -70,10 +82,11 @@ pub async fn run(target: &str, concurrency: usize, duration: Duration) -> Stats 
     let workers = (0..concurrency).map(|_| {
         let client = client.clone();
         let target = target.to_string();
+        let stop = stop.clone();
         tokio::spawn(async move {
             let mut stats = Stats::default();
             let mut turn = 0usize;
-            while Instant::now() < deadline {
+            while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
                 let method = METHODS[turn % METHODS.len()];
                 turn += 1;
                 stats.record(one_request(&client, &target, method).await);

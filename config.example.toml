@@ -30,7 +30,9 @@ flip_after = 3
 max_probe_backoff = "5m"
 # How often the chain height from reference RPC is sampled; 0 = every
 # probe sweep. A lagging provider is noticed at most this much later.
-ref_height_interval = "30s"
+# Every sample is one request at the reference, which is usually a
+# metered endpoint — that is the reason not to go lower.
+ref_height_interval = "60s"
 # How often providers are checked to be on the right chain;
 # 0 = every probe sweep.
 chainid_check_interval = "5m"

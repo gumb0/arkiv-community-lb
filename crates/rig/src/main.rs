@@ -128,6 +128,17 @@ fn report(stats: &load::Stats, elapsed: Duration) {
         stats.ok,
         stats.failed
     );
+    let mut latencies = stats.latencies.clone();
+    if !latencies.is_empty() {
+        latencies.sort_unstable();
+        let avg: Duration = latencies.iter().sum::<Duration>() / latencies.len() as u32;
+        println!(
+            "rig: latency: avg {} ms, p50 {} ms, p99 {} ms",
+            avg.as_millis(),
+            latencies[latencies.len() / 2].as_millis(),
+            latencies[latencies.len() * 99 / 100].as_millis(),
+        );
+    }
     if let Some(reason) = &stats.first_failure {
         println!("rig: first failure: {reason}");
     }

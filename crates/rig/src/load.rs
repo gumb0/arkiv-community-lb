@@ -18,19 +18,24 @@ const METHODS: [&str; 4] = [
 /// A request is `ok` only when it comes back HTTP 200 with a JSON-RPC
 /// `result`; everything else — transport errors, other statuses, error
 /// envelopes — is `failed`, with the first reason kept for diagnosis.
+/// Latencies are the round-trip times of the `ok` requests.
 #[derive(Default)]
 pub struct Stats {
     pub sent: u64,
     pub ok: u64,
     pub failed: u64,
     pub first_failure: Option<String>,
+    pub latencies: Vec<Duration>,
 }
 
 impl Stats {
-    fn record(&mut self, outcome: Result<(), String>) {
+    fn record(&mut self, outcome: Result<Duration, String>) {
         self.sent += 1;
         match outcome {
-            Ok(()) => self.ok += 1,
+            Ok(latency) => {
+                self.ok += 1;
+                self.latencies.push(latency);
+            }
             Err(reason) => {
                 self.failed += 1;
                 if self.first_failure.is_none() {
@@ -47,6 +52,7 @@ impl Stats {
         if self.first_failure.is_none() {
             self.first_failure = other.first_failure;
         }
+        self.latencies.extend(other.latencies);
         self
     }
 }
@@ -83,8 +89,13 @@ pub async fn run(target: &str, concurrency: usize, duration: Duration) -> Stats 
     total
 }
 
-async fn one_request(client: &reqwest::Client, target: &str, method: &str) -> Result<(), String> {
+async fn one_request(
+    client: &reqwest::Client,
+    target: &str,
+    method: &str,
+) -> Result<Duration, String> {
     let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": []});
+    let started = Instant::now();
     let response = client
         .post(target)
         .json(&body)
@@ -104,5 +115,5 @@ async fn one_request(client: &reqwest::Client, target: &str, method: &str) -> Re
     if body.get("result").is_none() {
         return Err(format!("{method}: {body}"));
     }
-    Ok(())
+    Ok(started.elapsed())
 }

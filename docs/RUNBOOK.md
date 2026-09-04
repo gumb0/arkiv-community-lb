@@ -94,3 +94,32 @@ in `/nodes`.
 - Reboot safety: Docker's enabled service plus `restart:
   unless-stopped` bring the stack back on boot; there is no systemd
   unit to manage.
+
+## Troubleshooting
+
+Symptom, then where to look.
+
+- **A provider never turns eligible.** `/nodes` says why in
+  `ineligibility_reason`:
+  - `probe` — its probes get no answer. Check the tunnel: the node's
+    `status.sh`, and that its remote port matches the `[[providers]]`
+    entry.
+  - `chain` — it answered `eth_chainId` with another network; the log
+    has a `wrong chain` line with both ids. Check `health.chain_id`
+    and the node.
+  - `lag` — it is behind the reference beyond the tolerance.
+- **Every provider ineligible with `source=lag` at once.** The
+  reference is the suspect, not the nodes: it is on another network or
+  far ahead. Check `ARKIV_RPC_URL`.
+- **`boot window closed with no provider admitted` at start, with no
+  `health flip` lines.** Nothing passed its first probes: check the
+  tunnels and `health.chain_id`, then the reference as above.
+- **`reference unanswered: chain head lag goes unchecked`.** Not an
+  outage: serving continues, only lag verdicts stop. The line appears
+  once per change of state, as does its counterpart `reference
+  answered`. Check `ARKIV_RPC_URL` and `ARKIV_API_KEY` — a metered
+  endpoint answers 429 when the key is missing or the quota is spent.
+- **Clients get `no healthy provider`.** No provider is eligible;
+  `/nodes` says why for each, as above.
+- **The LB exits at start.** A config error names the field. A config
+  the container cannot read is the file-permission rule above.

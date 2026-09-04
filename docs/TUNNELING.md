@@ -22,7 +22,7 @@ deliver:
 - Unattended reconnect — the LB is single-instance, so every restart drops
   every tunnel at once and every tunnel must come back with no operator
   action.
-- A footprint volunteers can run: one client process, boring config.
+- A footprint volunteers can run: one client process, simple config.
 - No third party in the read path — avoid centralized services.
 
 ## Why frp
@@ -79,7 +79,7 @@ on the provider side.
   a shared network, when the job is to expose exactly one port. It also
   needs its own setup workflow (keys, virtual addresses) that we would
   have to build, and VPN MTU problems — small requests work, large
-  responses hang — are miserable to debug remotely with a volunteer.
+  responses hang — are hard to debug remotely with a volunteer.
 - **Cloudflare Tunnel**: a third party in the read path of a product whose
   point is verified, censorship-resistant reads. Rejected on principle.
 - **The rest of the Web3 Pi tunnel stack**: the frp half is what we

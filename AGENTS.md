@@ -5,10 +5,11 @@ Guidance for coding agents working in this repository.
 ## What this repository is
 
 The community load balancer for Arkiv RPC nodes: a single Rust service (plus
-two sidecars) that bundles community-run provider nodes into one public read
-endpoint, discovers providers on the Arkiv marketplace, meters their served
-requests, and pays them GLM. Providers are permissionless and economically
-adversarial — integrity checking is a first-class concern, not an add-on.
+a chain-writer sidecar and a settle CLI) that bundles community-run provider
+nodes into one public read endpoint, discovers providers on the Arkiv
+marketplace, meters their served requests, and pays them GLM. Providers are
+permissionless and economically adversarial — integrity checking is a
+first-class concern, not an add-on.
 
 ## Vocabulary (use these terms, not their rejected alternatives)
 
@@ -24,9 +25,9 @@ adversarial — integrity checking is a first-class concern, not an add-on.
 
 ## Architecture rules
 
-- **Single instance by design.** No distributed coordination; restart safety is
-  the availability story. All durable state lives on-chain — local state is a
-  cache.
+- **Single instance by design.** No distributed coordination; availability
+  comes from safe, fast restarts. All durable state lives on-chain — local
+  state is a cache.
 - **Logic and domain encoding live in Rust; the sidecar speaks SDK, not
   marketplace.** The TS chain-writer sidecar exposes only the SDK's generic
   entity operations (opaque payloads, generic annotations) and holds no
@@ -45,8 +46,8 @@ adversarial — integrity checking is a first-class concern, not an add-on.
 - Client headers are never forwarded to providers, and a provider's JSON-RPC
   error is an answer, not a failure — passed through, never retried elsewhere.
   An answer always arrives as HTTP 2xx; a non-2xx status means the node did
-  not answer (its tunnel may be speaking in its place) and fails over like a
-  transport error, never reaching the client.
+  not answer (the tunnel may have answered instead of it) and fails over like
+  a transport error, never reaching the client.
 - **The method denylist is code, not configuration** (`denylist.rs`): retries
   are replay-safe only because every non-replay-safe method is on it, so an
   operator must not be able to void that from the toml.
@@ -60,7 +61,7 @@ adversarial — integrity checking is a first-class concern, not an add-on.
   eligibility flip logs exactly one event naming its source. Scheduling
   state (cadences, backoff clocks, the unanswered-probe streak behind
   the backoff) is written only by the Monitor.
-- **LB-generated JSON-RPC errors** use codes −32050…−32055 and every message
+- **LB-generated JSON-RPC errors** use codes −32050…−32054 and every message
   starts with `lb: ` — the prefix is applied in `jsonrpc.rs` and nowhere
   else. Standard codes (−32700, −32601, …) are always a provider's answer;
   never fabricate them. The client-facing table is `docs/ENDPOINT.md`; the
@@ -75,8 +76,10 @@ adversarial — integrity checking is a first-class concern, not an add-on.
 - `compose.yaml` at the repository root is the **LB host stack**: every service
   that runs on the LB box belongs in it (the LB and the tunnel server;
   the chain-writer sidecar joins later).
-- Service images are built locally from pinned upstream releases, checksum
-  verified in the Dockerfile — no third-party image in the trust chain.
+- Service images are built locally, never pulled from a third-party
+  registry: a third-party service (the tunnel) from its pinned release,
+  checksum verified in the Dockerfile; our own service (the LB) from
+  source under the pinned toolchain, with digest-pinned base images.
 - Secrets and machine-local configuration stay untracked; the committed
   reference is an `.example` file beside them (`tunnel/frps.example.toml`,
   `.env.example`, `config.example.toml`).

@@ -18,6 +18,9 @@ services:
       ARKIV_RPC_URL: ${ARKIV_RPC_URL:-}
       ARKIV_API_KEY: ${ARKIV_API_KEY:-}
     restart: unless-stopped
+    # A stop finishes the requests in flight, which may take up to the
+    # request timeout (30 s by default); Docker's default grace is 10 s.
+    stop_grace_period: 40s
     logging:
       driver: json-file
       options:

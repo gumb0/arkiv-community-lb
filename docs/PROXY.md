@@ -164,3 +164,11 @@ everything in memory is a cache rebuilt at startup, and the health
 machinery re-learns provider state within a probe cycle. Stopping and
 starting the LB is therefore always safe — availability is provided by
 a fast restart.
+
+A stop is graceful. On SIGTERM (what `docker stop` sends) or Ctrl-C,
+the listeners stop accepting, every request already in flight is
+answered, the Monitor stops, and only then does the process exit; the
+log shows `shutting down` and then `stopped`. A request in flight may
+take up to the request timeout to finish, so the deployment's stop
+grace period is sized above it. New connections are refused while the
+LB is down — a short outage, not a lost request.

@@ -71,7 +71,8 @@ no separate snapshot or cache.
 `POST /node/{id}` on the admin listener forwards one JSON-RPC request
 to that provider, ignoring eligibility — the way an operator reaches a
 quarantined node and asks it directly. One attempt, no failover: a
-provider that does not answer is a 502, not somebody else's answer.
+provider that does not answer is a 502, not a request moved to another
+provider.
 The forward changes no state — no health tick, no served count — so
 diagnosing a node cannot bill it or readmit it. Refusals — the method
 denylist, both size caps, an empty body — get exactly the public
@@ -93,12 +94,13 @@ of the attempt timeout and the time remaining). This is failover: in
 the short window when a provider is already dead but not yet
 quarantined, the client's request moves to another provider and the
 client almost never notices — the rare miss under heavily concurrent
-traffic is a known limitation (see the README). The budget is the
-other half: when the request itself is the problem, it can hit only a
-few providers before it fails, instead of walking the whole fleet.
-Retrying blindly is safe only because every method the endpoint admits
-is replay-safe — the denylist excludes stateful methods, and a
-repeated raw transaction deduplicates by hash.
+traffic is a known limitation (see the README).
+
+The budget limits the damage when the request itself is the problem:
+such a request can reach only a few providers before it fails, instead
+of every provider in the pool. Retrying blindly is safe only because
+every method the endpoint admits is replay-safe — the denylist excludes
+stateful methods, and a repeated raw transaction deduplicates by hash.
 
 ## Health
 
@@ -110,9 +112,8 @@ request — not that it is on the right chain or at the chain head — so
 answers earn no health credit and cannot outvote the probes. A run of
 consecutive failures quarantines; a run of consecutive probe successes
 readmits. There are no weights and no scores — eligibility is binary.
-Quarantined providers keep being probed, with backoff once a provider
-looks abandoned; the backoff follows the run of unanswered probes, so
-traffic failures never slow the probing down. Recovery is automatic.
+Quarantined providers keep being probed, with backoff after several
+unanswered probes in a row. Recovery is automatic.
 
 The rule for the flag is simple: it changes only after `flip_after`
 results in a row agree. This one rule does two jobs.
@@ -153,9 +154,8 @@ other fault. The reference's height is sampled alongside the probes.
 When the reference is unreachable there are simply no lag verdicts — a
 reference outage must never fault providers. This shape is deliberately
 stall-tolerant: when the chain itself halts (devnets do), the reference
-halts with it, differences stay near zero, and a uniformly quiet fleet
-remains healthy instead of being mass-quarantined for the network's
-pause.
+and every provider stop together, differences stay near zero, and no
+provider is quarantined for the network's pause.
 
 ## Restart safety
 

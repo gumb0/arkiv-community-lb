@@ -99,6 +99,82 @@ async fn boots_serves_and_shuts_down() {
 }
 
 #[tokio::test]
+async fn shutdown_lets_an_in_flight_request_finish() {
+    use axum::{Router, response::IntoResponse};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use tokio::sync::Notify;
+
+    // A provider that answers only when the test releases it, so the
+    // test controls the ordering: no timer decides anything.
+    let arrived = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(Notify::new());
+    let app = {
+        let (arrived, release) = (arrived.clone(), release.clone());
+        Router::new().fallback(move || {
+            let (arrived, release) = (arrived.clone(), release.clone());
+            async move {
+                arrived.store(true, Ordering::Relaxed);
+                release.notified().await;
+                r#"{"jsonrpc":"2.0","id":1,"result":"ok"}"#.into_response()
+            }
+        })
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let provider_addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+
+    let mut config = Config::default();
+    config.health.disable_probing = true;
+    config.listen.public = "127.0.0.1:0".parse().expect("addr");
+    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    config.providers = vec![Provider {
+        id: "held".into(),
+        url: format!("http://{provider_addr}"),
+    }];
+    let service = lb::service::start(config).await.expect("service boots");
+    service.pool.providers()[0].set_eligible(true);
+    let public = format!("http://{}", service.public_addr);
+
+    let request = tokio::spawn(async move {
+        reqwest::Client::new()
+            .post(public)
+            .json(
+                &serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}),
+            )
+            .send()
+            .await
+            .expect("the in-flight request completes")
+            .status()
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !arrived.load(Ordering::Relaxed) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the request never reached the provider"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    // With the request held at the provider, a working drain cannot
+    // finish; a broken one finishes at once.
+    let shutdown = tokio::spawn(service.shutdown());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown must wait for the request in flight, not cut it"
+    );
+
+    release.notify_one();
+    shutdown.await.expect("shutdown task");
+    assert_eq!(request.await.expect("request task"), 200);
+}
+
+#[tokio::test]
 async fn nodes_is_a_current_view_of_the_pool() {
     let mut config = Config::default();
     config.health.disable_probing = true;

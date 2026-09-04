@@ -539,7 +539,20 @@ impl Lb {
 }
 
 impl Drop for Lb {
+    /// SIGTERM first — the stop the deployment sends — so every run
+    /// exercises the graceful path; SIGKILL only if the drain hangs.
     fn drop(&mut self) {
+        let _ = Command::new("kill")
+            .args(["-TERM", &self.child.id().to_string()])
+            .status();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        println!("rig: arkiv-lb ignored SIGTERM for 10s, killing it");
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

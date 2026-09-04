@@ -37,11 +37,10 @@ async fn main() {
         "arkiv-lb started"
     );
 
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        tracing::error!(%error, "cannot wait for ctrl-c");
-    }
+    lb::service::shutdown_signal().await;
     tracing::info!("shutting down");
     service.shutdown().await;
+    tracing::info!("stopped");
 }
 
 fn fail(error: &dyn std::error::Error) -> ! {

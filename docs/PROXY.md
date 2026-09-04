@@ -164,3 +164,35 @@ everything in memory is a cache rebuilt at startup, and the health
 machinery re-learns provider state within a probe cycle. Stopping and
 starting the LB is therefore always safe — availability is provided by
 a fast restart.
+
+## Future improvements
+
+- **A global in-flight cap.** Nothing today limits how many requests
+  the LB processes at once, so memory use scales with concurrency times
+  the response cap. A single semaphore over the forwarding path would
+  bound it, answering the excess with the LB's own error rather than
+  queuing without limit.
+- **Verifying the reference endpoint itself.** The reference is trusted
+  as configured: one `eth_chainId` at first contact against `chain_id`
+  would refuse to judge lag while the reference is on another network,
+  instead of letting a wrong reference URL quarantine every correct
+  provider.
+- **A parsed method allowlist and per-method counters.** The denylist
+  is a text search over the body, chosen so the forwarded request stays
+  byte-identical. A shallow parse of the method field would turn it
+  into a true allowlist, remove the false positive on bodies that
+  merely mention a denied name, and make per-method accounting
+  possible.
+- **Admin listener authentication.** The admin API is loopback-only and
+  unauthenticated; a bearer token would let it be exposed beyond the
+  host.
+- **Manual ban and unban.** Explicit admin endpoints would give the
+  operator a hand on rotation that today only the health machinery has.
+- **Metrics.** A Prometheus `/metrics` endpoint over the counters the
+  admin view already exposes, so the pool's history is graphable rather
+  than sampled by hand.
+- **Per-provider oversized-response counts** in `/nodes`. A cap breach
+  costs no health tick, because it may be the query's fault, so today
+  the pattern is visible only in the request log.
+- **Request ids in the logs.** A span per request, so the per-attempt
+  debug lines carry the request they belong to.

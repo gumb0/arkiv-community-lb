@@ -48,13 +48,13 @@ too — a query filtering on the string `admin_`, for example.
 
 Errors from the serving node pass through unchanged, including the
 standard codes (−32700, −32601, −32602, and Arkiv's `arkiv_query`
-errors). The load balancer's own errors use codes −32050…−32055, and
+errors). The load balancer's own errors use codes −32050…−32054, and
 **every message it generates starts with `lb: `** — that prefix is how
 you tell an LB error from a node error.
 
 A node's answer — success or error — always arrives as HTTP 2xx. A
 non-2xx status from a node means it did not answer (overloaded, broken,
-or its tunnel speaking in its place); the load balancer treats that as
+or the tunnel answering instead of the node); the load balancer treats that as
 a failed attempt and tries another provider, so such responses never
 reach the client.
 
@@ -65,7 +65,6 @@ reach the client.
 | −32052 | request timed out | 504 |
 | −32053 | response too large | 502 |
 | −32054 | request too large | 413 |
-| −32055 | overloaded | 429 |
 
 An LB error echoes the request's `id` when the body yields one.
 **Known limitation:** for a batch request, an LB error is still a
@@ -79,6 +78,9 @@ arrives as the array the node sent.)
 - **Request bodies: 2 MiB.** Far above the chain's own transaction size
   limit, so any valid transaction fits.
 - **Responses: 64 MiB.** Sized to clear any legitimate `arkiv_query`
-  page; hitting it indicates a misbehaving node, and the request fails
-  with −32053 rather than returning truncated data.
+  page; a breach is either an unusually heavy query or a misbehaving
+  node, and the request fails with −32053 rather than returning
+  truncated data.
 - **Timeouts:** a request is answered or failed within 30 seconds.
+- **No rate limiting yet:** nothing caps how many requests a client may
+  send, or how many run at once.

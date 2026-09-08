@@ -40,7 +40,7 @@ EOF
 PORT="${DEV_NODE_PORT:-8645}"
 # v0.1.0 is the release cheesecake's own EL is pinned to, so the probes
 # measure the engine the devnet runs. The digest holds the tag still.
-IMAGE="${DEV_NODE_IMAGE:-ghcr.io/arkiv-network/arkiv-reth-dev:v0.1.0@sha256:7e93bcbd5b16ccc6552ff466ad3431578cfd2186e72b4a4af7fe0fb683c8b3ed}"
+IMAGE="${DEV_NODE_IMAGE:-ghcr.io/arkiv-network/arkiv-reth-dev:v0.2.0@sha256:09d148b8ce7748c0e9fb051944a8334d3e145c04340031cc7d8946a2a7f14808}"
 NAME="${DEV_NODE_NAME:-arkiv-dev-node}"
 BLOCK_TIME="${DEV_NODE_BLOCK_TIME:-2s}"
 URL="http://127.0.0.1:${PORT}"

@@ -232,7 +232,7 @@ await step("expiry: entity leaves queries; the $expiresAt filter is exact at the
   )
   console.log(`  unfiltered: ${unfiltered.length} row(s), $expiresAt-filtered: ${filtered.length}`)
   assert(filtered.length === 0, "the $expiresAt filter excludes the expired entity")
-  // The unfiltered count is printed, not asserted: cheesecake drops expired
+  // The unfiltered count is printed, not asserted: the network drops expired
   // rows promptly (0 expected), but how fast is the node's business — the
   // filter is what we rely on at the boundary.
 })

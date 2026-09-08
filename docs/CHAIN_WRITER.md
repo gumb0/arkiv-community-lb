@@ -155,6 +155,6 @@ Two tiers with different needs, in different directories:
   time.
 
 `scripts/dev-node.sh` raises a local throwaway chain (the upstream
-`arkiv-reth-dev` image, pinned to the release the devnet runs, sealing
-every 2 s like the devnet) so probes need no devnet and spend no devnet
+`arkiv-reth-dev` image, pinned to the release the network runs, sealing
+every 2 s like the network) so probes need no live network and spend no
 gas. CI runs the two smoke probes against it.

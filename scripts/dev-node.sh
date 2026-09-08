@@ -9,7 +9,7 @@ Usage: ./scripts/dev-node.sh start|stop|url|chain-id
 Runs the upstream arkiv-reth-dev image: one node in --dev mode sealing
 blocks on a timer, so expiry and other time-based behaviour advance without
 traffic. Point ARKIV_RPC_URL at it to run probes and rig tests without a
-devnet, and without spending devnet gas.
+network, and without spending its gas.
 
   start      run the container and wait until it answers; prints the RPC URL
   stop       remove the container
@@ -19,7 +19,7 @@ devnet, and without spending devnet gas.
 start is safe to repeat: an already-running node is reported, not restarted.
 State lives in the container only, so stop discards the whole chain.
 
-Blocks are sealed every 2 s by default, matching the devnet. Faster sealing
+Blocks are sealed every 2 s by default, matching the network. Faster sealing
 is available but not trustworthy: at 250 ms the node executes a transaction
 twice in consecutive blocks now and then (probes/create-dup.ts reproduces
 it), which mints phantom entities and breaks anything that counts or
@@ -38,8 +38,8 @@ EOF
 }
 
 PORT="${DEV_NODE_PORT:-8645}"
-# v0.1.0 is the release cheesecake's own EL is pinned to, so the probes
-# measure the engine the devnet runs. The digest holds the tag still.
+# The release the network's own EL is pinned to, so the probes measure
+# the engine the network runs. The digest holds the tag still.
 IMAGE="${DEV_NODE_IMAGE:-ghcr.io/arkiv-network/arkiv-reth-dev:v0.2.0@sha256:09d148b8ce7748c0e9fb051944a8334d3e145c04340031cc7d8946a2a7f14808}"
 NAME="${DEV_NODE_NAME:-arkiv-dev-node}"
 BLOCK_TIME="${DEV_NODE_BLOCK_TIME:-2s}"

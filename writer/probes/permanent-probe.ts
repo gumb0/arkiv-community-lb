@@ -1,5 +1,7 @@
 // One-off probe: does the chain accept a permanent entity (expiry = u64 max),
-// what does it cost, and is it still deletable?
+// what does it cost, and is it still deletable? A second leg asks whether
+// finite lifetimes are capped (the doc's MAX_LIFETIME): a create ten years
+// out and an extend asking for one more year, each accepted or reverted.
 //
 // Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
 // an Authorization: Bearer header).
@@ -64,3 +66,47 @@ console.log(`  chain-reported $expiresAt: ${row?.expiresAt} (${BigInt(row?.expir
 
 await writer.deleteEntity({ entityKey })
 console.log(`deleted — a permanent entity is still owner-deletable`)
+
+// Lifetime bound. Blocks, not seconds: the SDK converts durations at a
+// fixed 2 s per block, and the point is how far the engine lets a finite
+// expiry reach, whatever the block time.
+const BLOCKS_PER_YEAR = (365 * 24 * 3600) / 2
+const head = BigInt((await rawRpc("eth_blockNumber", [])) as Hex)
+
+async function attempt(label: string, run: () => Promise<unknown>) {
+  try {
+    await run()
+    console.log(`${label}: accepted`)
+    return true
+  } catch (error) {
+    const chain: string[] = []
+    for (let e: unknown = error; e instanceof Error; e = e.cause) chain.push(`${e.name}: ${e.message.split("\n")[0]}`)
+    console.log(`${label}: reverted\n  ${chain.join("\n  ")}`)
+    return false
+  }
+}
+
+async function createFor(expires: Parameters<typeof writer.createEntity>[0]["expires"]) {
+  const { entityKey } = await writer.createEntity({
+    payload: jsonToPayload({ probe: "lifetime-bound" }),
+    contentType: "application/json",
+    attributes: { kind: str("permanent-probe") },
+    expires,
+  })
+  return entityKey
+}
+
+console.log(`\nlifetime bound (head ${head}, ${BLOCKS_PER_YEAR} blocks per year):`)
+let key: Hex | undefined
+await attempt("create at head + 10 years", async () => {
+  key = await createFor(ExpirationTime.atBlock(head + BigInt(10 * BLOCKS_PER_YEAR)))
+})
+if (key) await writer.deleteEntity({ entityKey: key })
+
+// A short-lived entity, so the extend is a real extension and not a
+// shortening the engine would refuse for that reason instead.
+const short = await createFor(ExpirationTime.fromBlocks(100))
+await attempt("extend a 100-block entity by 1 year (minLifetime)", () =>
+  writer.extendEntity({ entityKey: short, expires: ExpirationTime.fromBlocks(BLOCKS_PER_YEAR) }),
+)
+await writer.deleteEntity({ entityKey: short })

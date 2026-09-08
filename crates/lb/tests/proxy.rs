@@ -72,12 +72,20 @@ async fn broken_provider(
     (addr, fake)
 }
 
-/// An address that refuses connections: bound, then dropped.
+/// An address where every connection is accepted and closed at once. The
+/// listener stays bound for the test's lifetime: a freed port can be handed
+/// to a fake provider started by a parallel test, and then "dead" answers.
 async fn dead_addr() -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
-    listener.local_addr().expect("addr")
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+    });
+    addr
 }
 
 /// A provider speaking raw HTTP: answers `head`, then `body` chunks with a

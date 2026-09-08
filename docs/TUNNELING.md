@@ -52,9 +52,11 @@ machine):
 
 frp's shared `auth.token` cannot distinguish providers, and any secret
 delivered through public on-chain terms would be public too. So the token
-is unforgeable instead of secret: the provider signs
-`(agreement id, LB address)` with the key that posted its offer and uses
-the signature as its token. frps forwards every `Login`/`NewProxy` to a
+is unforgeable instead of secret: the provider signs its agreement id
+with the key that posted its offer and uses the signature as its token.
+The id is the agreement record's entity key, which is derived from the
+LB's address among other things, so the signature is bound to one LB
+without naming it. frps forwards every `Login`/`NewProxy` to a
 local HTTP endpoint on the LB (`httpPlugins`), which verifies the
 signature, checks that the requested port is the one assigned in the
 agreement, and accepts or rejects.

@@ -24,7 +24,7 @@ use crate::{
     forwarder::{Forwarder, Outcome},
     jsonrpc,
     marketplace::admission::{Agreements, Op, Token, decide_admission},
-    pool::{Pool, Provider, Source, marketplace_id},
+    pool::{ChainStatus, Pool, Provider, Source, marketplace_id},
     proxy,
 };
 
@@ -288,7 +288,7 @@ impl From<&Provider> for NodeView {
             agreement_id,
             eligible: provider.eligible(),
             ineligibility_reason: provider.ineligibility_reason(),
-            chain_verified: provider.chain_verified.load(Ordering::Relaxed),
+            chain_verified: provider.chain_status() == ChainStatus::Verified,
             health_streak: provider.health_streak.load(Ordering::Relaxed),
             last_height: provider.last_height(),
             served: provider.served.load(Ordering::Relaxed),

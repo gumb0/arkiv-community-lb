@@ -20,7 +20,7 @@ use tokio::sync::watch;
 use crate::{
     chain::reader::Reader,
     config::Health,
-    pool::{HealthSignal, Pool, Provider},
+    pool::{ChainStatus, HealthSignal, Pool, Provider},
 };
 
 /// Probes at most this many providers at once.
@@ -159,11 +159,27 @@ impl Monitor {
         let providers = self.pool.snapshot();
         futures::stream::iter(providers.iter())
             .for_each_concurrent(CONCURRENT_PROBES, |provider| async move {
-                let due = *provider.next_probe() <= now;
-                if due && self.chain_cleared(provider, chain_round).await {
-                    let answered = self.probe(provider, reference_height).await;
-                    if !answered {
+                if *provider.next_probe() > now {
+                    return;
+                }
+                match self.checked_chain_status(provider, chain_round).await {
+                    ChainStatus::Verified => {
+                        if !self.probe(provider, reference_height).await {
+                            self.reschedule_unanswered(provider, now);
+                        }
+                    }
+                    ChainStatus::Unverified => {
+                        // Logged once per outage: the following rounds
+                        // keep retrying silently, backing off like
+                        // unanswered probes.
+                        if provider.unanswered_probe_streak() == 0 {
+                            tracing::info!(provider = %provider.id, "chain check unanswered");
+                        }
+                        provider.record_unanswered_probe();
                         self.reschedule_unanswered(provider, now);
+                    }
+                    ChainStatus::WrongChain => {
+                        *provider.next_probe() = now + self.config.chainid_check_interval;
                     }
                 }
             })
@@ -180,49 +196,38 @@ impl Monitor {
         *provider.next_probe() = now + delay;
     }
 
-    /// Whether this provider may be probed this round: confirmed on the
-    /// right chain, re-verifying first on a chain round, or at once
-    /// when the provider asked for it, as a newcomer does. With no
-    /// `chain_id` configured, everyone is cleared.
-    async fn chain_cleared(&self, provider: &Provider, chain_round: bool) -> bool {
+    /// The provider's chain status after this round's check: a verified
+    /// provider is re-checked on chain rounds only, any other is asked
+    /// whenever it is due. With no `chain_id` configured, everyone
+    /// counts as verified.
+    async fn checked_chain_status(&self, provider: &Provider, chain_round: bool) -> ChainStatus {
         let Some(expected) = self.config.chain_id else {
-            return true;
+            return ChainStatus::Verified;
         };
-        // The request is taken either way, so a chain round does not
-        // leave it behind for a second check next sweep.
-        let asked = provider.take_chain_check_due();
-        if chain_round || asked {
+        if chain_round || provider.chain_status() != ChainStatus::Verified {
             self.verify_chain(provider, expected).await;
         }
-        provider.chain_verified.load(Ordering::Relaxed)
+        provider.chain_status()
     }
 
-    /// One `eth_chainId` round trip, updating `chain_verified`. The
-    /// wrong chain quarantines on the spot: misconfiguration is a
+    /// One `eth_chainId` round trip. Unanswered, it changes nothing.
+    /// The wrong chain quarantines on the spot: misconfiguration is a
     /// certainty, not a failure streak.
     async fn verify_chain(&self, provider: &Provider, expected: u64) {
-        match self.query_chain_id(&provider.id, &provider.url).await {
-            Some(actual) if actual == expected => {
-                provider.chain_verified.store(true, Ordering::Relaxed);
-            }
-            Some(actual) => {
-                tracing::warn!(
-                    provider = %provider.id,
-                    chain_id = actual,
-                    expected,
-                    "wrong chain"
-                );
-                provider.chain_verified.store(false, Ordering::Relaxed);
-                provider.quarantine(HealthSignal::Chain);
-            }
-            None => {
-                // A verified provider keeps its verdict, so only the
-                // unverified one has a consequence to report: it sits
-                // out until the next chain round.
-                if !provider.chain_verified.load(Ordering::Relaxed) {
-                    tracing::info!(provider = %provider.id, "chain check unanswered");
-                }
-            }
+        let Some(actual) = self.query_chain_id(&provider.id, &provider.url).await else {
+            return;
+        };
+        if actual == expected {
+            provider.set_chain_status(ChainStatus::Verified);
+        } else {
+            tracing::warn!(
+                provider = %provider.id,
+                chain_id = actual,
+                expected,
+                "wrong chain"
+            );
+            provider.set_chain_status(ChainStatus::WrongChain);
+            provider.quarantine(HealthSignal::Chain);
         }
     }
 

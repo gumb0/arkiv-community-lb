@@ -19,15 +19,12 @@ network, and without spending its gas.
 start is safe to repeat: an already-running node is reported, not restarted.
 State lives in the container only, so stop discards the whole chain.
 
-Blocks are sealed every 2 s by default, matching the network. Faster sealing
-is available but not trustworthy: at 250 ms the node executes a transaction
-twice in consecutive blocks now and then (probes/create-dup.ts reproduces
-it), which mints phantom entities and breaks anything that counts or
-deletes them. A lifetime asked for in seconds assumes 2 s blocks (the SDK
-converts durations at that rate); ask in blocks if you change the interval.
+Blocks are sealed every 250 ms by default, eight times the network's rate,
+so expiry-driven tests run fast. A lifetime asked for in seconds assumes
+2 s blocks (the SDK converts durations at that rate), so ask in blocks.
 
 Environment:
-  DEV_NODE_BLOCK_TIME  seal interval (default 2s; see the note above)
+  DEV_NODE_BLOCK_TIME  seal interval (default 250ms)
   DEV_NODE_PORT    host port for JSON-RPC (default 8645)
   DEV_NODE_IMAGE   image (default: the digest-pinned arkiv-reth-dev v0.1.0)
   DEV_NODE_NAME    container name (default arkiv-dev-node)
@@ -42,7 +39,7 @@ PORT="${DEV_NODE_PORT:-8645}"
 # the engine the network runs. The digest holds the tag still.
 IMAGE="${DEV_NODE_IMAGE:-ghcr.io/arkiv-network/arkiv-reth-dev:v0.2.0@sha256:09d148b8ce7748c0e9fb051944a8334d3e145c04340031cc7d8946a2a7f14808}"
 NAME="${DEV_NODE_NAME:-arkiv-dev-node}"
-BLOCK_TIME="${DEV_NODE_BLOCK_TIME:-2s}"
+BLOCK_TIME="${DEV_NODE_BLOCK_TIME:-250ms}"
 URL="http://127.0.0.1:${PORT}"
 READY_TIMEOUT=60
 

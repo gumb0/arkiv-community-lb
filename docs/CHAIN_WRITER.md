@@ -156,5 +156,5 @@ Two tiers with different needs, in different directories:
 
 `scripts/dev-node.sh` raises a local throwaway chain (the upstream
 `arkiv-reth-dev` image, pinned to the release the network runs, sealing
-every 2 s like the network) so probes need no live network and spend no
-gas. CI runs the two smoke probes against it.
+every 250 ms so time-based behaviour advances fast) so probes need no live
+network and spend no gas. Lifetimes are asked in blocks for that reason. CI runs the two smoke probes against it.

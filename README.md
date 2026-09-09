@@ -40,9 +40,11 @@ not operator-chosen.
 ## Still to come
 
 - A marketplace agent: discovers provider offers on Arkiv and keeps agreements
-  alive on-chain.
+  alive on-chain. The flow is designed in [docs/MARKETPLACE.md](docs/MARKETPLACE.md);
+  the records every codebase encodes against are in
+  [docs/ENTITIES.md](docs/ENTITIES.md).
 - A settle CLI: computes per-period payouts from on-chain records and pays GLM
-  on Polygon.
+  on the payout chain.
 
 The node-operator side lives in the companion repo,
 [arkiv-community-node](https://github.com/gumb0/arkiv-community-node).

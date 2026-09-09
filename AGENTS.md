@@ -17,9 +17,13 @@ first-class concern, not an add-on.
   requests is **the Proxy** — never call the whole service "the proxy", and
   never use "gateway".
 - The chain record showing the LB still honours a deal is an **agreement
-  record** — not a "lease", and not an "active agreement": **active** and
-  **dormant** are the two liveness states of an agreement (tunnel up / down),
-  never part of the record's name.
+  record** — not a "lease", and not an "active agreement". A record
+  **expires** when it is no longer refreshed; it does not "lapse". The LB's
+  own advertisement is the **LB listing**; a provider's request to join is
+  an **offer** — never call either one a "listing" alone.
+- A provider is **eligible** when its probes pass: in rotation, receiving
+  traffic, and refreshed. **Active** and **dormant** (tunnel up / down) are
+  descriptive words only; no rule depends on them.
 - The in-memory set of provider entries is the **provider pool**; "registry"
   is reserved for the on-chain marketplace records.
 
@@ -37,8 +41,9 @@ first-class concern, not an add-on.
   TypeScript** — a short auditable script that imports the writer module and
   uses viem for Polygon transfers.
 - **No shared TS package** with the provider scripts in `arkiv-community-node`:
-  the entity schemas are a documented contract, and drift is caught by the test
-  rig's round-trip scenarios — not by a shared library.
+  the entity schemas are a documented contract (`docs/ENTITIES.md`), and
+  drift is caught by the test rig's round-trip scenarios — not by a shared
+  library.
 - **The Rust process holds no keys.** The writer sidecar holds the
   deployment's Arkiv key (env-injected); settle signs with its own keys,
   provided per invocation; the Polygon payout key never exists on the LB

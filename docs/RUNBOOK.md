@@ -7,12 +7,15 @@ things live, and the day-to-day commands. The architecture is
 ## What runs where
 
 One compose stack (`compose.yaml` at the repository root) holds every
-service on the box: the LB itself and the tunnel server (frps). Both
-use host networking. Ports:
+service on the box: the LB itself, the chain-writer sidecar that signs
+its entity writes, and the tunnel server (frps). All three use host
+networking. Ports:
 
 - `8545` — the public JSON-RPC endpoint (open in the firewall)
 - `7000` — the frps control channel provider nodes dial (open)
 - `9545` — the admin API, loopback only (never opened; see below)
+- `8560` — the chain-writer sidecar, loopback only; the LB is its only
+  client
 - per-provider tunnel ports (`18545`, `18546`, …) — loopback only,
   bound there by frps itself; the firewall's default-deny is the
   second layer
@@ -26,8 +29,16 @@ them:
   files — is right, and safe, since the config holds no secrets. With
   `chmod 600` the LB cannot read its config and refuses to start.
 - `.env` — `ARKIV_RPC_URL` (and `ARKIV_API_KEY` if the endpoint is
-  metered) for the reference endpoint; a real environment variable
-  beats the file
+  metered) for the reference endpoint, which the LB and the sidecar
+  share; a real environment variable beats the file
+- `writer.key` — the sidecar's signing key, one `0x`-prefixed hex line.
+  Compose mounts it into the container as a secret, so it never enters
+  the container's environment. The sidecar reads it as the container's
+  `node` user, uid 1000, so the file must belong to that uid:
+  `chown 1000:1000 writer.key && chmod 600 writer.key`. Root still
+  edits it; nobody else on the box can read it. There is no example
+  file: create it with the key's text, and keep the key funded (see Day
+  to day)
 - `tunnel/frps.toml` — the tunnel server config with the shared token
 
 ## First deployment
@@ -40,8 +51,10 @@ them:
 3. Clone this repository and create the machine-local files from their
    examples:
    - `cp .env.example .env` — set `ARKIV_RPC_URL` to the Arkiv
-     reference endpoint (and `ARKIV_API_KEY` if it is metered). The
-     writer's variables stay untouched until that sidecar deploys.
+     reference endpoint (and `ARKIV_API_KEY` if it is metered).
+   - `writer.key` — the sidecar's signing key, as one line. This is the
+     LB's on-chain identity: the address it derives to is what the
+     provider tooling ships, so a new key is a new LB.
    - `cp tunnel/frps.example.toml tunnel/frps.toml` — set `auth.token`
      to a fresh secret: `openssl rand -hex 16`. Provider operators get
      this token.
@@ -89,6 +102,12 @@ in `/nodes`.
 - `.env` changes (`RUST_LOG`, the reference endpoint):
   `docker compose up -d` — a restart is not enough, the values enter
   the container when it is created. No rebuild either.
+- `writer.key` changes: `docker compose up -d` as well — a secret is
+  mounted at creation.
+- The sidecar's key needs gas for every write, and a dry key stops
+  them all: `docker compose logs writer` shows the address at startup,
+  and its balance is checked the same way as any account on the
+  network.
 - Code updates: `git pull` (or check out a release tag), then
   `docker compose up -d --build` — `--build` is only ever needed here.
 - Reboot safety: Docker's enabled service plus `restart:

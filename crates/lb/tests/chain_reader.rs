@@ -147,6 +147,20 @@ async fn the_head_height_is_a_hex_quantity() {
 }
 
 #[tokio::test]
+async fn a_balance_is_asked_at_the_head_and_read_as_wei() {
+    // 0.02 GLM, the gas warning's default threshold.
+    let (reader, reference) = reference(ok(json!("0x470de4df820000")), None).await;
+    let balance = reader.balance(lb()).await.expect("balance");
+    assert_eq!(
+        balance,
+        alloy_primitives::U256::from(20_000_000_000_000_000u64)
+    );
+    let seen = reference.seen.lock().expect("seen");
+    assert_eq!(seen[0].1["method"], "eth_getBalance");
+    assert_eq!(seen[0].1["params"], json!([LB, "latest"]));
+}
+
+#[tokio::test]
 async fn a_json_rpc_error_is_reported_with_its_code() {
     let (reader, _) = reference(
         json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32002, "message": "limit above the maximum" } }),

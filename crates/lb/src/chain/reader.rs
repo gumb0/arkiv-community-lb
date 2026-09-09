@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use reqwest::{Url, header};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -136,6 +136,16 @@ impl Reader {
         quantity(&result)
     }
 
+    /// An account's balance in wei, at the head. The LB asks about its
+    /// own key: a dry key stops every write.
+    pub async fn balance(&self, account: Address) -> Result<U256, ReadError> {
+        let params = json!([format!("{account:#x}"), "latest"]);
+        let result = self.call("eth_getBalance", params).await?;
+        // alloy's U256 reads the JSON-RPC hex quantity itself.
+        serde_json::from_value(result.clone())
+            .map_err(|_| ReadError::Unexpected(format!("not a hex quantity: {result}")))
+    }
+
     /// One page of records matching the query, with every field a record
     /// needs selected.
     pub async fn query(&self, query: &Query) -> Result<Page, ReadError> {
@@ -209,7 +219,7 @@ fn quantity(value: &Value) -> Result<u64, ReadError> {
         .as_str()
         .and_then(|text| text.strip_prefix("0x"))
         .and_then(|hex| u64::from_str_radix(hex, 16).ok())
-        .ok_or_else(|| ReadError::Unexpected(format!("not a quantity: {value}")))
+        .ok_or_else(|| ReadError::Unexpected(format!("not a hex quantity: {value}")))
 }
 
 #[cfg(test)]

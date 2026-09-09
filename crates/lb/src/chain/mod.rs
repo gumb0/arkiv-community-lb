@@ -3,3 +3,4 @@
 //! client. Nothing else in the crate speaks to the chain.
 
 pub mod records;
+pub mod writer;

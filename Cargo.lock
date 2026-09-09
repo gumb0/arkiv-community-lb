@@ -1770,6 +1770,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "axum",
+ "base64 0.22.1",
  "bytesize",
  "futures",
  "humantime-serde",

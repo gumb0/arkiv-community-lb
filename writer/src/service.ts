@@ -38,6 +38,7 @@ import {
   u256,
   type ValueInput,
 } from "@arkiv-network/sdk"
+import { readFileSync } from "node:fs"
 import { createServer, type Server } from "node:http"
 import { pathToFileURL } from "node:url"
 import type { Hex } from "viem"
@@ -348,10 +349,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     return value
   }
 
+  // The key comes from a file — a compose secret is a file, so the
+  // deployed key never sits in the container's environment where `docker
+  // inspect` would show it. Trimmed, so an editor's final newline does
+  // not corrupt it.
+  const keyFile = env("WRITER_PRIVATE_KEY_FILE")
+  const privateKey = readFileSync(keyFile, "utf8").trim() as Hex
+  if (!privateKey) {
+    console.error(`the key file ${keyFile} is empty`)
+    process.exit(1)
+  }
   const writer = await createWriter({
     rpcUrl: env("ARKIV_RPC_URL").replace(/\/+$/, ""),
     apiKey: env("ARKIV_API_KEY", false) || undefined,
-    privateKey: env("WRITER_PRIVATE_KEY") as Hex,
+    privateKey,
   })
   const service = await startService(writer, {
     host: env("WRITER_HOST", false) || undefined,

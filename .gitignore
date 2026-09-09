@@ -7,6 +7,7 @@ node_modules/
 # Local configuration and secrets
 .env
 tunnel/frps.toml
+writer.key
 
 # IDE / editor
 .idea/

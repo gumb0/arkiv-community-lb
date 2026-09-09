@@ -1,0 +1,5 @@
+# The image takes the manifests and the shipped source only.
+*
+!package.json
+!package-lock.json
+!src

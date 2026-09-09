@@ -1,6 +1,12 @@
-# The LB host stack: every service that runs on the LB box. The
-# chain-writer sidecar joins later.
+# The LB host stack: every service that runs on the LB box.
 name: arkiv-community-lb
+
+# The chain-writer sidecar's signing key: a file next to this one,
+# mounted into the container, never an environment variable — `docker
+# inspect` shows the environment, not a secret's content.
+secrets:
+  writer_key:
+    file: ./writer.key
 
 services:
   # The LB itself, built from this workspace. Copy config.example.toml
@@ -21,6 +27,25 @@ services:
     # A stop finishes the requests in flight, which may take up to the
     # request timeout (30 s by default); Docker's default grace is 10 s.
     stop_grace_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+  # The chain-writer sidecar (docs/CHAIN_WRITER.md): the LB's entity
+  # writes, signed with the key in writer.key. Host networking like the
+  # LB, listening on loopback, where only the LB reaches it. Same
+  # endpoint variables as the LB, so both point at one network.
+  writer:
+    build: ./writer
+    network_mode: host
+    environment:
+      ARKIV_RPC_URL: ${ARKIV_RPC_URL:-}
+      ARKIV_API_KEY: ${ARKIV_API_KEY:-}
+      WRITER_PRIVATE_KEY_FILE: /run/secrets/writer_key
+    secrets:
+      - writer_key
+    restart: unless-stopped
     logging:
       driver: json-file
       options:

@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+alloy-primitives = { version = "1.7.2", default-features = false, features = ["std", "serde"] }
 axum = "0.8.9"
 bytesize = { version = "2.7.0", features = ["serde"] }
 futures = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }

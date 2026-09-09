@@ -3,6 +3,7 @@
 //! `main.rs` stays a thin wrapper.
 
 pub mod admin;
+pub mod chain;
 pub mod config;
 pub mod denylist;
 pub mod forwarder;

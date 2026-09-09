@@ -270,6 +270,36 @@ pub struct EncodedRecord {
     pub payload: Vec<u8>,
 }
 
+/// One of the five records: what it is called on chain, and how it turns
+/// into a write and back out of a read.
+pub trait Record: Sized {
+    const KIND: &'static str;
+    fn encode(&self) -> EncodedRecord;
+    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError>;
+}
+
+/// A record together with what the chain added to it: its key, its
+/// creator and its expiry. What a reader hands out — the record alone
+/// says who wrote it or when it expires only through these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stored<T> {
+    pub key: EntityKey,
+    pub creator: Address,
+    pub expires_at: u64,
+    pub record: T,
+}
+
+impl<T: Record> Stored<T> {
+    pub fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
+        Ok(Self {
+            key: entity.key,
+            creator: entity.creator,
+            expires_at: entity.expires_at,
+            record: T::decode(entity)?,
+        })
+    }
+}
+
 fn encode<T: Serialize>(attributes: Attributes, payload: &T) -> EncodedRecord {
     EncodedRecord {
         attributes,
@@ -287,12 +317,14 @@ pub struct LbListing {
     pub max_providers: u32,
 }
 
-impl LbListing {
-    pub fn encode(&self) -> EncodedRecord {
-        encode(Attributes::new(KIND_LB_LISTING), self)
+impl Record for LbListing {
+    const KIND: &'static str = KIND_LB_LISTING;
+
+    fn encode(&self) -> EncodedRecord {
+        encode(Attributes::new(Self::KIND), self)
     }
 
-    pub fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
+    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
         entity.payload()
     }
 }
@@ -327,17 +359,19 @@ pub struct Offer {
     pub specs: Specs,
 }
 
-impl Offer {
-    pub fn encode(&self) -> EncodedRecord {
+impl Record for Offer {
+    const KIND: &'static str = KIND_OFFER;
+
+    fn encode(&self) -> EncodedRecord {
         encode(
-            Attributes::new(KIND_OFFER).with("lb", AttributeValue::Addr(self.lb)),
+            Attributes::new(Self::KIND).with("lb", AttributeValue::Addr(self.lb)),
             &OfferPayload {
                 specs: self.specs.clone(),
             },
         )
     }
 
-    pub fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
+    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let lb = entity.attributes().addr("lb")?;
         let payload: OfferPayload = entity.payload()?;
         Ok(Self {
@@ -363,10 +397,12 @@ pub struct Agreement {
     pub remote_port: u16,
 }
 
-impl Agreement {
-    pub fn encode(&self) -> EncodedRecord {
+impl Record for Agreement {
+    const KIND: &'static str = KIND_AGREEMENT;
+
+    fn encode(&self) -> EncodedRecord {
         encode(
-            Attributes::new(KIND_AGREEMENT).with("provider", AttributeValue::Addr(self.provider)),
+            Attributes::new(Self::KIND).with("provider", AttributeValue::Addr(self.provider)),
             &AgreementPayload {
                 wei_per_call: self.wei_per_call,
                 remote_port: self.remote_port,
@@ -374,7 +410,7 @@ impl Agreement {
         )
     }
 
-    pub fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
+    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let provider = entity.attributes().addr("provider")?;
         let payload: AgreementPayload = entity.payload()?;
         Ok(Self {
@@ -426,10 +462,12 @@ pub struct Counters {
     pub rows: Vec<CounterRow>,
 }
 
-impl Counters {
-    pub fn encode(&self) -> EncodedRecord {
+impl Record for Counters {
+    const KIND: &'static str = KIND_COUNTERS;
+
+    fn encode(&self) -> EncodedRecord {
         encode(
-            Attributes::new(KIND_COUNTERS)
+            Attributes::new(Self::KIND)
                 .with("period", AttributeValue::U64(self.period))
                 .with("state", AttributeValue::Str(self.state.as_str().to_owned())),
             &CountersPayload {
@@ -439,7 +477,7 @@ impl Counters {
         )
     }
 
-    pub fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
+    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let attributes = entity.attributes();
         let period = attributes.u64("period")?;
         let state = match attributes.str("state")? {
@@ -492,10 +530,12 @@ pub struct Receipt {
     pub payout: Payout,
 }
 
-impl Receipt {
-    pub fn encode(&self) -> EncodedRecord {
+impl Record for Receipt {
+    const KIND: &'static str = KIND_RECEIPT;
+
+    fn encode(&self) -> EncodedRecord {
         encode(
-            Attributes::new(KIND_RECEIPT)
+            Attributes::new(Self::KIND)
                 .with("period", AttributeValue::U64(self.period))
                 .with("agreement", AttributeValue::Key(self.agreement))
                 .with("provider", AttributeValue::Addr(self.provider)),
@@ -508,7 +548,7 @@ impl Receipt {
         )
     }
 
-    pub fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
+    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let attributes = entity.attributes();
         let payload: ReceiptPayload = entity.payload()?;
         Ok(Self {
@@ -655,6 +695,25 @@ mod tests {
         let entity = read_back(&encoded);
         assert!(entity.is(KIND_AGREEMENT));
         assert_eq!(Agreement::decode(&entity).unwrap(), agreement);
+    }
+
+    #[test]
+    fn a_stored_record_carries_what_the_chain_added() {
+        let agreement = Agreement {
+            provider: addr(PROVIDER),
+            wei_per_call: Wei::new(5),
+            remote_port: 20000,
+        };
+        let stored = Stored::<Agreement>::decode(&read_back(&agreement.encode())).unwrap();
+        assert_eq!(
+            stored,
+            Stored {
+                key: key(KEY),
+                creator: addr(LB),
+                expires_at: 0x92e21,
+                record: agreement,
+            }
+        );
     }
 
     #[test]

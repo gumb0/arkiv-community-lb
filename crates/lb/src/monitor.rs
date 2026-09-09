@@ -18,6 +18,7 @@ use serde_json::Value;
 use tokio::sync::watch;
 
 use crate::{
+    chain::reader::Reader,
     config::Health,
     pool::{HealthSignal, Pool, Provider},
 };
@@ -41,9 +42,9 @@ pub struct Monitor {
     pool: Arc<Pool>,
     client: reqwest::Client,
     config: Health,
-    reference: Option<reqwest::Url>,
-    /// Bearer token for the reference. Providers never see it.
-    reference_key: Option<String>,
+    /// The read client for the reference endpoint. Providers are probed
+    /// directly, never through it.
+    reference: Option<Reader>,
     /// Set once `flip_after` probe rounds have completed — the boot
     /// window is closed and every healthy provider has been admitted.
     /// `/health` shows it.
@@ -55,8 +56,7 @@ impl Monitor {
         pool: Arc<Pool>,
         client: reqwest::Client,
         config: Health,
-        reference: Option<reqwest::Url>,
-        reference_key: Option<String>,
+        reference: Option<Reader>,
         ready: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -64,7 +64,6 @@ impl Monitor {
             client,
             config,
             reference,
-            reference_key,
             ready,
         }
     }
@@ -117,7 +116,9 @@ impl Monitor {
     /// `ref_height_interval`. A failed ask clears `reference_height.height`:
     /// no reference height means lag will not be judged.
     async fn refresh_reference_height(&self, reference_height: &mut ReferenceHeight) {
-        let Some(url) = &self.reference else { return };
+        let Some(reader) = &self.reference else {
+            return;
+        };
         let due = match reference_height.asked {
             None => true,
             Some(at) => at.elapsed() >= self.config.ref_height_interval,
@@ -128,9 +129,13 @@ impl Monitor {
         let first_ask = reference_height.asked.is_none();
         let was_answered = reference_height.height.is_some();
         reference_height.asked = Some(std::time::Instant::now());
-        reference_height.height = self
-            .query_block_number("reference", url, self.reference_key.as_deref())
-            .await;
+        reference_height.height = match reader.block_number().await {
+            Ok(height) => Some(height),
+            Err(error) => {
+                tracing::debug!(%error, "reference probe failed");
+                None
+            }
+        };
         // Logged on change only, so a silent reference shows once at
         // the default level instead of once per ask at debug.
         let answered = reference_height.height.is_some();
@@ -219,9 +224,7 @@ impl Monitor {
     /// Returns whether the provider answered — a lagging provider did.
     async fn probe(&self, provider: &Provider, reference_height: Option<u64>) -> bool {
         let started = std::time::Instant::now();
-        let height = self
-            .query_block_number(&provider.id, &provider.url, None)
-            .await;
+        let height = self.query_block_number(&provider.id, &provider.url).await;
         provider.record_probe_duration(started.elapsed());
         let Some(height) = height else {
             provider.record_unanswered_probe();
@@ -246,17 +249,11 @@ impl Monitor {
         true
     }
 
-    async fn query_block_number(
-        &self,
-        id: &str,
-        url: &reqwest::Url,
-        bearer: Option<&str>,
-    ) -> Option<u64> {
+    async fn query_block_number(&self, id: &str, url: &reqwest::Url) -> Option<u64> {
         self.query(
             id,
             url,
             r#"{"jsonrpc":"2.0","id":0,"method":"eth_blockNumber","params":[]}"#,
-            bearer,
         )
         .await
     }
@@ -266,7 +263,6 @@ impl Monitor {
             id,
             url,
             r#"{"jsonrpc":"2.0","id":0,"method":"eth_chainId","params":[]}"#,
-            None,
         )
         .await
     }
@@ -274,23 +270,15 @@ impl Monitor {
     /// One probe round trip for a quantity-valued method; any
     /// shortfall — transport, status, or an answer that is not a hex
     /// quantity — is one failure.
-    async fn query(
-        &self,
-        id: &str,
-        url: &reqwest::Url,
-        body: &'static str,
-        bearer: Option<&str>,
-    ) -> Option<u64> {
-        let mut request = self
+    async fn query(&self, id: &str, url: &reqwest::Url, body: &'static str) -> Option<u64> {
+        let sent = self
             .client
             .post(url.clone())
             .header(header::CONTENT_TYPE, "application/json")
             .body(body)
-            .timeout(self.config.probe_timeout);
-        if let Some(token) = bearer {
-            request = request.bearer_auth(token);
-        }
-        let sent = request.send().await;
+            .timeout(self.config.probe_timeout)
+            .send()
+            .await;
         let mut response = match sent {
             Ok(response) if response.status().is_success() => response,
             Ok(response) => {

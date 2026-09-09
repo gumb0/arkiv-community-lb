@@ -7,7 +7,9 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 use tokio::{net::TcpListener, sync::watch, task::JoinHandle};
 
-use crate::{admin, config::Config, forwarder::Forwarder, monitor, pool, proxy};
+use crate::{
+    admin, chain::reader::Reader, config::Config, forwarder::Forwarder, monitor, pool, proxy,
+};
 
 #[derive(Debug)]
 pub struct Service {
@@ -79,12 +81,16 @@ pub async fn start(config: Config) -> Result<Service, StartError> {
     if !config.health.disable_probing {
         let reference = match &config.reference {
             Some(url) => {
-                Some(
-                    reqwest::Url::parse(url).map_err(|source| StartError::Reference {
-                        url: url.clone(),
-                        source,
-                    })?,
-                )
+                let url = reqwest::Url::parse(url).map_err(|source| StartError::Reference {
+                    url: url.clone(),
+                    source,
+                })?;
+                Some(Reader::new(
+                    client.clone(),
+                    url,
+                    config.reference_key.clone(),
+                    config.health.probe_timeout,
+                ))
             }
             None => {
                 tracing::warn!(
@@ -101,7 +107,6 @@ pub async fn start(config: Config) -> Result<Service, StartError> {
             client,
             config.health.clone(),
             reference,
-            config.reference_key.clone(),
             ready,
         );
         tasks.push(tokio::spawn(monitor.run(shutdown.subscribe())));

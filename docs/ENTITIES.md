@@ -225,14 +225,13 @@ Payload:
   "amount_wei": "48213000000000000000",
   "payout": {
     "chain_id": 560048,
-    "token": "0x55555555555556acff9c332ed151758858bd7a26",
     "tx": "0x925d…33c7"
   }
 }
 ```
 
-`payout` names the chain and the token contract the transfer was made
-on, and the transaction hash. A settle run pays each provider once for
+`payout` names the chain the transfer was made on and the transaction
+hash. A settle run pays each provider once for
 every period it settles, so the receipts of one provider from one run
 share a transaction hash, and `amount_wei` is this receipt's share of
 it. A row with a zero count gets a receipt with `amount_wei` `"0"` and

@@ -232,14 +232,19 @@ Payload:
 ```
 
 `payout` names the chain and the token contract the transfer was made
-on, and the transaction hash. The agreement, provider and period are
-the attributes. The receipt repeats the count and the rate, so it stays
+on, and the transaction hash. A settle run pays each provider once for
+every period it settles, so the receipts of one provider from one run
+share a transaction hash, and `amount_wei` is this receipt's share of
+it. A row with a zero count gets a receipt with `amount_wei` `"0"` and
+`payout.tx` `null`. The agreement, provider and period are the
+attributes. The receipt repeats the count and the rate, so it stays
 readable after its agreement record and counters have expired.
 Lifetime: permanent.
 
-Query, by settle before paying a period: `$creator == SETTLE_ADDRESS
-AND kind == "rpc.receipt" AND period == P`. The agreements listed are
-already paid and are skipped, so a settle run can be repeated safely.
+Query, by settle before paying: `$creator == SETTLE_ADDRESS AND kind
+== "rpc.receipt" AND period == P` for each closed period. The
+agreements listed are already paid and are skipped, so a settle run can
+be repeated safely.
 Query, by a provider: `$creator == SETTLE_ADDRESS AND kind ==
 "rpc.receipt" AND provider == <my address>`. The settle address is
 shipped with the provider tooling, next to the LB address.

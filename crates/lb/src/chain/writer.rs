@@ -53,6 +53,18 @@ impl Create {
             expires,
         }
     }
+
+    pub fn attributes(&self) -> &Attributes {
+        &self.attributes
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    pub fn expires(&self) -> Expiry {
+        self.expires
+    }
 }
 
 /// Sets attributes and replaces the payload; nothing here unsets an

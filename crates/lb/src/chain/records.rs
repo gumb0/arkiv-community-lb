@@ -158,13 +158,17 @@ impl Attributes {
         Self(map)
     }
 
-    fn with(mut self, name: &str, value: AttributeValue) -> Self {
+    pub fn with(mut self, name: &str, value: AttributeValue) -> Self {
         self.0.insert(name.to_owned(), value);
         self
     }
 
     pub fn get(&self, name: &str) -> Option<&AttributeValue> {
         self.0.get(name)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &AttributeValue)> {
+        self.0.iter().map(|(name, value)| (name.as_str(), value))
     }
 
     pub fn to_wire(&self) -> serde_json::Value {

@@ -1,6 +1,6 @@
 //! The chain path against a live network and a running sidecar: write a
 //! record, read it back, extend it, let it expire. Ignored by default —
-//! it spends gas and takes about a minute. Run by hand:
+//! it spends gas and takes about half a minute. Run by hand:
 //!
 //!   ARKIV_RPC_URL=… ARKIV_API_KEY=… cargo test -p lb --test chain_live -- --ignored
 //!
@@ -48,8 +48,9 @@ async fn a_record_is_written_read_back_extended_and_expires() {
         remote_port: 20000,
     };
 
+    // Lifetimes are whole blocks: at the 2 s block time, even seconds.
     let created = writer
-        .create(&Create::new(agreement.encode(), Expiry::Seconds(20)))
+        .create(&Create::new(agreement.encode(), Expiry::Seconds(16)))
         .await
         .expect("create lands");
     println!(
@@ -74,7 +75,7 @@ async fn a_record_is_written_read_back_extended_and_expires() {
     let extended = writer
         .extend(&Extend {
             entity_key: created.entity_key,
-            expires: Expiry::Seconds(40),
+            expires: Expiry::Seconds(20),
         })
         .await
         .expect("extend lands");

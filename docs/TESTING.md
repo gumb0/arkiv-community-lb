@@ -23,6 +23,13 @@ the probes that follow our own code. The rest measure the pinned SDK
 and node image, so they run by hand when a pin moves, not on every
 push. `writer/tests/` is reserved for suites CI can run unattended;
 `writer/probes/` holds what is run by hand against a live network.
+The Rust chain path has a live smoke of the same kind
+(`crates/lb/tests/chain_live.rs`, ignored by default): a record
+written through the sidecar, read back through the read client,
+extended, and left to expire. `scripts/chain-smoke.sh` runs it against
+the dev node with the sidecar in front, and the `probes` job runs that
+after the writer probes; by hand it runs against any network with the
+endpoint variables set and a sidecar up.
 
 **3. The rig.** Real containers, the shipped `arkiv-lb` binary as a
 separate process, a real config file, real sockets. It runs by hand or

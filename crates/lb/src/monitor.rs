@@ -101,7 +101,7 @@ impl Monitor {
                     // is closed.
                     rounds = rounds.saturating_add(1);
                     if rounds == self.config.flip_after {
-                        if !self.pool.providers().iter().any(Provider::eligible) {
+                        if !self.pool.snapshot().iter().any(|provider| provider.eligible()) {
                             tracing::warn!("boot window closed with no provider admitted");
                         }
                         self.ready.store(true, Ordering::Relaxed);
@@ -156,7 +156,8 @@ impl Monitor {
         // next one starting as a slot frees up, returning when the last
         // finishes. Interleaved waiting on the Monitor's own task, not
         // threads.
-        futures::stream::iter(self.pool.providers())
+        let providers = self.pool.snapshot();
+        futures::stream::iter(providers.iter())
             .for_each_concurrent(CONCURRENT_PROBES, |provider| async move {
                 let due = *provider.next_probe() <= now;
                 if due && self.chain_cleared(provider, chain_round).await {

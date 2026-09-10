@@ -156,7 +156,7 @@ async fn start_lb_with(
         .collect();
     tune(&mut config);
     let service = lb::service::start(config).await.expect("service boots");
-    for provider in service.pool.providers() {
+    for provider in service.pool.snapshot().iter() {
         provider.set_eligible(true);
     }
     let public = format!("http://{}", service.public_addr);
@@ -367,7 +367,7 @@ async fn oversized_response_is_terminal_not_retried() {
         "re-downloading elsewhere helps nobody"
     );
     assert_eq!(
-        service.pool.providers()[0]
+        service.pool.snapshot()[0]
             .health_streak
             .load(std::sync::atomic::Ordering::Relaxed),
         0,
@@ -633,7 +633,7 @@ async fn traffic_failures_alone_quarantine_a_provider() {
 
     // Each request tries the dead provider first: the cursor comes back
     // around to it every time while it is still eligible.
-    let providers = service.pool.providers();
+    let providers = service.pool.snapshot();
     let (status, _body) = post(&public, request(31)).await;
     assert_eq!(status, 200, "the live provider carries the request");
     assert!(providers[0].eligible(), "one failure is not yet a verdict");
@@ -666,7 +666,7 @@ async fn answered_traffic_earns_no_health_credit() {
         assert_eq!(status, 200);
     }
 
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
     assert_eq!(
         provider.health_streak.load(Ordering::Relaxed),
         0,
@@ -693,7 +693,7 @@ async fn the_served_counter_follows_answers_not_attempts() {
         assert_eq!(status, 200);
     }
 
-    let providers = service.pool.providers();
+    let providers = service.pool.snapshot();
     assert_eq!(
         providers[0].served.load(Ordering::Relaxed),
         0,
@@ -777,7 +777,7 @@ async fn pinned_forward_reaches_an_ineligible_provider_and_changes_nothing() {
     let answer = br#"{"jsonrpc":"2.0","id":61,"result":"0x2a"}"#;
     let (addr, fake) = fake_provider(answer, Duration::ZERO).await;
     let (service, _public) = start_lb(&[addr]).await;
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
     provider.set_eligible(false);
 
     let (status, body) = post_pinned(&service, "p0", request(61)).await;
@@ -848,7 +848,7 @@ async fn pinned_forward_to_a_dead_provider_answers_502_without_failover() {
         0,
         "no failover: the operator asked this node in particular"
     );
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
     assert!(
         provider.eligible(),
         "a failed diagnostic quarantines nobody"

@@ -135,7 +135,7 @@ async fn wait_for_all_admitted(service: &lb::service::Service) {
     wait_for("every provider admitted", || {
         service
             .pool
-            .providers()
+            .snapshot()
             .iter()
             .all(|provider| provider.eligible())
     })
@@ -154,7 +154,7 @@ async fn wait_for_eviction(provider: &lb::pool::Provider) {
 async fn probes_admit_a_healthy_provider() {
     let (addr, _rpc) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[addr], |_| {}).await;
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
 
     assert!(
         !provider.eligible(),
@@ -175,11 +175,11 @@ async fn probes_admit_a_healthy_provider() {
 async fn a_killed_provider_is_quarantined_and_readmitted_on_recovery() {
     let (addr, rpc) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[addr], |_| {}).await;
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
     wait_for_all_admitted(&service).await;
 
     rpc.down.store(true, Ordering::Relaxed);
-    wait_for_eviction(provider).await;
+    wait_for_eviction(&provider).await;
     assert!(
         provider.last_probe_ms().is_some(),
         "failed probes still record how long they took"
@@ -236,7 +236,7 @@ async fn failover_keeps_serving_while_a_provider_dies() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     // 100ms of failing probes at a 20ms cadence: long since quarantined.
-    assert!(!service.pool.providers()[0].eligible());
+    assert!(!service.pool.snapshot()[0].eligible());
 }
 
 #[tokio::test]
@@ -246,9 +246,9 @@ async fn a_recovered_provider_returns_to_rotation() {
     let service = start_monitored(&[a, b], |_| {}).await;
     wait_for_all_admitted(&service).await;
 
-    let provider_a = &service.pool.providers()[0];
+    let provider_a = service.pool.snapshot()[0].clone();
     rpc_a.down.store(true, Ordering::Relaxed);
-    wait_for_eviction(provider_a).await;
+    wait_for_eviction(&provider_a).await;
     rpc_a.down.store(false, Ordering::Relaxed);
     wait_for("readmission", || provider_a.eligible()).await;
 
@@ -277,13 +277,13 @@ async fn lagging_behind_the_reference_quarantines_and_catchup_readmits() {
         config.health.lag_tolerance_blocks = 3;
     })
     .await;
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
     wait_for_all_admitted(&service).await;
 
     // One block beyond the allowed lag quarantines...
     rpc.height.store(96, Ordering::Relaxed);
     reference.height.store(100, Ordering::Relaxed);
-    wait_for_eviction(provider).await;
+    wait_for_eviction(&provider).await;
     assert_eq!(provider.ineligibility_reason(), Some("lag"));
 
     // ...and exactly the allowed lag is healthy.
@@ -350,7 +350,7 @@ async fn a_dead_reference_faults_nobody() {
 
     // ...but with the reference unreachable there are no lag verdicts:
     // the provider is admitted and stays.
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
     wait_for_all_admitted(&service).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(provider.eligible(), "a reference outage must fault nobody");
@@ -366,10 +366,10 @@ async fn a_lag_quarantined_provider_readmits_when_the_reference_dies() {
         config.health.lag_tolerance_blocks = 3;
     })
     .await;
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
     wait_for_all_admitted(&service).await;
     reference.height.store(100, Ordering::Relaxed);
-    wait_for_eviction(provider).await;
+    wait_for_eviction(&provider).await;
 
     // The reference dies: the cache clears, lag verdicts stop, and the
     // provider's passing probes readmit it. The accepted loss: without
@@ -395,7 +395,7 @@ async fn a_lag_quarantined_provider_stops_serving_while_the_other_carries_on() {
     // and serving stale data if asked.
     reference.height.store(100, Ordering::Relaxed);
     rpc_b.height.store(100, Ordering::Relaxed);
-    wait_for_eviction(&service.pool.providers()[0]).await;
+    wait_for_eviction(&service.pool.snapshot()[0]).await;
 
     // Every answer now comes from the provider at the chain head.
     let public = format!("http://{}", service.public_addr);
@@ -439,7 +439,7 @@ async fn a_lagging_provider_is_evicted_even_under_live_traffic() {
 
     reference.height.store(100, Ordering::Relaxed);
     rpc_b.height.store(100, Ordering::Relaxed);
-    wait_for_eviction(&service.pool.providers()[0]).await;
+    wait_for_eviction(&service.pool.snapshot()[0]).await;
     hammer.abort();
     assert!(
         rpc_a.served.load(Ordering::Relaxed) > 0,
@@ -462,11 +462,11 @@ async fn traffic_failures_do_not_slow_the_probes_down() {
     let public = format!("http://{}", service.public_addr);
     let client = reqwest::Client::new();
     futures::future::join_all((0..30).map(|_| block_number(&client, &public))).await;
-    wait_for_eviction(&service.pool.providers()[0]).await;
+    wait_for_eviction(&service.pool.snapshot()[0]).await;
 
     // The backoff input is the unanswered-probe streak, which grows by
     // one per probe round — the health streak took the burst instead.
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
     let streak = provider.health_streak.load(Ordering::Relaxed);
     let unanswered = i64::from(provider.unanswered_probe_streak());
     assert!(streak <= -10, "the burst dug a deep streak: {streak}");
@@ -499,7 +499,7 @@ async fn a_pool_larger_than_the_probe_concurrency_cap_is_fully_probed() {
     let service = start_monitored(&addrs, |_| {}).await;
 
     wait_for_all_admitted(&service).await;
-    for provider in service.pool.providers() {
+    for provider in service.pool.snapshot().iter() {
         assert!(
             provider.last_height().is_some_and(|height| height >= 1),
             "a probe reached {}",
@@ -512,7 +512,7 @@ async fn a_pool_larger_than_the_probe_concurrency_cap_is_fully_probed() {
 async fn a_wrong_chain_provider_is_never_admitted() {
     let (addr, rpc) = rpc_provider(999).await;
     let service = start_monitored(&[addr], |_| {}).await;
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
 
     // Ten-plus rounds of opportunity.
     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -551,7 +551,7 @@ async fn a_provider_padding_its_probe_answers_is_never_admitted() {
     // Ten-plus rounds of opportunity.
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert!(
-        !service.pool.providers()[0].eligible(),
+        !service.pool.snapshot()[0].eligible(),
         "an oversized probe answer must count as no answer"
     );
 }
@@ -561,7 +561,7 @@ async fn an_unanswered_initial_chain_check_changes_nothing_and_keeps_its_cadence
     let (addr, rpc) = rpc_provider(CHAIN_ID).await;
     rpc.down.store(true, Ordering::Relaxed);
     let service = start_monitored(&[addr], |_| {}).await;
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
 
     // Many ordinary sweeps pass, but chain identity keeps its own
     // slower cadence rather than retrying on every sweep.
@@ -594,13 +594,13 @@ async fn a_chain_id_change_after_admission_evicts_and_a_fix_readmits() {
         config.health.chainid_check_interval = Duration::from_millis(60);
     })
     .await;
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
     wait_for_all_admitted(&service).await;
 
     // The node is switched to another chain: the next chain round
     // evicts it, and probe successes must not bring it back.
     rpc.chain_id.store(999, Ordering::Relaxed);
-    wait_for_eviction(provider).await;
+    wait_for_eviction(&provider).await;
     tokio::time::sleep(Duration::from_millis(120)).await;
     assert!(
         !provider.eligible(),
@@ -633,7 +633,7 @@ async fn a_dead_provider_is_probed_ever_more_rarely() {
     let dead = rpc_a.requests.load(Ordering::Relaxed) - dead_before;
     let live = rpc_b.requests.load(Ordering::Relaxed) - live_before;
 
-    assert!(!service.pool.providers()[0].eligible());
+    assert!(!service.pool.snapshot()[0].eligible());
     assert!(
         dead >= 3,
         "backoff caps at max_probe_backoff, it never stops probing: {dead}"
@@ -747,7 +747,7 @@ async fn health_reports_ready_after_the_first_probe_round() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(
-        service.pool.providers()[0].eligible(),
+        service.pool.snapshot()[0].eligible(),
         "ready means the boot window closed: the healthy provider is already admitted"
     );
 }
@@ -799,7 +799,7 @@ async fn a_wrong_chain_provider_among_healthy_ones_changes_nothing_for_them() {
     let (good_b, _rpc_b) = rpc_provider(CHAIN_ID).await;
     let service = start_monitored(&[good_a, impostor, good_b], |_| {}).await;
 
-    let providers = service.pool.providers();
+    let providers = service.pool.snapshot();
     wait_for("both healthy providers admitted", || {
         providers[0].eligible() && providers[2].eligible()
     })
@@ -825,7 +825,7 @@ async fn nodes_reports_chain_verification_from_a_live_monitor() {
     let (impostor, _rpc_impostor) = rpc_provider(999).await;
     let service = start_monitored(&[good, impostor], |_| {}).await;
     wait_for("the good provider admitted", || {
-        service.pool.providers()[0].eligible()
+        service.pool.snapshot()[0].eligible()
     })
     .await;
 

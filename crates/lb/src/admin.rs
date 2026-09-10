@@ -74,7 +74,7 @@ async fn forward_to_node(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    let Some(provider) = state.pool.providers().iter().find(|p| p.id == id) else {
+    let Some(provider) = state.pool.snapshot().iter().find(|p| p.id == id).cloned() else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": format!("no provider {id:?}") })),
@@ -90,7 +90,7 @@ async fn forward_to_node(
 
     match state
         .forwarder
-        .attempt(provider, &body, state.attempt_timeout)
+        .attempt(&provider, &body, state.attempt_timeout)
         .await
     {
         Outcome::Answer(response) => {
@@ -150,5 +150,12 @@ impl From<&Provider> for NodeView {
 
 /// A fresh, lock-free view over every configured provider entry.
 async fn nodes(State(state): State<AdminState>) -> Json<Vec<NodeView>> {
-    Json(state.pool.providers().iter().map(NodeView::from).collect())
+    Json(
+        state
+            .pool
+            .snapshot()
+            .iter()
+            .map(|provider| NodeView::from(provider.as_ref()))
+            .collect(),
+    )
 }

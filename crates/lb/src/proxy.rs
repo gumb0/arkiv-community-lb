@@ -147,7 +147,7 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
         let timeout = remaining.min(state.config.attempt_timeout);
         attempts += 1;
 
-        match state.forwarder.attempt(provider, &body, timeout).await {
+        match state.forwarder.attempt(&provider, &body, timeout).await {
             Outcome::Answer(response) => {
                 // No health credit for an answer: successes count only
                 // from probes, so served traffic cannot outvote the

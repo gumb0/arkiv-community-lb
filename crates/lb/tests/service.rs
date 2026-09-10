@@ -137,7 +137,7 @@ async fn shutdown_lets_an_in_flight_request_finish() {
         url: format!("http://{provider_addr}"),
     }];
     let service = lb::service::start(config).await.expect("service boots");
-    service.pool.providers()[0].set_eligible(true);
+    service.pool.snapshot()[0].set_eligible(true);
     let public = format!("http://{}", service.public_addr);
 
     let request = tokio::spawn(async move {
@@ -214,7 +214,7 @@ async fn nodes_is_a_current_view_of_the_pool() {
 
     // Change the entry after the first request. The next response must
     // load the atomics again, not serve a cached snapshot.
-    let provider = &service.pool.providers()[0];
+    let provider = service.pool.snapshot()[0].clone();
     provider.record_health(false, 3, HealthSignal::Traffic);
     let before_flip: serde_json::Value = client
         .get(format!("{admin}/nodes"))

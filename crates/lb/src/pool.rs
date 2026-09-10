@@ -1,25 +1,48 @@
-//! The provider pool. Membership is fixed until restart, and each
-//! provider is long-lived; everything mutable on it is atomic, so the
-//! hot path reads without locks. Health successes come only from
-//! probes; traffic adds only failures — so traffic can take a provider
-//! out of rotation, but never bring one in.
+//! The provider pool. Membership changes while the LB runs: the static
+//! providers from the config file are there from the start, marketplace
+//! providers come and go with their agreements. Readers take a snapshot
+//! of the membership and never lock; a provider is shared by reference
+//! count, so an entry a reader still holds stays valid after its
+//! removal. Everything mutable on a provider is atomic, so the hot path
+//! reads without locks. Health successes come only from probes; traffic
+//! adds only failures — so traffic can take a provider out of rotation,
+//! but never bring one in.
 
 use std::{
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 
+use arc_swap::ArcSwap;
 use reqwest::Url;
 
-use crate::config;
+use crate::{
+    chain::records::{Address, EntityKey},
+    config,
+};
+
+/// How a provider entered the pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// Listed in the config file.
+    Static,
+    /// Accepted from the marketplace: its offer's address, the agreement
+    /// record's key, and the tunnel port the LB reaches it through.
+    Marketplace {
+        address: Address,
+        agreement_id: EntityKey,
+        port: u16,
+    },
+}
 
 #[derive(Debug)]
 pub struct Provider {
     pub id: String,
     pub url: Url,
+    pub source: Source,
     /// In or out of rotation. Providers are born ineligible: nothing is
     /// served until the first probes pass.
     eligible: AtomicBool,
@@ -62,15 +85,35 @@ pub struct InvalidUrl {
 }
 
 impl Provider {
-    fn new(provider: &config::Provider) -> Result<Self, InvalidUrl> {
+    fn from_config(provider: &config::Provider) -> Result<Self, InvalidUrl> {
         let url = Url::parse(&provider.url).map_err(|source| InvalidUrl {
             id: provider.id.clone(),
             url: provider.url.clone(),
             source,
         })?;
-        Ok(Self {
-            id: provider.id.clone(),
+        Ok(Self::new(provider.id.clone(), url, Source::Static))
+    }
+
+    /// A marketplace provider, named by its address and reached through
+    /// its tunnel port on the loopback.
+    pub fn marketplace(address: Address, agreement_id: EntityKey, port: u16) -> Self {
+        let url = Url::parse(&format!("http://127.0.0.1:{port}")).expect("a loopback url parses");
+        Self::new(
+            format!("{address:#x}"),
             url,
+            Source::Marketplace {
+                address,
+                agreement_id,
+                port,
+            },
+        )
+    }
+
+    fn new(id: String, url: Url, source: Source) -> Self {
+        Self {
+            id,
+            url,
+            source,
             eligible: AtomicBool::new(false),
             health_streak: AtomicI64::new(0),
             height: AtomicU64::new(u64::MAX),
@@ -81,7 +124,7 @@ impl Provider {
             transport_failures: AtomicU64::new(0),
             last_health_source: AtomicU8::new(HealthSignal::Probe as u8),
             last_probe_ms: AtomicU64::new(u64::MAX),
-        })
+        }
     }
 
     /// The next-probe time, locked. Poisoning is ignored.
@@ -264,45 +307,79 @@ impl std::fmt::Display for HealthSignal {
     }
 }
 
+/// The membership as one immutable list, replaced whole on every change.
+/// Changes are rare (an agreement made or expired), reads are every
+/// request, so copying the list on change is the right trade.
+type Members = Vec<Arc<Provider>>;
+
 #[derive(Debug)]
 pub struct Pool {
-    providers: Box<[Provider]>,
+    members: ArcSwap<Members>,
     cursor: AtomicUsize,
 }
 
 impl Pool {
     pub fn new(providers: &[config::Provider]) -> Result<Self, InvalidUrl> {
+        let mut members = Members::with_capacity(providers.len());
+        for provider in providers {
+            members.push(Arc::new(Provider::from_config(provider)?));
+        }
         Ok(Self {
-            providers: providers
-                .iter()
-                .map(Provider::new)
-                .collect::<Result<_, _>>()?,
+            members: ArcSwap::from_pointee(members),
             cursor: AtomicUsize::new(0),
         })
     }
 
-    pub fn providers(&self) -> &[Provider] {
-        &self.providers
+    /// The membership at this moment. Later changes do not show in it.
+    pub fn snapshot(&self) -> Arc<Members> {
+        self.members.load_full()
+    }
+
+    /// Adds a provider, born ineligible like every other.
+    pub fn add(&self, provider: Provider) -> Arc<Provider> {
+        let provider = Arc::new(provider);
+        self.members.rcu(|members| {
+            let mut members = Members::clone(members);
+            members.push(provider.clone());
+            members
+        });
+        provider
+    }
+
+    /// Removes the provider with this id. Once this returns, no new
+    /// selection can pick it; a selection already holding it finishes
+    /// with it.
+    pub fn remove(&self, id: &str) -> Option<Arc<Provider>> {
+        let mut removed = None;
+        self.members.rcu(|members| {
+            let mut members = Members::clone(members);
+            if let Some(index) = members.iter().position(|provider| provider.id == id) {
+                removed = Some(members.remove(index));
+            }
+            members
+        });
+        removed
     }
 
     /// Round robin over eligible providers. The cursor is the next position
     /// to examine.
-    pub fn next_eligible(&self) -> Option<&Provider> {
-        let len = self.providers.len();
+    pub fn next_eligible(&self) -> Option<Arc<Provider>> {
+        let members = self.members.load();
+        let len = members.len();
         if len == 0 {
             return None;
         }
         for _ in 0..len {
             let index = self.cursor.fetch_add(1, Ordering::Relaxed) % len;
-            let provider = &self.providers[index];
+            let provider = &members[index];
             if provider.eligible() {
-                return Some(provider);
+                return Some(provider.clone());
             }
         }
         // Concurrent selections advance the cursor too, so the lap
         // above may have sampled the same index twice and missed an
         // eligible provider.
-        self.providers.iter().find(|provider| provider.eligible())
+        members.iter().find(|provider| provider.eligible()).cloned()
     }
 }
 
@@ -324,7 +401,7 @@ mod tests {
     #[test]
     fn providers_are_born_ineligible() {
         let pool = pool(&["a", "b"]);
-        assert!(pool.providers().iter().all(|provider| !provider.eligible()));
+        assert!(pool.snapshot().iter().all(|provider| !provider.eligible()));
         assert!(pool.next_eligible().is_none());
     }
 
@@ -336,7 +413,7 @@ mod tests {
     #[test]
     fn single_eligible_provider_is_always_picked() {
         let pool = pool(&["a", "b", "c"]);
-        pool.providers()[1].set_eligible(true);
+        pool.snapshot()[1].set_eligible(true);
         for _ in 0..10 {
             assert_eq!(pool.next_eligible().expect("one eligible").id, "b");
         }
@@ -348,7 +425,7 @@ mod tests {
     #[test]
     fn a_lone_eligible_provider_is_always_found_under_contention() {
         let pool = std::sync::Arc::new(pool(&["dead", "live"]));
-        pool.providers()[1].set_eligible(true);
+        pool.snapshot()[1].set_eligible(true);
 
         let threads: Vec<_> = (0..8)
             .map(|_| {
@@ -363,6 +440,66 @@ mod tests {
                 })
             })
             .collect();
+        for thread in threads {
+            thread.join().expect("selection thread");
+        }
+    }
+
+    #[test]
+    fn an_added_provider_is_selected_once_eligible() {
+        let pool = pool(&["a"]);
+        pool.snapshot()[0].set_eligible(true);
+        let added = pool.add(Provider::marketplace(
+            Address::repeat_byte(0xbb),
+            EntityKey::repeat_byte(0x01),
+            20_000,
+        ));
+        assert_eq!(added.id, format!("{:#x}", Address::repeat_byte(0xbb)));
+        assert_eq!(added.url.as_str(), "http://127.0.0.1:20000/");
+        for _ in 0..4 {
+            assert_eq!(pool.next_eligible().expect("a is eligible").id, "a");
+        }
+
+        added.set_eligible(true);
+        let ids: Vec<String> = (0..4)
+            .map(|_| pool.next_eligible().expect("both eligible").id.clone())
+            .collect();
+        assert!(ids.contains(&"a".to_string()), "{ids:?}");
+        assert!(ids.contains(&added.id), "{ids:?}");
+    }
+
+    /// Other threads keep selecting while a provider is removed. A
+    /// selection loads the list once, when it starts, so every selection
+    /// that starts after `remove` returns works on the new list and
+    /// cannot pick the removed provider.
+    #[test]
+    fn a_removed_provider_is_never_selected_again() {
+        let pool = std::sync::Arc::new(pool(&["a", "b"]));
+        for provider in pool.snapshot().iter() {
+            provider.set_eligible(true);
+        }
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let pool = pool.clone();
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        pool.next_eligible();
+                    }
+                })
+            })
+            .collect();
+
+        let removed = pool.remove("b").expect("b was a member");
+        assert_eq!(removed.id, "b");
+        assert!(removed.eligible(), "the entry itself is untouched");
+        for _ in 0..1_000 {
+            assert_eq!(pool.next_eligible().expect("a remains").id, "a");
+        }
+        assert!(pool.remove("b").is_none(), "removed twice");
+
+        stop.store(true, Ordering::Relaxed);
         for thread in threads {
             thread.join().expect("selection thread");
         }
@@ -389,7 +526,7 @@ mod tests {
     #[test]
     fn a_streak_of_agreeing_results_flips_eligibility() {
         let pool = pool(&["a"]);
-        let provider = &pool.providers()[0];
+        let provider = pool.snapshot()[0].clone();
 
         provider.record_health(true, 3, HealthSignal::Probe);
         provider.record_health(true, 3, HealthSignal::Probe);
@@ -407,7 +544,7 @@ mod tests {
     #[test]
     fn one_disagreeing_result_restarts_the_streak() {
         let pool = pool(&["a"]);
-        let provider = &pool.providers()[0];
+        let provider = pool.snapshot()[0].clone();
 
         provider.record_health(false, 3, HealthSignal::Probe);
         provider.record_health(false, 3, HealthSignal::Probe);
@@ -425,7 +562,7 @@ mod tests {
     #[test]
     fn quarantine_evicts_at_once_and_recovery_starts_from_zero() {
         let pool = pool(&["a"]);
-        let provider = &pool.providers()[0];
+        let provider = pool.snapshot()[0].clone();
         for _ in 0..5 {
             provider.record_health(true, 3, HealthSignal::Probe);
         }
@@ -452,8 +589,8 @@ mod tests {
         let pool = pool(&["a", "b", "c", "d"]);
         // Only the outer two are in rotation; the ineligible middle must
         // not skew the split.
-        pool.providers()[0].set_eligible(true);
-        pool.providers()[3].set_eligible(true);
+        pool.snapshot()[0].set_eligible(true);
+        pool.snapshot()[3].set_eligible(true);
         let mut picks = std::collections::HashMap::new();
         for _ in 0..100 {
             let id = pool.next_eligible().expect("eligible exist").id.clone();

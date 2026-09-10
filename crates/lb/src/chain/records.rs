@@ -246,8 +246,9 @@ fn deserialize_quantity<'de, D: serde::Deserializer<'de>>(
 }
 
 impl ArkivEntity {
-    /// The attributes typed, with entries of unknown type left out.
-    pub fn attributes(&self) -> Attributes {
+    /// The attribute list as a typed map, with entries of unknown type
+    /// left out. Named apart from the `attributes` field it is built from.
+    pub fn typed_attributes(&self) -> Attributes {
         Attributes(
             self.attributes
                 .iter()
@@ -259,7 +260,7 @@ impl ArkivEntity {
     /// Whether this entity is a record of the given kind, at any schema
     /// version.
     pub fn is(&self, kind: &str) -> bool {
-        match self.attributes().get("kind") {
+        match self.typed_attributes().get("kind") {
             Some(AttributeValue::Str(found)) => found == kind,
             _ => false,
         }
@@ -295,7 +296,7 @@ pub trait Record: Sized {
         if !entity.is(Self::KIND) {
             return Err(RecordError::NotThisRecord(Self::KIND));
         }
-        let version = entity.attributes().i32("v")?;
+        let version = entity.typed_attributes().i32("v")?;
         if version != SCHEMA_VERSION {
             return Err(RecordError::Version(version));
         }
@@ -397,7 +398,7 @@ impl Record for Offer {
     }
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
-        let lb = entity.attributes().addr("lb")?;
+        let lb = entity.typed_attributes().addr("lb")?;
         let payload: OfferPayload = entity.payload()?;
         Ok(Self {
             lb,
@@ -436,7 +437,7 @@ impl Record for Agreement {
     }
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
-        let provider = entity.attributes().addr("provider")?;
+        let provider = entity.typed_attributes().addr("provider")?;
         let payload: AgreementPayload = entity.payload()?;
         Ok(Self {
             provider,
@@ -503,7 +504,7 @@ impl Record for Counters {
     }
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
-        let attributes = entity.attributes();
+        let attributes = entity.typed_attributes();
         let period = attributes.u64("period")?;
         let state = match attributes.str("state")? {
             "open" => PeriodState::Open,
@@ -574,7 +575,7 @@ impl Record for Receipt {
     }
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
-        let attributes = entity.attributes();
+        let attributes = entity.typed_attributes();
         let payload: ReceiptPayload = entity.payload()?;
         Ok(Self {
             period: attributes.u64("period")?,

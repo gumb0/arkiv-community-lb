@@ -37,9 +37,10 @@ deserializes symmetrically, and schema changes never touch the sidecar.
 ## Wire format
 
 All routes are POST with JSON bodies; the listener binds `127.0.0.1` by
-default (`WRITER_HOST=0.0.0.0` inside a compose network — a container's
-loopback is not reachable from other containers). The listener is meant for
-the compose-internal network only; never expose it publicly.
+default, and stays there in the host stack: the sidecar and the LB share
+the host's network, so the LB reaches it on loopback and nothing else
+can. `WRITER_HOST` exists for a setup where the two do not share a
+network; never expose the listener publicly.
 
 | Route | Body | Does |
 |---|---|---|

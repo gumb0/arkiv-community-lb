@@ -3,9 +3,9 @@
 All entity writes go through one small sidecar: a Node service
 (`writer/src/service.ts`) that wraps the official
 [Arkiv TS SDK](https://github.com/Arkiv-Network/arkiv-sdk-js) behind five
-HTTP routes. Chain reads never go through it — the Rust side reads with
-plain JSON-RPC. The wire format and the error contract below are what the
-Rust side will code against.
+write routes, plus one that tells whose key it holds. Chain reads never go
+through it — the Rust side reads with plain JSON-RPC. The wire format and
+the error contract below are what the Rust side codes against.
 
 ## Why a sidecar
 
@@ -49,6 +49,11 @@ network; never expose the listener publicly.
 | `/delete` | entityKey | remove |
 | `/extend` | entityKey, expires | set a later expiry |
 | `/execute-batch` | creates?, patches?, deletes?, extensions? | several operations, one transaction |
+
+One read route, `GET /identity`, answers `{ "address", "chainId" }`: the
+address of the key the sidecar signs with, and the chain it writes to.
+The LB holds no key, so this is how it learns the creator of its own
+records, and a failed answer at startup means the sidecar is not there.
 
 JSON cannot carry bytes, 64-bit integers, or the SDK's tagged values, so:
 

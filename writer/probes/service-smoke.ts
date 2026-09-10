@@ -105,6 +105,14 @@ async function ok(route: string, body: unknown): Promise<Record<string, unknown>
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64")
 const payload = jsonToPayload({ probe: "service-smoke", run: RUN })
 
+await step("GET /identity — the signing address and the chain", async () => {
+  const res = await fetch(`${base}/identity`)
+  assert(res.status === 200, `/identity returned 200 (got ${res.status})`)
+  const identity = (await res.json()) as { address: string; chainId: number }
+  assert(identity.address === writer.address, "the address is the writer's")
+  assert(identity.chainId === writer.chainId, "the chain id is the writer's")
+})
+
 const entityKey = await step("POST /create — typed attributes and base64 payload", async () => {
   const result = await ok("/create", {
     payload: b64(payload),

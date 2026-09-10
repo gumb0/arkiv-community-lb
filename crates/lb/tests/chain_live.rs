@@ -85,11 +85,14 @@ async fn records_are_written_read_back_changed_and_expire() {
     assert_eq!(stored.expires_at, kept.expires_at);
     assert_eq!(stored.record, agreement);
     assert_eq!(reader.count(&query).await.expect("count"), 2);
+    // The address the sidecar claims is the creator the chain recorded.
+    let identity = writer.identity().await.expect("identity");
+    assert_eq!(identity.address, stored.creator);
     let balance = reader.balance(stored.creator).await.expect("balance");
     assert!(balance > U256::ZERO, "the writer's key is funded");
     println!(
-        "read back, creator {:#x} holding {balance} wei",
-        stored.creator
+        "read back, creator {:#x} on chain {} holding {balance} wei",
+        stored.creator, identity.chain_id
     );
 
     // The refresh path: an extend in a batch, before the short lifetime

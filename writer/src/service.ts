@@ -6,7 +6,11 @@
 // wait their turn. Batching stays the caller's job — send one /execute-batch body
 // instead of many single-op requests when atomicity or cost matters.
 //
-// Wire format (all routes are POST, bodies and responses are JSON):
+// One read route, GET /identity, answers { address, chainId }: the signing
+// key's address, which the LB never holds itself, and the chain it writes
+// to. Everything else is a write.
+//
+// Wire format (write routes are POST, bodies and responses are JSON):
 //   payload      base64 string
 //   entity keys  0x-prefixed hex strings
 //   attributes   { name: { type: "str"|"bool"|"i32"|"u64"|"u256"|"dec"|
@@ -275,6 +279,9 @@ export function startService(writer: Writer, options: ServiceOptions = {}): Prom
       respond(status, { error: chain })
     }
 
+    if (request.method === "GET" && request.url === "/identity") {
+      return respond(200, { address: writer.address, chainId: writer.chainId })
+    }
     const route = routes[request.url ?? ""]
     if (request.method !== "POST" || !route) {
       return respondError(404, new Error(`no POST route ${request.url}`))

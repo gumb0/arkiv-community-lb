@@ -1,7 +1,8 @@
 //! The client for the chain-writer sidecar (`docs/CHAIN_WRITER.md`): five
-//! POST routes, JSON bodies, and three outcomes for every write. A 504 is
-//! the one to handle with care: the transaction was sent and may still
-//! land, so the caller polls its hash and never resends.
+//! POST routes, JSON bodies, and three outcomes for every write, plus one
+//! GET that tells who the sidecar writes as. A 504 is the one to handle
+//! with care: the transaction was sent and may still land, so the caller
+//! polls its hash and never resends.
 
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ use base64::Engine;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-use super::records::{Attributes, EncodedRecord, EntityKey};
+use super::records::{Address, Attributes, EncodedRecord, EntityKey};
 
 /// Above the sidecar's own 180 s receipt wait, so its 504 arrives before
 /// this client gives up.
@@ -186,6 +187,15 @@ fn deserialize_decimal<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Res
     text.parse().map_err(serde::de::Error::custom)
 }
 
+/// Who the sidecar writes as: the address of the key it holds, and the
+/// chain it writes to. The LB reads its own records by this address.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Identity {
+    pub address: Address,
+    pub chain_id: u64,
+}
+
 /// One link of the sidecar's walked error chain.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ErrorLink {
@@ -246,6 +256,27 @@ impl Writer {
     /// per request, so sharing it with shorter-lived reads is fine.
     pub fn new(client: reqwest::Client, base: Url) -> Self {
         Self { client, base }
+    }
+
+    /// The one read on the sidecar. Answered from memory, so a short
+    /// wait is enough, and a failure means the sidecar is not there.
+    pub async fn identity(&self) -> Result<Identity, WriteError> {
+        let url = self
+            .base
+            .join("identity")
+            .expect("a route joins onto the base");
+        let response = self
+            .client
+            .get(url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await?;
+        let status = response.status().as_u16();
+        let text = response.text().await?;
+        if status != 200 {
+            return Err(WriteError::Unexpected { status, body: text });
+        }
+        serde_json::from_str(&text).map_err(|_| WriteError::Unexpected { status, body: text })
     }
 
     pub async fn create(&self, create: &Create) -> Result<Created, WriteError> {

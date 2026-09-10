@@ -321,6 +321,19 @@ describe("routing", () => {
   })
 })
 
+describe("identity", () => {
+  it("GET /identity tells the signing address and the chain", async () => {
+    const response = await fetch(`${base}/identity`)
+    equal(response.status, 200)
+    deepEqual(await response.json(), { address: ADDRESS, chainId: 7733102 })
+  })
+
+  it("a POST on /identity is 404", async () => {
+    const { status } = await post("/identity", {})
+    equal(status, 404)
+  })
+})
+
 describe("startup", () => {
   it("rejects when the port is taken, rather than hanging", async () => {
     // The listener that carries this error to the caller is detached once the

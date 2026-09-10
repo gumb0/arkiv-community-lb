@@ -8,7 +8,13 @@ use std::{
 };
 
 use alloy_primitives::{Address, B256};
-use axum::{Router, body::Bytes, http::StatusCode, response::IntoResponse, routing::post};
+use axum::{
+    Router,
+    body::Bytes,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+};
 use lb::chain::{
     records::{Agreement, Record, Wei},
     writer::{Batch, Create, Delete, Expiry, Extend, Patch, WriteError, Writer},
@@ -17,6 +23,8 @@ use serde_json::{Value, json};
 
 const KEY: &str = "0x8863000000000000000000000000000000000000000000000000000000009057";
 const TX: &str = "0x925d000000000000000000000000000000000000000000000000000000000033c7";
+/// The fake sidecar's signing address, checksummed as viem reports it.
+const SIDECAR_ADDRESS: &str = "0xCA4B166EE155Cb2816Dc25f94Dc1fD102a26c997";
 
 struct Sidecar {
     /// Every request: route and decoded body.
@@ -31,20 +39,27 @@ async fn sidecar(status: StatusCode, response: Value) -> (Writer, Arc<Sidecar>) 
         status,
         response,
     });
-    let app = Router::new().route(
-        "/{route}",
-        post({
-            let state = state.clone();
-            move |axum::extract::Path(route): axum::extract::Path<String>, body: Bytes| {
+    let app = Router::new()
+        .route(
+            "/identity",
+            get(|| async {
+                axum::Json(json!({ "address": SIDECAR_ADDRESS, "chainId": 7_733_102 }))
+            }),
+        )
+        .route(
+            "/{route}",
+            post({
                 let state = state.clone();
-                async move {
-                    let body: Value = serde_json::from_slice(&body).expect("json body");
-                    state.seen.lock().expect("seen").push((route, body));
-                    (state.status, axum::Json(state.response.clone())).into_response()
+                move |axum::extract::Path(route): axum::extract::Path<String>, body: Bytes| {
+                    let state = state.clone();
+                    async move {
+                        let body: Value = serde_json::from_slice(&body).expect("json body");
+                        state.seen.lock().expect("seen").push((route, body));
+                        (state.status, axum::Json(state.response.clone())).into_response()
+                    }
                 }
-            }
-        }),
-    );
+            }),
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -71,6 +86,21 @@ fn agreement() -> Create {
 
 fn key() -> B256 {
     KEY.parse().expect("key")
+}
+
+#[tokio::test]
+async fn the_identity_is_the_signing_address_and_the_chain() {
+    let (writer, sidecar) = sidecar(StatusCode::OK, json!({})).await;
+    let identity = writer.identity().await.expect("identity");
+    assert_eq!(
+        identity.address,
+        SIDECAR_ADDRESS.parse::<Address>().expect("address")
+    );
+    assert_eq!(identity.chain_id, 7_733_102);
+    assert!(
+        sidecar.seen.lock().expect("seen").is_empty(),
+        "a read, not a write"
+    );
 }
 
 #[tokio::test]

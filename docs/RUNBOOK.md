@@ -70,7 +70,11 @@ them:
      ```
 
      Providers may be listed before their tunnels exist; they sit
-     ineligible until the node connects.
+     ineligible until the node connects. Under `[marketplace]`, set
+     `wei_per_call` (the price) and `tunnel_server` (this box's public
+     address and the frps port); the section's other values are
+     defaults. Delete the whole section for an LB on static providers
+     alone.
 4. `docker compose up -d --build` — the first build downloads the base
    images and compiles for a few minutes.
 5. Verify from the box: `curl -s 127.0.0.1:9545/health` and `/nodes`,
@@ -117,6 +121,16 @@ in `/nodes`.
 ## Troubleshooting
 
 Symptom, then where to look.
+
+- **The LB exits at start with `the marketplace agent could not
+  start`.** With `[marketplace]` configured, a start reads the LB's
+  records from the reference and asks the sidecar for its address, and
+  refuses to run without either; compose keeps retrying. A running LB
+  is not affected by a hub outage, so do not restart or deploy during
+  one. Check `docker compose logs writer`, then `ARKIV_RPC_URL` as
+  below. To bring the endpoint back before the hub does, delete the
+  `[marketplace]` section: the LB then serves the static providers
+  alone.
 
 - **A provider never turns eligible.** `/nodes` says why in
   `ineligibility_reason`:

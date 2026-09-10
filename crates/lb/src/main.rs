@@ -25,6 +25,7 @@ async fn main() {
         .ok()
         .filter(|key| !key.is_empty());
     let providers = config.providers.len();
+    let marketplace = config.marketplace.is_some();
 
     let service = match lb::service::start(config).await {
         Ok(service) => service,
@@ -34,6 +35,7 @@ async fn main() {
         public = %service.public_addr,
         admin = %service.admin_addr,
         providers,
+        marketplace,
         "arkiv-lb started"
     );
 

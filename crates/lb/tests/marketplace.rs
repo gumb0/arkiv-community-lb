@@ -300,3 +300,125 @@ async fn refuses_to_start_when_the_records_do_not_fit_one_page() {
         "a refused start writes nothing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The service wiring
+
+fn service_config() -> lb::config::Config {
+    let mut config = lb::config::Config::default();
+    config.listen.public = "127.0.0.1:0".parse().expect("addr");
+    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    config.health.disable_probing = true;
+    config.marketplace = Some(marketplace());
+    config
+}
+
+async fn nodes(service: &lb::service::Service) -> serde_json::Value {
+    reqwest::get(format!("http://{}/nodes", service.admin_addr))
+        .await
+        .expect("nodes answers")
+        .json()
+        .await
+        .expect("json")
+}
+
+#[tokio::test]
+async fn the_service_starts_the_agent_when_the_section_is_present() {
+    let chain = FakeChain::new(LB, 1337);
+    let key = seed_agreement(&chain, provider(1), 20007, 3600);
+    let mut config = service_config();
+    config.providers = vec![lb::config::Provider {
+        id: "static-1".to_owned(),
+        url: "http://127.0.0.1:18545".to_owned(),
+    }];
+    let service = lb::service::start_with(config, Some((chain.clone(), chain.clone())))
+        .await
+        .expect("starts");
+
+    // The static provider and the marketplace one share the pool.
+    let nodes = nodes(&service).await;
+    assert_eq!(nodes.as_array().expect("a list").len(), 2);
+    assert_eq!(nodes[0]["id"], "static-1");
+    assert_eq!(nodes[1]["id"], format!("{:#x}", provider(1)));
+    assert_eq!(nodes[1]["url"], "http://127.0.0.1:20007/");
+    assert_eq!(nodes[1]["eligible"], false);
+    assert!(chain.entity(key).is_some());
+    assert!(
+        matches!(chain.transactions().as_slice(), [Transaction::Create(_)]),
+        "the listing was written, nothing else"
+    );
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn without_the_section_the_chain_is_never_touched() {
+    let chain = FakeChain::new(LB, 1337);
+    let mut config = service_config();
+    config.marketplace = None;
+    let service = lb::service::start_with(config, Some((chain.clone(), chain.clone())))
+        .await
+        .expect("starts");
+    assert!(chain.transactions().is_empty());
+    assert_eq!(nodes(&service).await, serde_json::json!([]));
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_marketplace_refuses_to_start_without_the_reference_url() {
+    let config = service_config();
+    assert!(config.reference.is_none());
+    let error = lb::service::start(config).await.expect_err("refuses");
+    assert!(error.to_string().contains("ARKIV_RPC_URL"), "{error}");
+}
+
+#[tokio::test]
+async fn the_service_refuses_to_start_when_the_sidecar_is_down() {
+    let chain = FakeChain::new(LB, 1337);
+    chain.fail_sidecar("connection refused");
+    let error = lb::service::start_with(service_config(), Some((chain.clone(), chain.clone())))
+        .await
+        .expect_err("refuses");
+    assert!(
+        matches!(
+            error,
+            lb::service::StartError::Marketplace(StartError::Sidecar(_))
+        ),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn a_chain_id_that_disagrees_with_the_sidecar_refuses_to_start() {
+    let chain = FakeChain::new(LB, 1337);
+    let mut config = service_config();
+    config.health.chain_id = Some(7);
+    let error = lb::service::start_with(config, Some((chain.clone(), chain.clone())))
+        .await
+        .expect_err("refuses");
+    assert!(matches!(
+        error,
+        lb::service::StartError::ChainMismatch {
+            configured: 7,
+            actual: 1337
+        }
+    ));
+    assert!(error.to_string().contains("1337"), "{error}");
+
+    let mut config = service_config();
+    config.health.chain_id = Some(1337);
+    let service = lb::service::start_with(config, Some((chain.clone(), chain.clone())))
+        .await
+        .expect("the matching chain id starts");
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_unparsable_writer_url_refuses_to_start() {
+    let mut config = service_config();
+    config.reference = Some("http://127.0.0.1:1".to_owned());
+    config.marketplace.as_mut().expect("present").writer_url = "not a url".to_owned();
+    // Refused at the parse, before anything is contacted.
+    let error = lb::service::start(config).await.expect_err("refuses");
+    assert!(error.to_string().contains("writer_url"), "{error}");
+    assert!(error.to_string().contains("not a url"), "{error}");
+}

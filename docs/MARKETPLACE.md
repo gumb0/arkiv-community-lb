@@ -166,8 +166,9 @@ The LB keeps no marketplace state that is not on the chain. At startup
 it reads its agreement records and its open counters record and
 continues from there; the tunnel server rejects logins until that has
 finished, and tunnel clients retry on their own. With the marketplace
-enabled, the LB refuses to start if it cannot reach the chain; a
-configuration switch runs it on statically configured providers alone.
+configured, the LB refuses to start if it cannot reach the chain or the
+sidecar; a configuration without the marketplace section runs it on
+statically configured providers alone.
 
 If the network is reset, every record is gone. The LB is restarted and
 starts from nothing: it writes its listing again and waits for offers.

@@ -2,11 +2,17 @@
 # chain-smoke.sh — the Rust chain path's live smoke (tests/chain_live.rs)
 # against a throwaway chain on this machine: a dev node sealing every 2 s,
 # so the test's lifetimes in seconds mean what they mean on the devnet,
-# and the sidecar in front of it with the dev chain's key. Leaves a node
-# that was already up alone.
+# and the sidecar in front of it with the dev chain's key. A node that is
+# already up may seal at another rate, which would turn the test's
+# lifetimes into different wall time, so the run refuses to use one.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
+
+if ./scripts/dev-node.sh url >/dev/null 2>&1; then
+  echo "a dev node is already up; stop it first (scripts/dev-node.sh stop)" >&2
+  exit 1
+fi
 
 # First account of the standard test mnemonic, funded by --dev. Public
 # knowledge, and the chain it spends on lasts as long as this run.
@@ -19,20 +25,16 @@ export DEV_NODE_BLOCK_TIME=2s
 export WRITER_PORT=8561
 export WRITER_URL="http://127.0.0.1:${WRITER_PORT}/"
 
-started_here=0
 sidecar=
 cleanup() {
   set +e
   [ -n "$sidecar" ] && kill "$sidecar" 2>/dev/null
   rm -f "$WRITER_PRIVATE_KEY_FILE"
-  [ "$started_here" = 1 ] && "$root/scripts/dev-node.sh" stop >/dev/null
+  "$root/scripts/dev-node.sh" stop >/dev/null
 }
 trap cleanup EXIT
 
-if ! ./scripts/dev-node.sh url >/dev/null 2>&1; then
-  ./scripts/dev-node.sh start
-  started_here=1
-fi
+./scripts/dev-node.sh start
 ARKIV_RPC_URL="$(./scripts/dev-node.sh url)"
 export ARKIV_RPC_URL
 

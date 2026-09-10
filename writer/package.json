@@ -6,18 +6,18 @@
   "description": "Chain-writer sidecar for the Arkiv community LB: schema-blind entity operations over the official SDK, and the HTTP service around them.",
   "scripts": {
     "probes": "npm run writer-smoke && npm run service-smoke && npm run queries && npm run batch && npm run permanent && npm run concurrency && npm run page-budget",
-    "page-budget": "node --env-file-if-exists=../.env --import tsx probes/page-budget.ts",
-    "create-dup": "node --env-file-if-exists=../.env --import tsx probes/create-dup.ts",
-    "writer-smoke": "node --env-file-if-exists=../.env --import tsx probes/writer-smoke.ts",
-    "test": "node --test --import tsx \"tests/*.test.ts\"",
+    "page-budget": "node --env-file-if-exists=../.env probes/page-budget.ts",
+    "create-dup": "node --env-file-if-exists=../.env probes/create-dup.ts",
+    "writer-smoke": "node --env-file-if-exists=../.env probes/writer-smoke.ts",
+    "test": "node --test \"tests/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "service": "node --env-file-if-exists=../.env --import tsx src/service.ts",
-    "service-smoke": "node --env-file-if-exists=../.env --import tsx probes/service-smoke.ts",
-    "batch": "node --env-file-if-exists=../.env --import tsx probes/batch-experiment.ts",
-    "permanent": "node --env-file-if-exists=../.env --import tsx probes/permanent-probe.ts",
-    "queries": "node --env-file-if-exists=../.env --import tsx probes/queries.ts",
-    "concurrency": "node --env-file-if-exists=../.env --import tsx probes/concurrency-probe.ts",
-    "replay": "node --env-file-if-exists=../.env --import tsx probes/replay-probe.ts"
+    "service": "node --env-file-if-exists=../.env src/service.ts",
+    "service-smoke": "node --env-file-if-exists=../.env probes/service-smoke.ts",
+    "batch": "node --env-file-if-exists=../.env probes/batch-experiment.ts",
+    "permanent": "node --env-file-if-exists=../.env probes/permanent-probe.ts",
+    "queries": "node --env-file-if-exists=../.env probes/queries.ts",
+    "concurrency": "node --env-file-if-exists=../.env probes/concurrency-probe.ts",
+    "replay": "node --env-file-if-exists=../.env probes/replay-probe.ts"
   },
   "dependencies": {
     "@arkiv-network/sdk": "0.8.0-dev.3",
@@ -25,7 +25,6 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
     "typescript": "^5.5.0"
   }
 }

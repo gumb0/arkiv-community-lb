@@ -40,7 +40,7 @@ pub struct Create {
     content_type: &'static str,
     #[serde(serialize_with = "serialize_attributes")]
     attributes: Attributes,
-    pub expires: Expiry,
+    expires: Expiry,
 }
 
 impl Create {
@@ -196,10 +196,10 @@ pub struct ErrorLink {
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
     /// 400: the body did not decode; nothing was sent.
-    #[error("the sidecar refused the request: {}", chain(.0))]
+    #[error("the sidecar refused the request: {}", causes(.0))]
     Refused(Vec<ErrorLink>),
     /// 500: the transaction reverted or could not be sent.
-    #[error("the write failed: {}", chain(.0))]
+    #[error("the write failed: {}", causes(.0))]
     Failed(Vec<ErrorLink>),
     /// 504: sent, no receipt in time. It may still land — poll the hash,
     /// never resend.
@@ -214,7 +214,7 @@ pub enum WriteError {
     Transport(#[from] reqwest::Error),
 }
 
-fn chain(links: &[ErrorLink]) -> String {
+fn causes(links: &[ErrorLink]) -> String {
     links
         .iter()
         .map(|link| format!("{}: {}", link.name, link.message))

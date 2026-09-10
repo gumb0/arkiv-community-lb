@@ -131,7 +131,8 @@ impl AttributeValue {
     }
 }
 
-fn parse_u64(value: &serde_json::Value) -> Option<u64> {
+/// A 64-bit number as a JSON number, a decimal string, or a hex quantity.
+pub(crate) fn parse_u64(value: &serde_json::Value) -> Option<u64> {
     if let Some(n) = value.as_u64() {
         return Some(n);
     }

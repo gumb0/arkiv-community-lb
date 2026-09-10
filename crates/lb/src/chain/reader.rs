@@ -9,7 +9,7 @@ use reqwest::{Url, header};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::records::{ArkivEntity, SCHEMA_VERSION};
+use super::records::{ArkivEntity, SCHEMA_VERSION, parse_u64};
 
 /// The node's page maximum. Asking for more is an error, not a smaller
 /// page, so no read ever asks for more.
@@ -137,7 +137,7 @@ impl Reader {
     /// The head height.
     pub async fn block_number(&self) -> Result<u64, ReadError> {
         let result = self.call("eth_blockNumber", json!([])).await?;
-        quantity(&result)
+        parse_u64(&result).ok_or_else(|| ReadError::Unexpected(format!("not a quantity: {result}")))
     }
 
     /// An account's balance in wei, at the head. The LB asks about its
@@ -215,15 +215,6 @@ impl Reader {
             .result
             .ok_or_else(|| ReadError::Unexpected("neither result nor error".to_owned()))
     }
-}
-
-/// A JSON-RPC quantity: `0x`-prefixed hex.
-fn quantity(value: &Value) -> Result<u64, ReadError> {
-    value
-        .as_str()
-        .and_then(|text| text.strip_prefix("0x"))
-        .and_then(|hex| u64::from_str_radix(hex, 16).ok())
-        .ok_or_else(|| ReadError::Unexpected(format!("not a hex quantity: {value}")))
 }
 
 #[cfg(test)]

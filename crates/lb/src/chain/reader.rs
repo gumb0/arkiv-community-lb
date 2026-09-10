@@ -9,7 +9,7 @@ use reqwest::{Url, header};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::records::ArkivEntity;
+use super::records::{ArkivEntity, SCHEMA_VERSION};
 
 /// The node's page maximum. Asking for more is an error, not a smaller
 /// page, so no read ever asks for more.
@@ -18,13 +18,17 @@ pub const PAGE_LIMIT: u64 = 200;
 /// A filter for `arkiv_query`, in the node's query language. Built from
 /// typed parts so that attribute names and literal syntax are written in
 /// one place; the text is conditions joined by `AND`. Every query starts
-/// from a record kind.
+/// from a record kind at the schema version this code understands, so
+/// a newer record never takes a row of the page or a unit of the count.
 #[derive(Debug, Clone)]
 pub struct Query(Vec<String>);
 
 impl Query {
     pub fn kind(kind: &str) -> Self {
-        Self(vec![format!("kind = str('{}')", escape(kind))])
+        Self(vec![
+            format!("kind = str('{}')", escape(kind)),
+            format!("v = i32({SCHEMA_VERSION})"),
+        ])
     }
 
     pub fn creator(mut self, creator: Address) -> Self {
@@ -238,7 +242,8 @@ mod tests {
             .expires_by(87_400);
         assert_eq!(
             query.text(),
-            "kind = str('rpc.offer') AND lb = addr(0x411e31d7ebbfd636af234954db5f598cd80a878c) \
+            "kind = str('rpc.offer') AND v = i32(1) \
+             AND lb = addr(0x411e31d7ebbfd636af234954db5f598cd80a878c) \
              AND $expiresAt > u64(1000) AND $expiresAt <= u64(87400)"
         );
     }
@@ -247,7 +252,7 @@ mod tests {
     fn a_quote_in_a_string_literal_is_doubled() {
         assert_eq!(
             Query::kind("it's").attr_str("state", "o'k").text(),
-            "kind = str('it''s') AND state = str('o''k')"
+            "kind = str('it''s') AND v = i32(1) AND state = str('o''k')"
         );
     }
 

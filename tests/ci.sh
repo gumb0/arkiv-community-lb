@@ -15,4 +15,10 @@ cargo clippy --all-targets --all-features -- -D warnings
 note "tests"
 cargo test --all-targets
 
+# The image builds the lb crate alone, where no sibling crate's features
+# are unified in; a feature the crate needs but does not name fails
+# there and nowhere above.
+note "lb crate on its own"
+cargo check -p lb --locked
+
 note "all green"

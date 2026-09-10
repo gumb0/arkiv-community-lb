@@ -203,6 +203,21 @@ pub struct ErrorLink {
     pub message: String,
 }
 
+/// What the LB writes to the chain, through the sidecar. `Writer` is the
+/// real one; a test implements it over an in-memory store. Extends go
+/// through batches only, since the refresh is the one caller. The
+/// futures are `Send` so a generic caller can run under `tokio::spawn`.
+pub trait ChainWriter: Send + Sync {
+    fn identity(&self) -> impl Future<Output = Result<Identity, WriteError>> + Send;
+    fn create(&self, create: &Create) -> impl Future<Output = Result<Created, WriteError>> + Send;
+    fn patch(&self, patch: &Patch) -> impl Future<Output = Result<Written, WriteError>> + Send;
+    fn delete(&self, delete: &Delete) -> impl Future<Output = Result<Written, WriteError>> + Send;
+    fn execute_batch(
+        &self,
+        batch: &Batch,
+    ) -> impl Future<Output = Result<BatchResult, WriteError>> + Send;
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
     /// 400: the body did not decode; nothing was sent.
@@ -331,6 +346,28 @@ impl Writer {
             },
             _ => WriteError::Unexpected { status, body: text },
         })
+    }
+}
+
+impl ChainWriter for Writer {
+    async fn identity(&self) -> Result<Identity, WriteError> {
+        Writer::identity(self).await
+    }
+
+    async fn create(&self, create: &Create) -> Result<Created, WriteError> {
+        Writer::create(self, create).await
+    }
+
+    async fn patch(&self, patch: &Patch) -> Result<Written, WriteError> {
+        Writer::patch(self, patch).await
+    }
+
+    async fn delete(&self, delete: &Delete) -> Result<Written, WriteError> {
+        Writer::delete(self, delete).await
+    }
+
+    async fn execute_batch(&self, batch: &Batch) -> Result<BatchResult, WriteError> {
+        Writer::execute_batch(self, batch).await
     }
 }
 

@@ -120,6 +120,16 @@ pub struct Page {
     pub more: bool,
 }
 
+/// What the LB reads from the chain. `Reader` is the real one; a test
+/// implements it over an in-memory store. The futures are `Send` so a
+/// generic caller can run under `tokio::spawn`.
+pub trait ChainReader: Send + Sync {
+    fn block_number(&self) -> impl Future<Output = Result<u64, ReadError>> + Send;
+    fn balance(&self, account: Address) -> impl Future<Output = Result<U256, ReadError>> + Send;
+    fn query(&self, query: &Query) -> impl Future<Output = Result<Page, ReadError>> + Send;
+    fn count(&self, query: &Query) -> impl Future<Output = Result<u64, ReadError>> + Send;
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
     #[error("the reference could not be reached: {0}")]
@@ -251,6 +261,24 @@ impl Reader {
         response
             .result
             .ok_or_else(|| ReadError::Unexpected("neither result nor error".to_owned()))
+    }
+}
+
+impl ChainReader for Reader {
+    async fn block_number(&self) -> Result<u64, ReadError> {
+        Reader::block_number(self).await
+    }
+
+    async fn balance(&self, account: Address) -> Result<U256, ReadError> {
+        Reader::balance(self, account).await
+    }
+
+    async fn query(&self, query: &Query) -> Result<Page, ReadError> {
+        Reader::query(self, query).await
+    }
+
+    async fn count(&self, query: &Query) -> Result<u64, ReadError> {
+        Reader::count(self, query).await
     }
 }
 

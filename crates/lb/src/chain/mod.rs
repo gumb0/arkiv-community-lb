@@ -5,3 +5,6 @@
 pub mod reader;
 pub mod records;
 pub mod writer;
+
+pub use reader::ChainReader;
+pub use writer::ChainWriter;

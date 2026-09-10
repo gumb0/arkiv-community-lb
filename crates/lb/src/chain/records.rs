@@ -59,6 +59,10 @@ pub enum RecordError {
     },
     #[error("payload is not valid JSON for this record: {0}")]
     Payload(String),
+    #[error("not a {0} record")]
+    NotThisRecord(&'static str),
+    #[error("schema version {0}, this code reads {SCHEMA_VERSION}")]
+    Version(i32),
 }
 
 /// A typed attribute value. The tag names are the SDK's; the JSON shapes
@@ -181,6 +185,13 @@ impl Attributes {
         }
     }
 
+    fn i32(&self, name: &'static str) -> Result<i32, RecordError> {
+        match self.present(name)? {
+            AttributeValue::I32(n) => Ok(*n),
+            other => Err(other.mismatch(name, "i32")),
+        }
+    }
+
     fn u64(&self, name: &'static str) -> Result<u64, RecordError> {
         match self.present(name)? {
             AttributeValue::U64(n) => Ok(*n),
@@ -245,16 +256,13 @@ impl ArkivEntity {
         )
     }
 
-    /// Whether this entity is a record of the given kind at the schema
-    /// version this code understands. Anything else is skipped, never
-    /// parsed: a reader must not misread a newer record.
+    /// Whether this entity is a record of the given kind, at any schema
+    /// version.
     pub fn is(&self, kind: &str) -> bool {
-        let attributes = self.attributes();
-        let same_kind = match attributes.get("kind") {
+        match self.attributes().get("kind") {
             Some(AttributeValue::Str(found)) => found == kind,
             _ => false,
-        };
-        same_kind && attributes.get("v") == Some(&AttributeValue::I32(SCHEMA_VERSION))
+        }
     }
 
     fn payload<T: DeserializeOwned>(&self) -> Result<T, RecordError> {
@@ -275,7 +283,24 @@ pub struct EncodedRecord {
 pub trait Record: Sized {
     const KIND: &'static str;
     fn encode(&self) -> EncodedRecord;
-    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError>;
+    /// The record's own fields, from an entity already known to be of
+    /// this kind and version.
+    fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError>;
+
+    /// Decodes an entity of this kind at the schema version this code
+    /// reads, and refuses any other, each for its own reason: a reader
+    /// must not misread a newer record, and the message should say
+    /// that it is newer.
+    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
+        if !entity.is(Self::KIND) {
+            return Err(RecordError::NotThisRecord(Self::KIND));
+        }
+        let version = entity.attributes().i32("v")?;
+        if version != SCHEMA_VERSION {
+            return Err(RecordError::Version(version));
+        }
+        Self::decode_fields(entity)
+    }
 }
 
 /// A record together with what the chain added to it: its key, its
@@ -324,7 +349,7 @@ impl Record for LbListing {
         encode(Attributes::new(Self::KIND), self)
     }
 
-    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
+    fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
         entity.payload()
     }
 }
@@ -371,7 +396,7 @@ impl Record for Offer {
         )
     }
 
-    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
+    fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let lb = entity.attributes().addr("lb")?;
         let payload: OfferPayload = entity.payload()?;
         Ok(Self {
@@ -410,7 +435,7 @@ impl Record for Agreement {
         )
     }
 
-    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
+    fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let provider = entity.attributes().addr("provider")?;
         let payload: AgreementPayload = entity.payload()?;
         Ok(Self {
@@ -477,7 +502,7 @@ impl Record for Counters {
         )
     }
 
-    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
+    fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let attributes = entity.attributes();
         let period = attributes.u64("period")?;
         let state = match attributes.str("state")? {
@@ -548,7 +573,7 @@ impl Record for Receipt {
         )
     }
 
-    fn decode(entity: &ArkivEntity) -> Result<Self, RecordError> {
+    fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let attributes = entity.attributes();
         let payload: ReceiptPayload = entity.payload()?;
         Ok(Self {
@@ -826,21 +851,45 @@ mod tests {
     }
 
     #[test]
-    fn another_kind_or_version_is_not_this_record() {
+    fn another_kind_is_not_this_record() {
+        let entity = read_back(
+            &LbListing {
+                wei_per_call: Wei::new(1),
+                tunnel_server: "h:1".to_owned(),
+                max_providers: 1,
+            }
+            .encode(),
+        );
+        assert!(!entity.is(KIND_OFFER));
+        assert_eq!(
+            Offer::decode(&entity),
+            Err(RecordError::NotThisRecord(KIND_OFFER))
+        );
+    }
+
+    #[test]
+    fn another_schema_version_is_refused_by_name() {
         let encoded = LbListing {
             wei_per_call: Wei::new(1),
             tunnel_server: "h:1".to_owned(),
             max_providers: 1,
         }
         .encode();
-        let entity = read_back(&encoded);
-        assert!(!entity.is(KIND_OFFER));
-
-        let newer = EncodedRecord {
+        let newer = read_back(&EncodedRecord {
             attributes: encoded.attributes.clone().with("v", AttributeValue::I32(2)),
             payload: encoded.payload.clone(),
-        };
-        assert!(!read_back(&newer).is(KIND_LB_LISTING));
+        });
+        assert!(newer.is(KIND_LB_LISTING), "the kind is right");
+        let error = Stored::<LbListing>::decode(&newer).unwrap_err();
+        assert_eq!(error, RecordError::Version(2));
+        assert_eq!(error.to_string(), "schema version 2, this code reads 1");
+
+        let mut unversioned = encoded;
+        unversioned.attributes.0.remove("v");
+        assert_eq!(
+            LbListing::decode(&read_back(&unversioned)),
+            Err(RecordError::MissingAttribute("v"))
+        );
     }
 
     #[test]

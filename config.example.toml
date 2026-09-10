@@ -1,6 +1,7 @@
 # arkiv-lb configuration. Copy to config.toml and adjust; every value
 # shown here is the default, so any line you do not change can be
-# deleted. The file is read once at startup — restart to apply changes.
+# deleted — except the two marked "yours to set" under [marketplace].
+# The file is read once at startup — restart to apply changes.
 #
 # The Arkiv reference endpoint is NOT configured here: the LB reads
 # ARKIV_RPC_URL and ARKIV_API_KEY from the environment — the same two
@@ -59,6 +60,59 @@ max_request_size = "2MiB"
 # so a breach is either an unusually heavy query or a misbehaving
 # provider.
 max_response_size = "64MiB"
+
+# The marketplace runs when this section is present. Without it the LB
+# runs on the static providers listed at the end alone: no discovery,
+# no listing, no tunnel admission, and no Arkiv endpoint needed at
+# startup. For local runs and proxy-only tests.
+[marketplace]
+# The chain-writer sidecar (docs/CHAIN_WRITER.md), which signs this LB's
+# entity writes; loopback in the compose stack.
+writer_url = "http://127.0.0.1:8560/"
+# The price, in GLM wei per completed request, as a decimal string.
+# Published in the LB listing and copied into every agreement record
+# at acceptance; changing it here changes new agreements only. Yours to
+# set: there is no default, the value below is an example.
+wei_per_call = "1000000000000000"
+# The address providers' tunnel clients dial, "host:port": this host's
+# public address and the tunnel server's port (7000 in the stack).
+# Published in the LB listing. Yours to set, like the price.
+tunnel_server = "203.0.113.10:7000"
+# Agreement slots. At the cap a valid offer waits and expires on its
+# own. Below 200: the agreement records are reloaded in one page at
+# startup, and the LB refuses to start otherwise.
+max_providers = 100
+# One loopback port on this host per slot, assigned at acceptance and
+# written into the agreement record; the tunnel server binds them. The
+# ports run from here up, max_providers of them.
+remote_port_start = 20000
+# How often the LB looks for new offers, so the longest a freshly
+# posted offer waits before it is accepted. Every look is one read at
+# the metered reference endpoint, which is what keeps this at minutes.
+discovery_interval = "5m"
+# An accepted provider's first lifetime: the time it has to connect
+# its tunnel before its slot frees up again.
+# An even number of seconds: lifetimes are whole blocks of two seconds.
+accept_window = "2h"
+# How often the listing and every eligible provider's agreement record
+# are extended, in one transaction.
+refresh_interval = "1h"
+# What each refresh extends a record to, from now: a provider stays
+# under agreement through an LB outage this long. If a provider
+# becomes ineligible, its agreement expires after this time.
+# An even number of seconds: lifetimes are whole blocks of two seconds.
+agreement_life = "3d"
+# Spam protection. Offers expiring further out than this are ignored,
+# so nobody can post a page of long-lived offers once and crowd real
+# ones out of discovery for good; re-posting costs gas every time.
+# An even number of seconds: lifetimes are whole blocks of two seconds.
+offer_max_lifetime = "2d"
+# An offer whose reported head is further behind the reference than
+# this is ignored.
+offer_max_lag_blocks = 1000
+# The signing key's balance, in GLM, below which every refresh logs a
+# warning.
+gas_warn_below = "0.02"
 
 # One block per provider. id is the stable handle (lowercase letters,
 # digits, '-') used in logs, /nodes and /node/{id}; a tunneled provider

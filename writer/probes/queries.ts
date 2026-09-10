@@ -7,26 +7,18 @@
 // Fixtures are tagged with a unique run id and every probe is scoped to it;
 // cleanup runs in a finally block.
 //
-// Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
+// Env: WRITER_PRIVATE_KEY_FILE, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
 // an Authorization: Bearer header).
 // Run: npm run queries
 
 import { dec, ExpirationTime, i32, jsonToPayload, key, str, u256 } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
+import { env, privateKeyFromFile } from "../src/env.ts"
 
 const FIXTURES = 30
 const TTL = ExpirationTime.fromBlocks(300) // blocks, so a faster chain means the same thing
 const RUN = `r${Date.now().toString(36)}`
-
-function env(name: string, required = true): string {
-  const value = process.env[name] ?? ""
-  if (required && !value) {
-    console.error(`missing env var ${name} (see .env.example)`)
-    process.exit(1)
-  }
-  return value
-}
 
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
@@ -78,7 +70,7 @@ async function probe(name: string, q: string, expected: number, options?: Record
 const writer = await createWriter({
   rpcUrl,
   apiKey: apiKey || undefined,
-  privateKey: env("WRITER_PRIVATE_KEY") as Hex,
+  privateKey: privateKeyFromFile(),
 })
 console.log(`query probe: run ${RUN}, address ${writer.address}, chain ${writer.chainId}\n`)
 

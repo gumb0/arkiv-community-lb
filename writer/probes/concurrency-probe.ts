@@ -4,7 +4,7 @@
 // shape); phase 3 races again with viem's nonceManager on the account.
 // Observational: outcomes are printed in full, only cleanup is asserted.
 //
-// Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
+// Env: WRITER_PRIVATE_KEY_FILE, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
 // an Authorization: Bearer header).
 // Run: npm run concurrency
 
@@ -12,22 +12,14 @@ import { createWalletClient, ExpirationTime, jsonToPayload, str } from "@arkiv-n
 import { createPublicClient, defineChain, http, type Chain, type Hex } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { nonceManager } from "viem/nonce"
+import { env, privateKeyFromFile } from "../src/env.ts"
 
 const TTL = ExpirationTime.fromBlocks(150) // blocks, so a faster chain means the same thing
 const RUN = `r${Date.now().toString(36)}`
 
-function env(name: string, required = true): string {
-  const value = process.env[name] ?? ""
-  if (required && !value) {
-    console.error(`missing env var ${name} (see .env.example)`)
-    process.exit(1)
-  }
-  return value
-}
-
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
-const privateKey = env("WRITER_PRIVATE_KEY") as Hex
+const privateKey = privateKeyFromFile()
 
 async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
   const res = await fetch(rpcUrl, {

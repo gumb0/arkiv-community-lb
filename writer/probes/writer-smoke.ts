@@ -2,27 +2,19 @@
 // Reads stay raw JSON-RPC on purpose: they validate the read path the
 // LB itself will use, not the SDK's reader.
 //
-// Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
+// Env: WRITER_PRIVATE_KEY_FILE, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
 // an Authorization: Bearer header).
 // Run: npm run writer-smoke
 
 import { ExpirationTime, i32, jsonToPayload, str } from "@arkiv-network/sdk"
 import { toHex, type Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
+import { env, privateKeyFromFile } from "../src/env.ts"
 
 // Lifetimes are in blocks, not seconds: the SDK converts durations at a fixed
 // 2 s, so a probe written in seconds means something else on a faster chain.
 const TTL = ExpirationTime.fromBlocks(30)
 const RUN = `r${Date.now().toString(36)}`
-
-function env(name: string, required = true): string {
-  const value = process.env[name] ?? ""
-  if (required && !value) {
-    console.error(`missing env var ${name} (see .env.example)`)
-    process.exit(1)
-  }
-  return value
-}
 
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
@@ -99,7 +91,7 @@ async function step<T>(name: string, run: () => Promise<T>): Promise<T> {
 }
 
 const writer = await step("connect (chain id probed)", () =>
-  createWriter({ rpcUrl, apiKey: apiKey || undefined, privateKey: env("WRITER_PRIVATE_KEY") as Hex }),
+  createWriter({ rpcUrl, apiKey: apiKey || undefined, privateKey: privateKeyFromFile() }),
 )
 console.log(`  address ${writer.address}, chain id ${writer.chainId}, run ${RUN}`)
 

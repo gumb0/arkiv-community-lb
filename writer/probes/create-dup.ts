@@ -11,27 +11,19 @@
 //   - every row the run-scoped query returns, with $createdAt, matched by
 //     rank against the create that claims it.
 //
-// Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY;
+// Env: WRITER_PRIVATE_KEY_FILE, ARKIV_RPC_URL, optional ARKIV_API_KEY;
 // DUP_FIXTURES (default 60), DUP_PAYLOAD_KB (default 100).
 // Run: npm run create-dup
 
 import { ExpirationTime, i32, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
+import { env, privateKeyFromFile } from "../src/env.ts"
 
 const TTL = ExpirationTime.fromBlocks(600)
 const RUN = `r${Date.now().toString(36)}`
 const FIXTURES = Number(process.env.DUP_FIXTURES ?? "60")
 const PAYLOAD_KB = Number(process.env.DUP_PAYLOAD_KB ?? "100")
-
-function env(name: string, required = true): string {
-  const value = process.env[name] ?? ""
-  if (required && !value) {
-    console.error(`missing env var ${name} (see .env.example)`)
-    process.exit(1)
-  }
-  return value
-}
 
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
@@ -56,7 +48,7 @@ const hex = (n: bigint) => `0x${n.toString(16)}`
 const writer = await createWriter({
   rpcUrl,
   apiKey: apiKey || undefined,
-  privateKey: env("WRITER_PRIVATE_KEY") as Hex,
+  privateKey: privateKeyFromFile(),
 })
 const me = writer.address.toLowerCase()
 console.log(

@@ -4,7 +4,7 @@
 // from per-mutation pricing. A last phase checks that a batch is
 // all-or-nothing, which the design leans on and only the doc has claimed.
 //
-// Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
+// Env: WRITER_PRIVATE_KEY_FILE, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
 // an Authorization: Bearer header);
 // BATCH_N (default 50).
 // Run: npm run batch
@@ -18,18 +18,10 @@
 import { ExpirationTime, i32, jsonToPayload, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
+import { env, privateKeyFromFile } from "../src/env.ts"
 
 const TTL = ExpirationTime.fromBlocks(300) // blocks, so a faster chain means the same thing
 const RUN = `r${Date.now().toString(36)}`
-
-function env(name: string, required = true): string {
-  const value = process.env[name] ?? ""
-  if (required && !value) {
-    console.error(`missing env var ${name} (see .env.example)`)
-    process.exit(1)
-  }
-  return value
-}
 
 const batchN = Number(process.env.BATCH_N ?? "50")
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
@@ -66,7 +58,7 @@ function report(phase: string, seconds: number, stats: { gasUsed: bigint; callda
 const writer = await createWriter({
   rpcUrl,
   apiKey: apiKey || undefined,
-  privateKey: env("WRITER_PRIVATE_KEY") as Hex,
+  privateKey: privateKeyFromFile(),
 })
 console.log(
   `batch experiment: N=${batchN}, run ${RUN}, address ${writer.address}, chain ${writer.chainId}\n`,

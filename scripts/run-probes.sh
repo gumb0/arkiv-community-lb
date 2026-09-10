@@ -11,8 +11,11 @@ scripts=("$@")
 [ "${#scripts[@]}" -eq 0 ] && scripts=(probes)
 
 # First account of the standard test mnemonic, funded by --dev. Public
-# knowledge, and the chain it spends on lasts as long as this run.
-export WRITER_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+# knowledge, and the chain it spends on lasts as long as this run. The
+# probes read the key from a file, as the sidecar does.
+WRITER_PRIVATE_KEY_FILE="$(mktemp)"
+echo 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 > "$WRITER_PRIVATE_KEY_FILE"
+export WRITER_PRIVATE_KEY_FILE
 export ARKIV_API_KEY=
 
 started_here=0
@@ -24,7 +27,7 @@ ARKIV_RPC_URL="$(./scripts/dev-node.sh url)"
 export ARKIV_RPC_URL
 # Leave a node that was already up alone: it is someone's, not ours. The
 # absolute path matters: the trap fires after the cd below.
-trap '[ "$started_here" = 1 ] && "$root/scripts/dev-node.sh" stop >/dev/null' EXIT
+trap 'rm -f "$WRITER_PRIVATE_KEY_FILE"; [ "$started_here" = 1 ] && "$root/scripts/dev-node.sh" stop >/dev/null' EXIT
 
 cd writer
 for script in "${scripts[@]}"; do

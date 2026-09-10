@@ -7,24 +7,16 @@
 // The LB's relay decision leans on "same signed bytes => same hash,
 // mempools dedupe, replay is safe" — this is that premise, tested.
 //
-// Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY.
+// Env: WRITER_PRIVATE_KEY_FILE, ARKIV_RPC_URL, optional ARKIV_API_KEY.
 // Run: npm run replay
 // Gas cost: one small create (plus one duplicate, if the bug is present).
 
 import { ExpirationTime, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
+import { env, privateKeyFromFile } from "../src/env.ts"
 
 const RUN = `r${Date.now().toString(36)}`
-
-function env(name: string, required = true): string {
-  const value = process.env[name] ?? ""
-  if (required && !value) {
-    console.error(`missing env var ${name} (see .env.example)`)
-    process.exit(1)
-  }
-  return value
-}
 
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
@@ -47,7 +39,7 @@ async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
 const writer = await createWriter({
   rpcUrl,
   apiKey: apiKey || undefined,
-  privateKey: env("WRITER_PRIVATE_KEY") as Hex,
+  privateKey: privateKeyFromFile(),
 })
 console.log(`replay probe: run ${RUN}, address ${writer.address}, chain ${writer.chainId}\n`)
 

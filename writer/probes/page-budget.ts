@@ -5,7 +5,7 @@
 // create fat-payload fixtures, ask for them all in one page, report rows
 // and bytes.
 //
-// Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
+// Env: WRITER_PRIVATE_KEY_FILE, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
 // an Authorization: Bearer header);
 // PAGE_FIXTURES (default 60), PAGE_PAYLOAD_KB (default 100).
 // Run: npm run page-budget
@@ -18,20 +18,12 @@
 import { ExpirationTime, i32, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
+import { env, privateKeyFromFile } from "../src/env.ts"
 
 const TTL = ExpirationTime.fromBlocks(600) // blocks, so a faster chain means the same thing
 const RUN = `r${Date.now().toString(36)}`
 const FIXTURES = Number(process.env.PAGE_FIXTURES ?? "60")
 const PAYLOAD_KB = Number(process.env.PAGE_PAYLOAD_KB ?? "100")
-
-function env(name: string, required = true): string {
-  const value = process.env[name] ?? ""
-  if (required && !value) {
-    console.error(`missing env var ${name} (see .env.example)`)
-    process.exit(1)
-  }
-  return value
-}
 
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
@@ -62,7 +54,7 @@ function assert(cond: boolean, what: string): asserts cond {
 const writer = await createWriter({
   rpcUrl,
   apiKey: apiKey || undefined,
-  privateKey: env("WRITER_PRIVATE_KEY") as Hex,
+  privateKey: privateKeyFromFile(),
 })
 console.log(
   `page-budget probe: ${FIXTURES} fixtures x ${PAYLOAD_KB} KB, run ${RUN}, ` +

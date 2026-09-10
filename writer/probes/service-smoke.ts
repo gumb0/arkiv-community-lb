@@ -2,7 +2,7 @@
 // ephemeral port, drives every route over HTTP, and verifies the results with
 // raw JSON-RPC — the read path the Rust side will use.
 //
-// Env: WRITER_PRIVATE_KEY, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
+// Env: WRITER_PRIVATE_KEY_FILE, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
 // an Authorization: Bearer header).
 // Run: npm run service-smoke
 
@@ -10,18 +10,10 @@ import { ExpirationTime, jsonToPayload } from "@arkiv-network/sdk"
 import { toHex, type Hex } from "viem"
 import { startService } from "../src/service.ts"
 import { createWriter } from "../src/writer.ts"
+import { env, privateKeyFromFile } from "../src/env.ts"
 
 const RUN = `r${Date.now().toString(36)}`
 const TTL = { blocks: 150 } // blocks, so a faster chain means the same thing
-
-function env(name: string, required = true): string {
-  const value = process.env[name] ?? ""
-  if (required && !value) {
-    console.error(`missing env var ${name} (see .env.example)`)
-    process.exit(1)
-  }
-  return value
-}
 
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
@@ -87,7 +79,7 @@ async function step<T>(name: string, run: () => Promise<T>): Promise<T> {
 const writer = await createWriter({
   rpcUrl,
   apiKey: apiKey || undefined,
-  privateKey: env("WRITER_PRIVATE_KEY") as Hex,
+  privateKey: privateKeyFromFile(),
 })
 const service = await startService(writer, { port: 0 })
 const base = `http://${service.host}:${service.port}`

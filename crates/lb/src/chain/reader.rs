@@ -9,70 +9,107 @@ use reqwest::{Url, header};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::records::{ArkivEntity, SCHEMA_VERSION, parse_u64};
+use super::records::{ArkivEntity, AttributeValue, SCHEMA_VERSION, parse_u64};
 
 /// The node's page maximum. Asking for more is an error, not a smaller
 /// page, so no read ever asks for more.
 pub const PAGE_LIMIT: u64 = 200;
 
-/// A filter for `arkiv_query`, in the node's query language. Built from
-/// typed parts so that attribute names and literal syntax are written in
-/// one place; the text is conditions joined by `AND`. Every query starts
-/// from a record kind at the schema version this code understands, so
-/// a newer record never takes a row of the page or a unit of the count.
+/// A filter for `arkiv_query`. Built from typed conditions, so that a
+/// fake chain can evaluate the same query the node is sent; `text()`
+/// renders them in the node's query language, joined by `AND`. Every
+/// query starts from a record kind at the schema version this code
+/// understands, so a newer record never takes a row of the page or a
+/// unit of the count.
 #[derive(Debug, Clone)]
-pub struct Query(Vec<String>);
+pub struct Query {
+    pub conditions: Vec<Condition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Condition {
+    Creator(Address),
+    Attribute(&'static str, AttributeValue),
+    /// `$expiresAt > head`: only records still alive at `head`. The node
+    /// hides expired records anyway; this is boundary exactness.
+    ExpiresAfter(u64),
+    /// `$expiresAt <= block`: how discovery ignores offers with a
+    /// lifetime longer than it accepts.
+    ExpiresBy(u64),
+}
 
 impl Query {
     pub fn kind(kind: &str) -> Self {
-        Self(vec![
-            format!("kind = str('{}')", escape(kind)),
-            format!("v = i32({SCHEMA_VERSION})"),
-        ])
+        Self {
+            conditions: vec![
+                Condition::Attribute("kind", AttributeValue::Str(kind.to_owned())),
+                Condition::Attribute("v", AttributeValue::I32(SCHEMA_VERSION)),
+            ],
+        }
     }
 
     pub fn creator(mut self, creator: Address) -> Self {
-        self.0.push(format!("$creator = addr({creator:#x})"));
+        self.conditions.push(Condition::Creator(creator));
         self
     }
 
-    pub fn attr_addr(mut self, name: &str, value: Address) -> Self {
-        self.0.push(format!("{name} = addr({value:#x})"));
+    pub fn attr_addr(self, name: &'static str, value: Address) -> Self {
+        self.attribute(name, AttributeValue::Addr(value))
+    }
+
+    pub fn attr_str(self, name: &'static str, value: &str) -> Self {
+        self.attribute(name, AttributeValue::Str(value.to_owned()))
+    }
+
+    pub fn attr_u64(self, name: &'static str, value: u64) -> Self {
+        self.attribute(name, AttributeValue::U64(value))
+    }
+
+    fn attribute(mut self, name: &'static str, value: AttributeValue) -> Self {
+        self.conditions.push(Condition::Attribute(name, value));
         self
     }
 
-    pub fn attr_str(mut self, name: &str, value: &str) -> Self {
-        self.0.push(format!("{name} = str('{}')", escape(value)));
+    pub fn expires_after(mut self, head: u64) -> Self {
+        self.conditions.push(Condition::ExpiresAfter(head));
         self
     }
 
-    pub fn attr_u64(mut self, name: &str, value: u64) -> Self {
-        self.0.push(format!("{name} = u64({value})"));
-        self
-    }
-
-    /// Only records that are still alive at `head`. The node hides expired
-    /// records anyway; this is boundary exactness, not correctness.
-    pub fn not_expired(mut self, head: u64) -> Self {
-        self.0.push(format!("$expiresAt > u64({head})"));
-        self
-    }
-
-    /// Only records expiring at or before `block`: how discovery ignores
-    /// offers with a lifetime longer than it accepts.
     pub fn expires_by(mut self, block: u64) -> Self {
-        self.0.push(format!("$expiresAt <= u64({block})"));
+        self.conditions.push(Condition::ExpiresBy(block));
         self
     }
 
     pub fn text(&self) -> String {
-        self.0.join(" AND ")
+        self.conditions
+            .iter()
+            .map(Condition::text)
+            .collect::<Vec<_>>()
+            .join(" AND ")
     }
 }
 
-/// A string literal's only escape: a quote doubled.
-fn escape(text: &str) -> String {
-    text.replace('\'', "''")
+impl Condition {
+    fn text(&self) -> String {
+        match self {
+            Self::Creator(creator) => format!("$creator = addr({creator:#x})"),
+            Self::Attribute(name, value) => format!("{name} = {}", literal(value)),
+            Self::ExpiresAfter(head) => format!("$expiresAt > u64({head})"),
+            Self::ExpiresBy(block) => format!("$expiresAt <= u64({block})"),
+        }
+    }
+}
+
+/// A typed literal in the query language. A string's only escape is a
+/// quote doubled.
+fn literal(value: &AttributeValue) -> String {
+    match value {
+        AttributeValue::Str(s) => format!("str('{}')", s.replace('\'', "''")),
+        AttributeValue::I32(n) => format!("i32({n})"),
+        AttributeValue::U64(n) => format!("u64({n})"),
+        AttributeValue::Addr(a) => format!("addr({a:#x})"),
+        AttributeValue::Key(k) => format!("key({k:#x})"),
+    }
 }
 
 /// One page of a query. `more` means the node had rows beyond the page
@@ -229,7 +266,7 @@ mod tests {
             .unwrap();
         let query = Query::kind(KIND_OFFER)
             .attr_addr("lb", lb)
-            .not_expired(1000)
+            .expires_after(1000)
             .expires_by(87_400);
         assert_eq!(
             query.text(),

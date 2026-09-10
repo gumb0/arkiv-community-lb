@@ -9,7 +9,7 @@ use alloy_primitives::{Address, U256};
 use common::fake_chain::{FakeChain, Transaction};
 use lb::chain::{
     ChainReader, ChainWriter,
-    reader::{PAGE_LIMIT, Page, Query},
+    reader::{PAGE_LIMIT, Page, Query, ReadError},
     records::{Agreement, AttributeValue, KIND_AGREEMENT, KIND_OFFER, Record, Stored, Wei},
     writer::{Batch, Create, Delete, Expiry, Extend, Patch, WriteError},
 };
@@ -210,9 +210,21 @@ async fn a_newer_schema_version_is_not_returned() {
 }
 
 #[tokio::test]
-async fn writes_fail_while_the_switch_is_on() {
+async fn the_sidecar_and_the_reference_can_be_taken_down() {
     let chain = FakeChain::new(LB, 1337);
-    chain.fail_writes("gas required exceeds allowance");
+    chain.fail_reference("connection refused");
+    let error = chain
+        .count(&Query::kind(KIND_AGREEMENT))
+        .await
+        .expect_err("reads fail");
+    assert!(matches!(&error, ReadError::Rpc { message, .. } if message.contains("refused")));
+    chain.heal();
+
+    chain.fail_sidecar("gas required exceeds allowance");
+    assert!(
+        chain.identity().await.is_err(),
+        "the identity is the sidecar's too"
+    );
     let error = chain
         .create(&Create::new(agreement(20000).encode(), Expiry::Seconds(10)))
         .await

@@ -153,6 +153,8 @@ pub struct Marketplace {
     pub refresh_interval: Duration,
     #[serde(with = "humantime_serde", default = "default_agreement_life")]
     pub agreement_life: Duration,
+    #[serde(with = "humantime_serde", default = "default_listing_life")]
+    pub listing_life: Duration,
     #[serde(with = "humantime_serde", default = "default_offer_max_lifetime")]
     pub offer_max_lifetime: Duration,
     #[serde(default = "default_offer_max_lag_blocks")]
@@ -185,6 +187,9 @@ fn default_refresh_interval() -> Duration {
 }
 fn default_agreement_life() -> Duration {
     Duration::from_secs(3 * 24 * 60 * 60)
+}
+fn default_listing_life() -> Duration {
+    Duration::from_secs(30 * 24 * 60 * 60)
 }
 fn default_offer_max_lifetime() -> Duration {
     Duration::from_secs(2 * 24 * 60 * 60)
@@ -356,6 +361,7 @@ impl Marketplace {
             ("accept_window", self.accept_window),
             ("refresh_interval", self.refresh_interval),
             ("agreement_life", self.agreement_life),
+            ("listing_life", self.listing_life),
             ("offer_max_lifetime", self.offer_max_lifetime),
         ] {
             if duration.is_zero() {
@@ -370,6 +376,7 @@ impl Marketplace {
         for (name, duration) in [
             ("accept_window", self.accept_window),
             ("agreement_life", self.agreement_life),
+            ("listing_life", self.listing_life),
             ("offer_max_lifetime", self.offer_max_lifetime),
         ] {
             if duration.subsec_nanos() != 0 || duration.as_secs() % 2 != 0 {
@@ -449,6 +456,7 @@ mod tests {
         assert_eq!(marketplace.accept_window, Duration::from_secs(7200));
         assert_eq!(marketplace.refresh_interval, Duration::from_secs(3600));
         assert_eq!(marketplace.agreement_life, Duration::from_secs(259_200));
+        assert_eq!(marketplace.listing_life, Duration::from_secs(2_592_000));
         assert_eq!(marketplace.offer_max_lifetime, Duration::from_secs(172_800));
         assert_eq!(marketplace.offer_max_lag_blocks, 1000);
         assert_eq!(marketplace.gas_warn_below, Wei::new(20_000_000_000_000_000));
@@ -473,7 +481,7 @@ mod tests {
             "{MARKETPLACE}writer_url = \"http://10.0.0.2:8560\"\n\
              max_providers = 10\nremote_port_start = 30000\n\
              discovery_interval = \"1m\"\naccept_window = \"30m\"\nagreement_life = \"1d\"\n\
-             gas_warn_below = \"1.5\"\n"
+             listing_life = \"7d\"\ngas_warn_below = \"1.5\"\n"
         ))
         .expect("valid");
         let marketplace = config.marketplace.expect("the section is present");
@@ -483,6 +491,7 @@ mod tests {
         assert_eq!(marketplace.discovery_interval, Duration::from_secs(60));
         assert_eq!(marketplace.accept_window, Duration::from_secs(1800));
         assert_eq!(marketplace.agreement_life, Duration::from_secs(86_400));
+        assert_eq!(marketplace.listing_life, Duration::from_secs(604_800));
         assert_eq!(
             marketplace.gas_warn_below,
             Wei::new(1_500_000_000_000_000_000)
@@ -520,6 +529,7 @@ mod tests {
             "accept_window",
             "refresh_interval",
             "agreement_life",
+            "listing_life",
             "offer_max_lifetime",
         ] {
             let error = parse(&format!("{MARKETPLACE}{name} = \"0s\"\n")).expect_err("must refuse");
@@ -529,7 +539,12 @@ mod tests {
 
     #[test]
     fn lifetimes_must_be_even_seconds() {
-        for name in ["accept_window", "agreement_life", "offer_max_lifetime"] {
+        for name in [
+            "accept_window",
+            "agreement_life",
+            "listing_life",
+            "offer_max_lifetime",
+        ] {
             for odd in ["3s", "1m 1s", "2500ms"] {
                 let error =
                     parse(&format!("{MARKETPLACE}{name} = \"{odd}\"\n")).expect_err("must refuse");

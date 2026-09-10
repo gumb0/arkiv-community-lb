@@ -102,6 +102,12 @@ refresh_interval = "1h"
 # becomes ineligible, its agreement expires after this time.
 # An even number of seconds: lifetimes are whole blocks of two seconds.
 agreement_life = "3d"
+# What each refresh extends the LB listing to, from now. Longer than
+# agreement_life, so an LB outage that costs the agreements does not
+# also cost the listing; a listing that exists belongs to an LB that
+# has run within this time.
+# An even number of seconds: lifetimes are whole blocks of two seconds.
+listing_life = "30d"
 # Spam protection. Offers expiring further out than this are ignored,
 # so nobody can post a page of long-lived offers once and crowd real
 # ones out of discovery for good; re-posting costs gas every time.

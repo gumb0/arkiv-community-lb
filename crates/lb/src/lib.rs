@@ -8,6 +8,7 @@ pub mod config;
 pub mod denylist;
 pub mod forwarder;
 pub mod jsonrpc;
+pub mod marketplace;
 pub mod monitor;
 pub mod pool;
 pub mod proxy;

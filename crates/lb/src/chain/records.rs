@@ -348,6 +348,17 @@ pub struct LbListing {
     pub max_providers: u32,
 }
 
+/// The listing as a log line reads it.
+impl std::fmt::Display for LbListing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "rate {} wei/call, tunnel {}, cap {}",
+            self.wei_per_call.0, self.tunnel_server, self.max_providers
+        )
+    }
+}
+
 impl Record for LbListing {
     const KIND: &'static str = KIND_LB_LISTING;
 

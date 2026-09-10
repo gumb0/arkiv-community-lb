@@ -96,7 +96,7 @@ impl Provider {
 
     /// A marketplace provider, named by its address and reached through
     /// its tunnel port on the loopback.
-    pub fn marketplace(address: Address, agreement_id: EntityKey, port: u16) -> Self {
+    pub fn from_marketplace(address: Address, agreement_id: EntityKey, port: u16) -> Self {
         let url = Url::parse(&format!("http://127.0.0.1:{port}")).expect("a loopback url parses");
         Self::new(
             format!("{address:#x}"),
@@ -449,7 +449,7 @@ mod tests {
     fn an_added_provider_is_selected_once_eligible() {
         let pool = pool(&["a"]);
         pool.snapshot()[0].set_eligible(true);
-        let added = pool.add(Provider::marketplace(
+        let added = pool.add(Provider::from_marketplace(
             Address::repeat_byte(0xbb),
             EntityKey::repeat_byte(0x01),
             20_000,

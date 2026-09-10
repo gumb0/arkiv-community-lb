@@ -31,8 +31,10 @@ struct State {
     /// In creation order, which is the order a query returns.
     entities: Vec<Entity>,
     transactions: Vec<Transaction>,
-    /// When set, every write fails with this message.
-    failing: Option<String>,
+    /// When set, every call on the sidecar side fails with this message.
+    sidecar_down: Option<String>,
+    /// When set, every read fails with this message.
+    reference_down: Option<String>,
 }
 
 /// A stored entity, as a test sees it.
@@ -68,7 +70,8 @@ impl FakeChain {
             next_tx: 1,
             entities: Vec::new(),
             transactions: Vec::new(),
-            failing: None,
+            sidecar_down: None,
+            reference_down: None,
         })))
     }
 
@@ -112,13 +115,20 @@ impl FakeChain {
         self.state().transactions.clone()
     }
 
-    /// Every write from now on fails with this message, until `heal`.
-    pub fn fail_writes(&self, message: &str) {
-        self.state().failing = Some(message.to_owned());
+    /// Every write and the identity fail with this message, until `heal`.
+    pub fn fail_sidecar(&self, message: &str) {
+        self.state().sidecar_down = Some(message.to_owned());
+    }
+
+    /// Every read fails with this message, until `heal`.
+    pub fn fail_reference(&self, message: &str) {
+        self.state().reference_down = Some(message.to_owned());
     }
 
     pub fn heal(&self) {
-        self.state().failing = None;
+        let mut state = self.state();
+        state.sidecar_down = None;
+        state.reference_down = None;
     }
 }
 
@@ -156,12 +166,22 @@ impl State {
         hash
     }
 
-    fn failure(&self) -> Result<(), WriteError> {
-        match &self.failing {
+    fn sidecar(&self) -> Result<(), WriteError> {
+        match &self.sidecar_down {
             Some(message) => Err(WriteError::Failed(vec![ErrorLink {
                 name: "FakeChain".to_owned(),
                 message: message.clone(),
             }])),
+            None => Ok(()),
+        }
+    }
+
+    fn reference(&self) -> Result<(), ReadError> {
+        match &self.reference_down {
+            Some(message) => Err(ReadError::Rpc {
+                code: -32000,
+                message: message.clone(),
+            }),
             None => Ok(()),
         }
     }
@@ -231,11 +251,14 @@ impl Entity {
 
 impl ChainReader for FakeChain {
     async fn block_number(&self) -> Result<u64, ReadError> {
-        Ok(self.state().head)
+        let state = self.state();
+        state.reference()?;
+        Ok(state.head)
     }
 
     async fn balance(&self, account: Address) -> Result<U256, ReadError> {
         let state = self.state();
+        state.reference()?;
         Ok(if account == state.address {
             state.balance
         } else {
@@ -244,20 +267,25 @@ impl ChainReader for FakeChain {
     }
 
     async fn query(&self, query: &Query) -> Result<Page, ReadError> {
-        let mut entities = self.state().matching(query);
+        let state = self.state();
+        state.reference()?;
+        let mut entities = state.matching(query);
         let more = entities.len() as u64 > PAGE_LIMIT;
         entities.truncate(PAGE_LIMIT as usize);
         Ok(Page { entities, more })
     }
 
     async fn count(&self, query: &Query) -> Result<u64, ReadError> {
-        Ok(self.state().matching(query).len() as u64)
+        let state = self.state();
+        state.reference()?;
+        Ok(state.matching(query).len() as u64)
     }
 }
 
 impl ChainWriter for FakeChain {
     async fn identity(&self) -> Result<Identity, WriteError> {
         let state = self.state();
+        state.sidecar()?;
         Ok(Identity {
             address: state.address,
             chain_id: state.chain_id,
@@ -266,7 +294,7 @@ impl ChainWriter for FakeChain {
 
     async fn create(&self, create: &Create) -> Result<Created, WriteError> {
         let mut state = self.state();
-        state.failure()?;
+        state.sidecar()?;
         let creator = state.address;
         let expires_at = state.expires_at(create.expires());
         let entity_key = state.insert(
@@ -285,7 +313,7 @@ impl ChainWriter for FakeChain {
 
     async fn patch(&self, patch: &Patch) -> Result<Written, WriteError> {
         let mut state = self.state();
-        state.failure()?;
+        state.sidecar()?;
         let index = state.position(patch.entity_key)?;
         let entity = &mut state.entities[index];
         if let Some(set) = &patch.set {
@@ -307,7 +335,7 @@ impl ChainWriter for FakeChain {
 
     async fn delete(&self, delete: &Delete) -> Result<Written, WriteError> {
         let mut state = self.state();
-        state.failure()?;
+        state.sidecar()?;
         let index = state.position(delete.entity_key)?;
         state.entities.remove(index);
         let tx_hash = state.transaction(Transaction::Delete(delete.entity_key));
@@ -321,7 +349,7 @@ impl ChainWriter for FakeChain {
     /// expiry moves.
     async fn execute_batch(&self, batch: &Batch) -> Result<BatchResult, WriteError> {
         let mut state = self.state();
-        state.failure()?;
+        state.sidecar()?;
         let mut positions = Vec::with_capacity(batch.extensions.len());
         for extend in &batch.extensions {
             positions.push((state.position(extend.entity_key)?, extend.expires));

@@ -14,6 +14,7 @@
     "service": "node --env-file-if-exists=../.env src/service.ts",
     "service-smoke": "node --env-file-if-exists=../.env probes/service-smoke.ts",
     "batch": "node --env-file-if-exists=../.env probes/batch-experiment.ts",
+    "counters": "node --env-file-if-exists=../.env probes/counters-probe.ts",
     "permanent": "node --env-file-if-exists=../.env probes/permanent-probe.ts",
     "queries": "node --env-file-if-exists=../.env probes/queries.ts",
     "concurrency": "node --env-file-if-exists=../.env probes/concurrency-probe.ts",

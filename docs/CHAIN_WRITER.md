@@ -141,8 +141,17 @@ on the 400 side automatically.
 ## Limits that bind
 
 - The node caps raw transaction size at 128 KiB (txpool default), at every
-  endpoint. A `/execute-batch` batch must stay under it; with ~200-byte payloads
-  the ceiling is roughly a hundred creates. The Rust caller chunks.
+  endpoint, and answers `oversized data: transaction size N, limit
+  131072` for a transaction over it, before sending anything. A
+  `/execute-batch` batch must stay under it: about 70 creates of a
+  marketplace record, or a hundred patches. The Rust caller sends a
+  batch whole and, when the node refuses it as oversized, splits it in
+  halves and sends those, down to a single group; the refusal costs one
+  round trip and no gas, and nothing sizes a batch in advance. The Rust
+  side groups the operations that must land together (one agreement's
+  close and its successor's create; an acceptance's two creates) and
+  never splits a group: a transaction is atomic, so a group lands whole
+  or not at all.
 - Attribute string values are capped at 128 bytes by the SDK. Larger data
   belongs in the payload.
 - An attribute-filtered query can briefly trail a just-delivered receipt

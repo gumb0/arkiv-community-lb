@@ -17,7 +17,7 @@ use axum::{
 };
 use lb::chain::{
     records::{Agreement, Record, Wei},
-    writer::{Batch, Create, Delete, Expiry, Extend, Patch, WriteError, Writer},
+    writer::{Batch, Create, Delete, Expiry, Extend, Group, Operation, Patch, WriteError, Writer},
 };
 use serde_json::{Value, json};
 
@@ -178,18 +178,17 @@ async fn a_batch_returns_the_extended_keys() {
         }),
     )
     .await;
-    let batch = Batch {
-        extensions: vec![
-            Extend {
-                entity_key: key(),
-                expires: Expiry::Seconds(1),
-            };
-            2
-        ],
-    };
+    let mut batch = Batch::new();
+    for _ in 0..2 {
+        batch.push(Group::single(Operation::Extend(Extend {
+            entity_key: key(),
+            expires: Expiry::Seconds(1),
+        })));
+    }
     let result = writer.execute_batch(&batch).await.expect("batch");
     assert_eq!(result.tx_hash, TX);
     assert_eq!(result.extended_entities, [key(), key()]);
+    assert!(result.created_entities.is_empty());
 
     let seen = sidecar.seen.lock().expect("seen");
     assert_eq!(seen[0].0, "execute-batch");
@@ -207,6 +206,25 @@ async fn a_400_is_refused_with_the_sidecar_error() {
     assert!(
         matches!(&error, WriteError::Refused(links) if links[0].message.starts_with("create.expires"))
     );
+}
+
+#[tokio::test]
+async fn a_413_is_too_large_with_the_nodes_words() {
+    let (writer, _) = sidecar(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        json!({ "error": [
+            { "name": "EntityMutationError", "message": "Transaction failed" },
+            { "name": "InvalidInputRpcError", "message": "Missing or invalid parameters.",
+              "details": "oversized data: transaction size 131509, limit 131072" },
+        ] }),
+    )
+    .await;
+    let error = writer.create(&agreement()).await.expect_err("too large");
+    assert!(
+        matches!(&error, WriteError::TooLarge(links) if links.len() == 2),
+        "{error}"
+    );
+    assert!(error.to_string().contains("limit 131072"), "{error}");
 }
 
 #[tokio::test]

@@ -13,7 +13,7 @@ use lb::chain::{
     reader::{Condition, PAGE_LIMIT, Page, Query, ReadError},
     records::{Address, ArkivAttribute, ArkivEntity, Attributes, EncodedRecord, EntityKey},
     writer::{
-        Batch, BatchResult, Create, Created, Delete, ErrorLink, Expiry, Identity, Patch,
+        Batch, BatchResult, Create, Created, Delete, ErrorLink, Expiry, Identity, Operation, Patch,
         WriteError, Written,
     },
 };
@@ -35,6 +35,9 @@ struct State {
     sidecar_down: Option<String>,
     /// When set, every read fails with this message.
     reference_down: Option<String>,
+    /// A batch with more operations than this is refused as too large,
+    /// the way the node refuses a transaction over its size cap.
+    operation_limit: usize,
 }
 
 /// A stored entity, as a test sees it.
@@ -53,7 +56,16 @@ pub enum Transaction {
     Create(EntityKey),
     Patch(EntityKey),
     Delete(EntityKey),
-    Extend(Vec<EntityKey>),
+    Batch(BatchLog),
+}
+
+/// What one batch did, by kind, in operation order.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BatchLog {
+    pub created: Vec<EntityKey>,
+    pub patched: Vec<EntityKey>,
+    pub deleted: Vec<EntityKey>,
+    pub extended: Vec<EntityKey>,
 }
 
 const SECONDS_PER_BLOCK: u64 = 2;
@@ -72,6 +84,7 @@ impl FakeChain {
             transactions: Vec::new(),
             sidecar_down: None,
             reference_down: None,
+            operation_limit: usize::MAX,
         })))
     }
 
@@ -93,6 +106,12 @@ impl FakeChain {
 
     pub fn set_balance(&self, balance: U256) {
         self.state().balance = balance;
+    }
+
+    /// The number of operations over which a batch is refused as too
+    /// large. Unlimited by default; a test sets it to exercise the split.
+    pub fn set_operation_limit(&self, operations: usize) {
+        self.state().operation_limit = operations;
     }
 
     /// A record written by someone else, for example a provider's offer.
@@ -171,6 +190,7 @@ impl State {
             Some(message) => Err(WriteError::Failed(vec![ErrorLink {
                 name: "FakeChain".to_owned(),
                 message: message.clone(),
+                details: None,
             }])),
             None => Ok(()),
         }
@@ -194,6 +214,7 @@ impl State {
                 WriteError::Failed(vec![ErrorLink {
                     name: "FakeChain".to_owned(),
                     message: format!("no entity {key:#x}"),
+                    details: None,
                 }])
             })
     }
@@ -216,6 +237,19 @@ impl State {
 }
 
 impl Entity {
+    fn apply(&mut self, patch: &Patch) {
+        if let Some(set) = &patch.set {
+            let mut attributes = self.attributes.clone();
+            for (name, value) in set.iter() {
+                attributes = attributes.with(name, value.clone());
+            }
+            self.attributes = attributes;
+        }
+        if let Some(payload) = &patch.payload {
+            self.payload = payload.clone();
+        }
+    }
+
     fn matches(&self, condition: &Condition) -> bool {
         match condition {
             Condition::Creator(creator) => self.creator == *creator,
@@ -227,7 +261,7 @@ impl Entity {
 
     /// The entity the way a query returns it: attributes as the node's
     /// list, in the same shapes the write sent.
-    fn as_arkiv_entity(&self) -> ArkivEntity {
+    pub fn as_arkiv_entity(&self) -> ArkivEntity {
         let wire = self.attributes.to_wire();
         let attributes = wire
             .as_object()
@@ -315,17 +349,7 @@ impl ChainWriter for FakeChain {
         let mut state = self.state();
         state.sidecar()?;
         let index = state.position(patch.entity_key)?;
-        let entity = &mut state.entities[index];
-        if let Some(set) = &patch.set {
-            let mut attributes = entity.attributes.clone();
-            for (name, value) in set.iter() {
-                attributes = attributes.with(name, value.clone());
-            }
-            entity.attributes = attributes;
-        }
-        if let Some(payload) = &patch.payload {
-            entity.payload = payload.clone();
-        }
+        state.entities[index].apply(patch);
         let tx_hash = state.transaction(Transaction::Patch(patch.entity_key));
         Ok(Written {
             entity_key: patch.entity_key,
@@ -345,25 +369,80 @@ impl ChainWriter for FakeChain {
         })
     }
 
-    /// All extends land or none does: the keys are checked before any
-    /// expiry moves.
+    /// One transaction: every operation lands or none does. The keys
+    /// are checked before anything changes, and a batch over the
+    /// operation limit is refused before that, the way the node refuses
+    /// a transaction over its size.
     async fn execute_batch(&self, batch: &Batch) -> Result<BatchResult, WriteError> {
         let mut state = self.state();
         state.sidecar()?;
-        let mut positions = Vec::with_capacity(batch.extensions.len());
-        for extend in &batch.extensions {
-            positions.push((state.position(extend.entity_key)?, extend.expires));
+        let operations: Vec<&Operation> = batch
+            .groups()
+            .iter()
+            .flat_map(|group| group.operations())
+            .collect();
+        if operations.len() > state.operation_limit {
+            return Err(WriteError::TooLarge(vec![ErrorLink {
+                name: "FakeChain".to_owned(),
+                message: "Missing or invalid parameters.".to_owned(),
+                details: Some(format!(
+                    "oversized data: {} operations, limit {}",
+                    operations.len(),
+                    state.operation_limit
+                )),
+            }]));
         }
-        for (index, expires) in positions {
-            let expires_at = state.expires_at(expires);
-            state.entities[index].expires_at = expires_at;
+        // Every entity a patch, delete or extend names must exist before
+        // anything is applied, so a missing key fails the batch whole.
+        for operation in &operations {
+            let key = match operation {
+                Operation::Create(_) => continue,
+                Operation::Patch(patch) => patch.entity_key,
+                Operation::Delete(delete) => delete.entity_key,
+                Operation::Extend(extend) => extend.entity_key,
+            };
+            state.position(key)?;
         }
-        let extended_entities: Vec<EntityKey> =
-            batch.extensions.iter().map(|e| e.entity_key).collect();
-        let tx_hash = state.transaction(Transaction::Extend(extended_entities.clone()));
-        Ok(BatchResult {
-            tx_hash,
-            extended_entities,
-        })
+        let mut log = BatchLog::default();
+        for operation in operations {
+            match operation {
+                Operation::Create(create) => {
+                    let creator = state.address;
+                    let expires_at = state.expires_at(create.expires());
+                    let key = state.insert(
+                        creator,
+                        create.attributes().clone(),
+                        create.payload().to_vec(),
+                        expires_at,
+                    );
+                    log.created.push(key);
+                }
+                Operation::Patch(patch) => {
+                    let index = state.position(patch.entity_key)?;
+                    state.entities[index].apply(patch);
+                    log.patched.push(patch.entity_key);
+                }
+                Operation::Delete(delete) => {
+                    let index = state.position(delete.entity_key)?;
+                    state.entities.remove(index);
+                    log.deleted.push(delete.entity_key);
+                }
+                Operation::Extend(extend) => {
+                    let index = state.position(extend.entity_key)?;
+                    let expires_at = state.expires_at(extend.expires);
+                    state.entities[index].expires_at = expires_at;
+                    log.extended.push(extend.entity_key);
+                }
+            }
+        }
+        let result = BatchResult {
+            tx_hash: String::new(),
+            created_entities: log.created.clone(),
+            patched_entities: log.patched.clone(),
+            deleted_entities: log.deleted.clone(),
+            extended_entities: log.extended.clone(),
+        };
+        let tx_hash = state.transaction(Transaction::Batch(log));
+        Ok(BatchResult { tx_hash, ..result })
     }
 }

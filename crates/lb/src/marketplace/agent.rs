@@ -376,7 +376,8 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     /// record needs the agreement's key and a create's key is known only
     /// once it lands. An agreement whose counter record did not follow
     /// stands, and gets one at the next flush. Returns whether the
-    /// agreement is known to have landed.
+    /// port and the slot are held: they are after a landed write and
+    /// after an unresolved one, which may have landed.
     async fn accept(&self, offer: &Stored<Offer>, port: u16, head: u64) -> bool {
         let agreement = Agreement {
             provider: offer.creator,
@@ -394,16 +395,17 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         {
             Ok(created) => created,
             Err(WriteError::Unresolved { tx_hash, .. }) => {
-                // The next poll's reconcile adopts it if it landed. While
-                // the chain is stalled the same offer is accepted again
-                // every poll: a known limitation.
+                // The next poll's reconcile adopts it if it landed, so the
+                // port and the slot stay held until then. While the chain
+                // is stalled the same offer is accepted again every poll:
+                // a known limitation.
                 tracing::warn!(
                     offer = %offer.key,
                     provider = %offer.creator,
                     tx = %tx_hash,
                     "acceptance unresolved: the next poll adopts it if it landed"
                 );
-                return false;
+                return true;
             }
             Err(error) => {
                 tracing::error!(offer = %offer.key, provider = %offer.creator, %error, "acceptance failed");

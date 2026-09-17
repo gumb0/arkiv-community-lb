@@ -691,6 +691,41 @@ async fn an_unresolved_acceptance_is_adopted_at_the_next_poll_not_repeated() {
 }
 
 #[tokio::test]
+async fn an_unresolved_acceptance_holds_its_port_and_slot() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let mut config = marketplace();
+    config.max_providers = 2;
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    let offer = offer_for(&agent, &chain);
+    post(&chain, provider(1), &offer, DAY);
+    chain.advance(1);
+    post(&chain, provider(2), &offer, DAY);
+    chain.advance(1);
+    post(&chain, provider(3), &offer, DAY);
+
+    // The first acceptance lands unanswered. It may have taken port
+    // 20000 and a slot, so the same poll gives neither away.
+    chain.unresolved_next();
+    agent.poll().await;
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 1, "the second offer, known");
+    assert_eq!(agreements[0].record.provider, provider(2));
+    assert_eq!(agreements[0].record.remote_port, 20001);
+
+    // The next poll adopts the first: two agreements, two ports, no
+    // third at a cap of two.
+    agent.poll().await;
+    let mut agreements = agent.agreements();
+    agreements.sort_by_key(|a| a.record.remote_port);
+    assert_eq!(agreements.len(), 2);
+    assert_eq!(agreements[0].record.provider, provider(1));
+    assert_eq!(agreements[0].record.remote_port, 20000);
+    assert_eq!(agreements[1].record.provider, provider(2));
+    assert_eq!(agreements[1].record.remote_port, 20001);
+}
+
+#[tokio::test]
 async fn an_agreement_stands_when_its_counter_record_does_not_follow() {
     let chain = FakeChain::new(LB, CHAIN_ID);
     let pool = Arc::new(Pool::new(&[]).expect("empty pool"));

@@ -92,9 +92,10 @@ LB opens its counter record at the next daily write.
 The LB accepts one offer at a time, oldest first, up to its free
 slots, and gives each provider the lowest tunnel port not held by a
 live agreement. When an acceptance's answer is lost (the write may or
-may not have landed), the LB reads its own records back at the next
-poll: an agreement that landed is adopted, and one that did not is
-written then. While the chain is stalled that answer stays lost, and
+may not have landed), its port and slot stay held, and the LB reads
+its own records back at the next poll: an agreement that landed is
+adopted, and one that did not is written then, its port and slot free
+again. While the chain is stalled that answer stays lost, and
 the LB accepts the same offer again at every poll until blocks come
 again; the extra agreements expire unrefreshed. A known limitation.
 

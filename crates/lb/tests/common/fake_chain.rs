@@ -31,10 +31,16 @@ struct State {
     /// In creation order, which is the order a query returns.
     entities: Vec<Entity>,
     transactions: Vec<Transaction>,
-    /// When set, every call on the sidecar side fails with this message.
-    sidecar_down: Option<String>,
+    /// `Some(0)`: every call on the sidecar side fails. `Some(n)`: it
+    /// fails after `n` more writes. `None`: the sidecar is up.
+    sidecar_down_after: Option<usize>,
+    /// The message the sidecar fails with.
+    sidecar_down_message: Option<String>,
     /// When set, every read fails with this message.
     reference_down: Option<String>,
+    /// When set, the next write lands but is answered as unresolved,
+    /// the sidecar's 504: the caller never learns it landed.
+    unresolved_next: bool,
     /// A batch with more operations than this is refused as too large,
     /// the way the node refuses a transaction over its size cap.
     operation_limit: usize,
@@ -82,8 +88,10 @@ impl FakeChain {
             next_tx: 1,
             entities: Vec::new(),
             transactions: Vec::new(),
-            sidecar_down: None,
+            sidecar_down_after: None,
+            sidecar_down_message: None,
             reference_down: None,
+            unresolved_next: false,
             operation_limit: usize::MAX,
         })))
     }
@@ -136,7 +144,7 @@ impl FakeChain {
 
     /// Every write and the identity fail with this message, until `heal`.
     pub fn fail_sidecar(&self, message: &str) {
-        self.state().sidecar_down = Some(message.to_owned());
+        self.fail_sidecar_after(0, message);
     }
 
     /// Every read fails with this message, until `heal`.
@@ -144,10 +152,25 @@ impl FakeChain {
         self.state().reference_down = Some(message.to_owned());
     }
 
+    /// The next write lands, but its answer is a 504: the write is
+    /// unresolved from the caller's side.
+    pub fn unresolved_next(&self) {
+        self.state().unresolved_next = true;
+    }
+
+    /// The sidecar goes down after this many more writes land.
+    pub fn fail_sidecar_after(&self, writes: usize, message: &str) {
+        let mut state = self.state();
+        state.sidecar_down_after = Some(writes);
+        state.sidecar_down_message = Some(message.to_owned());
+    }
+
     pub fn heal(&self) {
         let mut state = self.state();
-        state.sidecar_down = None;
+        state.sidecar_down_after = None;
+        state.sidecar_down_message = None;
         state.reference_down = None;
+        state.unresolved_next = false;
     }
 }
 
@@ -182,17 +205,35 @@ impl State {
         let hash = format!("{:#x}", B256::from(U256::from(self.next_tx)));
         self.next_tx += 1;
         self.transactions.push(transaction);
+        if let Some(left) = &mut self.sidecar_down_after {
+            *left = left.saturating_sub(1);
+        }
         hash
     }
 
+    /// A landed write's answer, or a 504 when the test asked for one.
+    fn answer<T>(&mut self, tx_hash: String, value: T) -> Result<T, WriteError> {
+        if std::mem::take(&mut self.unresolved_next) {
+            return Err(WriteError::Unresolved {
+                tx_hash,
+                errors: vec![ErrorLink {
+                    name: "WaitForTransactionReceiptTimeoutError".to_owned(),
+                    message: "timed out".to_owned(),
+                    details: None,
+                }],
+            });
+        }
+        Ok(value)
+    }
+
     fn sidecar(&self) -> Result<(), WriteError> {
-        match &self.sidecar_down {
-            Some(message) => Err(WriteError::Failed(vec![ErrorLink {
+        match self.sidecar_down_after {
+            Some(0) => Err(WriteError::Failed(vec![ErrorLink {
                 name: "FakeChain".to_owned(),
-                message: message.clone(),
+                message: self.sidecar_down_message.clone().unwrap_or_default(),
                 details: None,
             }])),
-            None => Ok(()),
+            _ => Ok(()),
         }
     }
 
@@ -338,11 +379,14 @@ impl ChainWriter for FakeChain {
             expires_at,
         );
         let tx_hash = state.transaction(Transaction::Create(entity_key));
-        Ok(Created {
-            entity_key,
-            tx_hash,
-            expires_at,
-        })
+        state.answer(
+            tx_hash.clone(),
+            Created {
+                entity_key,
+                tx_hash,
+                expires_at,
+            },
+        )
     }
 
     async fn patch(&self, patch: &Patch) -> Result<Written, WriteError> {

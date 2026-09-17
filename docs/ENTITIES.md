@@ -113,11 +113,13 @@ Payload:
 ```
 
 The tooling fills `specs` from the node itself. The operator types
-nothing. The LB stores and logs the specs and uses two fields: it skips
-an offer whose `chain_id` differs from its own, and one whose `head` is
-far behind the current head. The hardware fields are self-reported and not
-checked. An offer has no rate. The LB sets the price in its listing, and
-a provider that does not accept it does not post an offer.
+nothing. The LB stores and logs the specs and acts on one field: it
+skips an offer whose `chain_id` differs from its own. The rest,
+`head` included, is information for the operator. The hardware fields
+are self-reported and not checked; the probes decide whether a node
+serves the chain it should. An offer has no rate. The LB sets the
+price in its listing, and a provider that does not accept it does not
+post an offer.
 
 The provider is the offer's creator. Lifetime: one day. An unanswered
 offer expires on its own; to try again, the provider posts a new offer.
@@ -155,8 +157,11 @@ Payload:
 The tunnel server's address is not in the record. The provider reads it
 from the listing.
 
-The agreement record is written in the same transaction as the
-agreement's first counter record (below): both exist or neither does.
+The LB writes the agreement record, then the agreement's first counter
+record (below), which points at it. The two are separate writes: a
+record's key is known only once it has landed, so the counter record
+cannot be in the same transaction. An agreement whose counter record
+did not follow gets one at the LB's next daily write.
 
 Lifetime: two hours at creation (the accept window). Every hour, the LB
 refreshes the records of the providers that are healthy at that moment,
@@ -227,9 +232,9 @@ provider to check against its own logs. They are read a few blocks
 before the transaction that carries them lands, so they are
 approximate.
 
-Lifecycle. The LB creates the first record at zero in the same
-transaction as the agreement record, and writes the count into the open
-record once a day. When the record's settlement period is over (a week
+Lifecycle. The LB creates the first record at zero right after the
+agreement record, and writes the count into the open record once a
+day. When the record's settlement period is over (a week
 by default, counted from `opened_block`) and the record has a count,
 that daily write closes it: it sets the final count, `state = "closed"`
 and `closed_block`, and creates the next record at zero in the same

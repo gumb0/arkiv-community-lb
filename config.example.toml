@@ -108,14 +108,16 @@ agreement_life = "3d"
 # has run within this time.
 # An even number of seconds: lifetimes are whole blocks of two seconds.
 listing_life = "30d"
+# How long a counter record stays on the chain after it is written. It
+# is never extended: a closed record waits this long for settle to pay
+# it, so the value must cover any lateness of settle.
+# An even number of seconds: lifetimes are whole blocks of two seconds.
+counter_record_life = "180d"
 # Spam protection. Offers expiring further out than this are ignored,
 # so nobody can post a page of long-lived offers once and crowd real
 # ones out of discovery for good; re-posting costs gas every time.
 # An even number of seconds: lifetimes are whole blocks of two seconds.
 offer_max_lifetime = "2d"
-# An offer whose reported head is further behind the reference than
-# this is ignored.
-offer_max_lag_blocks = 1000
 # The signing key's balance, in GLM, below which every refresh logs a
 # warning.
 gas_warn_below = "0.02"

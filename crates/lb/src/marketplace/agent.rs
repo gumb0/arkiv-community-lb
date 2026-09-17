@@ -1,11 +1,13 @@
 //! The marketplace agent: the LB's state on the chain, read back into
-//! memory and kept there. The chain is the authority; what is here is a
-//! cache of it, rebuilt at every start and reconciled at every poll.
-//! One task, and every chain write of the LB goes through it.
+//! memory and kept there, and offers turned into agreements. The chain
+//! is the authority; what is here is a cache of it, rebuilt at every
+//! start and reconciled at every poll. One task, and every chain write
+//! of the LB goes through it.
 
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use tokio::sync::watch;
@@ -15,8 +17,8 @@ use crate::{
         ChainReader, ChainWriter,
         reader::{PAGE_LIMIT, Query, ReadError},
         records::{
-            Address, Agreement, EntityKey, KIND_AGREEMENT, KIND_LB_LISTING, LbListing, Record,
-            Stored,
+            Address, Agreement, CounterRecord, CounterState, EntityKey, KIND_AGREEMENT,
+            KIND_LB_LISTING, KIND_OFFER, LbListing, Offer, Record, Stored,
         },
         writer::{Create, Expiry, Identity, Patch, WriteError},
     },
@@ -98,10 +100,13 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         };
         // The reconcile only reads and can refuse the start; the listing
         // writes. This order keeps a refused start from writing anything.
-        agent.reconcile().await.map_err(|error| match error {
-            ReconcileError::Chain(error) => StartError::Chain(error),
-            ReconcileError::TooMany { count } => StartError::TooManyAgreements { count },
-        })?;
+        agent
+            .reconcile_agreements()
+            .await
+            .map_err(|error| match error {
+                ReconcileError::Chain(error) => StartError::Chain(error),
+                ReconcileError::TooMany { count } => StartError::TooManyAgreements { count },
+            })?;
         let live = agent.agreements().len();
         if live > agent.config.max_providers as usize {
             tracing::warn!(
@@ -162,19 +167,27 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         }
     }
 
-    /// One discovery poll. The reconcile comes first; a poll that cannot
-    /// read the chain, or finds more records than a page, changes
-    /// nothing and says so.
+    /// One discovery poll: the reconcile, then the offers. A poll that
+    /// cannot read the chain, or finds more records than a page, changes
+    /// nothing and says so; the offers are still read, so a full page of
+    /// agreements does not stop acceptance, only the cap does.
     pub async fn poll(&self) {
-        match self.reconcile().await {
-            Ok(()) => {}
-            Err(ReconcileError::TooMany { count }) => tracing::error!(
-                count,
-                "more agreement records than one page holds: this poll's reconcile is skipped"
-            ),
-            Err(ReconcileError::Chain(error)) => {
-                tracing::warn!(%error, "the chain could not be read: this poll's reconcile is skipped");
+        let head = match self.reconcile_agreements().await {
+            Ok(head) => Some(head),
+            Err(ReconcileError::TooMany { count }) => {
+                tracing::error!(
+                    count,
+                    "more agreement records than one page holds: this poll's reconcile is skipped"
+                );
+                self.reader.block_number().await.ok()
             }
+            Err(ReconcileError::Chain(error)) => {
+                tracing::warn!(%error, "the chain could not be read: this poll is skipped");
+                None
+            }
+        };
+        if let Some(head) = head {
+            self.discover_offers(head).await;
         }
     }
 
@@ -185,7 +198,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     /// provider leaves the pool and its slot and port are free. Expired
     /// records have vanished from the chain, so what is there is what
     /// is live. Nothing is applied on a read that failed.
-    async fn reconcile(&self) -> Result<(), ReconcileError> {
+    async fn reconcile_agreements(&self) -> Result<u64, ReconcileError> {
         let head = self
             .reader
             .block_number()
@@ -267,8 +280,194 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             adopted += 1;
         }
         tracing::debug!(live = known.len(), adopted, "reconciled with the chain");
-        Ok(())
+        Ok(head)
     }
+
+    /// The offers against this LB's listing, and the acceptances they
+    /// earn. One page: more offers than that hides some, which is a
+    /// known limit. An offer counts when it is alive, expires within
+    /// `offer_max_lifetime`, names this chain, and comes from a provider
+    /// with no live agreement; oldest first, one per provider, up to
+    /// the free slots. The head an offer reports is not judged: it is a
+    /// snapshot from posting time, and the probes decide on the node.
+    async fn discover_offers(&self, head: u64) {
+        let query = Query::kind(KIND_OFFER)
+            .attr_key("lb_listing", self.listing_key)
+            .expires_after(head)
+            .expires_by(head + blocks(self.config.offer_max_lifetime));
+        let page = match self.reader.query(&query).await {
+            Ok(page) => page,
+            Err(error) => {
+                tracing::warn!(%error, "the offers could not be read: this poll's discovery is skipped");
+                return;
+            }
+        };
+        if page.more {
+            tracing::warn!("more offers than one page holds: some are not seen");
+        }
+        let mut offers: Vec<Stored<Offer>> = Vec::new();
+        for entity in &page.entities {
+            let offer = match Stored::<Offer>::decode(entity) {
+                Ok(offer) => offer,
+                Err(error) => {
+                    tracing::debug!(key = %entity.key, %error, "an offer does not decode: skipped");
+                    continue;
+                }
+            };
+            let specs = &offer.record.specs;
+            if specs.chain_id != self.identity.chain_id {
+                tracing::debug!(key = %offer.key, chain = specs.chain_id, "offer for another chain: skipped");
+                continue;
+            }
+            offers.push(offer);
+        }
+        // Oldest first: the earliest expiry is the earliest post.
+        offers.sort_by_key(|offer| offer.expires_at);
+
+        let (free, taken_providers, taken_offers, taken_ports) = {
+            let known = self
+                .agreements
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let free = (self.config.max_providers as usize).saturating_sub(known.len());
+            let providers: HashSet<Address> = known.values().map(|a| a.record.provider).collect();
+            let offers: HashSet<EntityKey> = known.values().map(|a| a.record.offer).collect();
+            let ports: HashSet<u16> = known.values().map(|a| a.record.remote_port).collect();
+            (free, providers, offers, ports)
+        };
+        let mut accepted_providers = taken_providers;
+        let mut used_ports = taken_ports;
+        let mut accepted = 0;
+        for offer in offers {
+            if accepted >= free {
+                tracing::info!(key = %offer.key, provider = %offer.creator, "offer waits: the cap is full");
+                continue;
+            }
+            if taken_offers.contains(&offer.key) {
+                continue;
+            }
+            if accepted_providers.contains(&offer.creator) {
+                tracing::debug!(key = %offer.key, provider = %offer.creator, "provider already under agreement: skipped");
+                continue;
+            }
+            let Some(port) = self
+                .config
+                .remote_ports()
+                .find(|port| !used_ports.contains(port))
+            else {
+                // Unreachable by construction: the cap's worth of ports and
+                // fewer agreements than the cap leave one free.
+                tracing::error!(
+                    "no free tunnel port though the cap has room: a port outside the configured \
+                     range is in use, or the slot state is wrong"
+                );
+                break;
+            };
+            if self.accept(&offer, port, head).await {
+                accepted_providers.insert(offer.creator);
+                used_ports.insert(port);
+                accepted += 1;
+            }
+        }
+    }
+
+    /// One acceptance: the agreement record, then its first counter
+    /// record pointing at it, at zero. Two writes, because the counter
+    /// record needs the agreement's key and a create's key is known only
+    /// once it lands. An agreement whose counter record did not follow
+    /// stands, and gets one at the next flush. Returns whether the
+    /// agreement is known to have landed.
+    async fn accept(&self, offer: &Stored<Offer>, port: u16, head: u64) -> bool {
+        let agreement = Agreement {
+            provider: offer.creator,
+            offer: offer.key,
+            wei_per_call: self.config.wei_per_call,
+            remote_port: port,
+        };
+        let created = match self
+            .writer
+            .create(&Create::new(
+                agreement.encode(),
+                Expiry::Seconds(self.config.accept_window.as_secs()),
+            ))
+            .await
+        {
+            Ok(created) => created,
+            Err(WriteError::Unresolved { tx_hash, .. }) => {
+                // The next poll's reconcile adopts it if it landed. While
+                // the chain is stalled the same offer is accepted again
+                // every poll: a known limitation.
+                tracing::warn!(
+                    offer = %offer.key,
+                    provider = %offer.creator,
+                    tx = %tx_hash,
+                    "acceptance unresolved: the next poll adopts it if it landed"
+                );
+                return false;
+            }
+            Err(error) => {
+                tracing::error!(offer = %offer.key, provider = %offer.creator, %error, "acceptance failed");
+                return false;
+            }
+        };
+        let agreement_key = created.entity_key;
+        let stored = Stored {
+            key: created.entity_key,
+            creator: self.identity.address,
+            expires_at: created.expires_at,
+            record: agreement,
+        };
+        self.pool.add(Provider::from_marketplace(
+            offer.creator,
+            created.entity_key,
+            port,
+        ));
+        self.agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(created.entity_key, stored);
+        tracing::info!(
+            provider = %offer.creator,
+            agreement = %created.entity_key,
+            port,
+            "offer accepted"
+        );
+
+        let counter = CounterRecord {
+            agreement: created.entity_key,
+            provider: offer.creator,
+            state: CounterState::Open,
+            count: 0,
+            wei_per_call: self.config.wei_per_call,
+            opened_block: head,
+            closed_block: None,
+        };
+        match self
+            .writer
+            .create(&Create::new(
+                counter.encode(),
+                Expiry::Seconds(self.config.counter_record_life.as_secs()),
+            ))
+            .await
+        {
+            Ok(created) => {
+                tracing::info!(agreement = %agreement_key, counter = %created.entity_key, "counter record opened");
+            }
+            Err(error) => {
+                tracing::warn!(
+                    agreement = %agreement_key,
+                    %error,
+                    "the counter record did not follow the agreement: the next flush opens one"
+                );
+            }
+        }
+        true
+    }
+}
+
+/// A lifetime in blocks, the way the sidecar converts it.
+fn blocks(lifetime: Duration) -> u64 {
+    lifetime.as_secs() / 2
 }
 
 /// One live listing that says what the configuration says: created if

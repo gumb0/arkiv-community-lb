@@ -7,11 +7,15 @@ use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::Address;
 use common::fake_chain::{FakeChain, Transaction};
+use lb::chain::reader::Query;
 use lb::{
     chain::{
         ChainReader,
-        reader::{PAGE_LIMIT, Query},
-        records::{Agreement, KIND_LB_LISTING, LbListing, Record, Stored, Wei},
+        reader::PAGE_LIMIT,
+        records::{
+            Agreement, CounterRecord, CounterState, Hardware, KIND_COUNTER, KIND_LB_LISTING,
+            LbListing, Offer, Record, Specs, Stored, Wei,
+        },
         writer::Expiry,
     },
     config::Marketplace,
@@ -34,8 +38,8 @@ fn marketplace() -> Marketplace {
         refresh_interval: Duration::from_secs(3600),
         agreement_life: Duration::from_secs(3 * 24 * 3600),
         listing_life: Duration::from_secs(30 * 24 * 3600),
+        counter_record_life: Duration::from_secs(180 * 24 * 3600),
         offer_max_lifetime: Duration::from_secs(2 * 24 * 3600),
-        offer_max_lag_blocks: 1000,
         gas_warn_below: Wei::new(20_000_000_000_000_000),
     }
 }
@@ -76,6 +80,41 @@ async fn start(
     pool: &Arc<Pool>,
 ) -> Result<FakeAgent, StartError> {
     Agent::start(chain.clone(), chain.clone(), config.clone(), pool.clone()).await
+}
+
+const CHAIN_ID: u64 = 1337;
+const DAY: u64 = 24 * 3600;
+
+/// An offer as the tooling posts it, against the agent's listing.
+fn offer_for(agent: &FakeAgent, chain: &FakeChain) -> Offer {
+    Offer {
+        lb_listing: agent.listing_key(),
+        specs: Specs {
+            chain_id: CHAIN_ID,
+            head: chain.head(),
+            el: "arkiv-reth/v0.2.0".to_owned(),
+            cl: "lighthouse/v8.2.1".to_owned(),
+            hw: Hardware {
+                cpus: 8,
+                mem_gb: 32,
+            },
+        },
+    }
+}
+
+fn post(chain: &FakeChain, provider: Address, offer: &Offer, life: u64) -> alloy_primitives::B256 {
+    chain.write_as(provider, offer.encode(), Expiry::Seconds(life))
+}
+
+async fn counter_records(chain: &FakeChain) -> Vec<Stored<CounterRecord>> {
+    chain
+        .query(&Query::kind(KIND_COUNTER).creator(LB))
+        .await
+        .expect("query")
+        .entities
+        .iter()
+        .map(|entity| Stored::<CounterRecord>::decode(entity).expect("decodes"))
+        .collect()
 }
 
 #[tokio::test]
@@ -419,6 +458,280 @@ async fn a_poll_that_cannot_read_the_chain_changes_nothing() {
 }
 
 // ---------------------------------------------------------------------------
+// Discovery and acceptance
+
+#[tokio::test]
+async fn an_offer_becomes_an_agreement_and_a_counter_record() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = marketplace();
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    let offer = offer_for(&agent, &chain);
+    let offer_key = post(&chain, provider(1), &offer, DAY);
+    chain.advance(10);
+    let writes_before = chain.transactions().len();
+
+    agent.poll().await;
+
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 1);
+    let agreement = &agreements[0];
+    assert_eq!(agreement.creator, LB);
+    assert_eq!(agreement.record.provider, provider(1));
+    assert_eq!(agreement.record.offer, offer_key);
+    assert_eq!(agreement.record.wei_per_call, config.wei_per_call);
+    assert_eq!(agreement.record.remote_port, 20000, "the first port");
+    assert_eq!(
+        agreement.expires_at,
+        chain.head() + config.accept_window.as_secs() / 2,
+        "the accept window"
+    );
+    let members = pool.snapshot();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].id, format!("{:#x}", provider(1)));
+    assert!(!members[0].eligible(), "born ineligible");
+
+    let counters = counter_records(&chain).await;
+    assert_eq!(counters.len(), 1);
+    let counter = &counters[0];
+    assert_eq!(counter.record.agreement, agreement.key);
+    assert_eq!(counter.record.provider, provider(1));
+    assert_eq!(counter.record.state, CounterState::Open);
+    assert_eq!(counter.record.count, 0);
+    assert_eq!(counter.record.wei_per_call, config.wei_per_call);
+    assert_eq!(counter.record.opened_block, chain.head());
+    assert_eq!(counter.record.closed_block, None);
+    assert_eq!(
+        counter.expires_at,
+        chain.head() + config.counter_record_life.as_secs() / 2
+    );
+    assert_eq!(
+        chain.transactions().len() - writes_before,
+        2,
+        "the agreement, then its counter record"
+    );
+    assert!(
+        matches!(chain.transactions()[writes_before], Transaction::Create(key) if key == agreement.key)
+    );
+
+    // The same offer is not accepted again: an agreement points at it.
+    agent.poll().await;
+    assert_eq!(agent.agreements().len(), 1);
+    assert_eq!(chain.transactions().len() - writes_before, 2);
+}
+
+#[tokio::test]
+async fn offers_are_filtered_before_any_gas_is_spent() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = marketplace();
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    chain.advance(2_000);
+    let good = offer_for(&agent, &chain);
+
+    let mut other_chain = good.clone();
+    other_chain.specs.chain_id = 7;
+    post(&chain, provider(1), &other_chain, DAY);
+
+    // Alive far past offer_max_lifetime: not even read.
+    post(&chain, provider(3), &good, 30 * DAY);
+
+    let mut other_listing = good.clone();
+    other_listing.lb_listing = alloy_primitives::B256::repeat_byte(0xaa);
+    post(&chain, provider(4), &other_listing, DAY);
+
+    // Under agreement already: skipped.
+    seed_agreement(&chain, provider(5), 20003, 3600);
+    agent.poll().await;
+    post(&chain, provider(5), &good, DAY);
+
+    // A head far behind the current one is not judged: the probes are.
+    let mut behind = good.clone();
+    behind.specs.head = 1;
+    post(&chain, provider(6), &behind, DAY);
+
+    let writes_before = chain.transactions().len();
+    agent.poll().await;
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 2, "the seeded one and provider 6");
+    assert!(
+        agreements.iter().any(|a| a.record.provider == provider(6)),
+        "a stale head is no reason to skip"
+    );
+    assert_eq!(chain.transactions().len() - writes_before, 2);
+}
+
+#[tokio::test]
+async fn the_cap_full_waits_and_a_freed_slot_goes_to_the_oldest_offer() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let mut config = marketplace();
+    config.max_providers = 2;
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+
+    // Two slots. The first provider is accepted alone, so its accept
+    // window runs out before the second's. Its offer expires with its
+    // agreement: a live one would be accepted again (issue #21).
+    let first = post(
+        &chain,
+        provider(1),
+        &offer_for(&agent, &chain),
+        config.accept_window.as_secs(),
+    );
+    agent.poll().await;
+    chain.advance(100);
+    let offer = offer_for(&agent, &chain);
+    let second = post(&chain, provider(2), &offer, DAY);
+    chain.advance(1);
+    let third = post(&chain, provider(3), &offer, DAY);
+    agent.poll().await;
+    let accepted: Vec<_> = agent.agreements().iter().map(|a| a.record.offer).collect();
+    assert_eq!(accepted.len(), 2);
+    assert!(
+        accepted.contains(&first) && accepted.contains(&second),
+        "{accepted:?}"
+    );
+    assert!(!accepted.contains(&third), "the youngest waits");
+
+    // Nothing changes while the cap is full.
+    agent.poll().await;
+    assert_eq!(agent.agreements().len(), 2);
+
+    // The first agreement ends (never refreshed: its accept window
+    // runs out) while the second is still alive. The oldest waiting
+    // offer takes the freed slot, in the same poll.
+    chain.advance(config.accept_window.as_secs() / 2 - 100);
+    let fourth = post(&chain, provider(4), &offer, DAY);
+    agent.poll().await;
+    let accepted: Vec<_> = agent.agreements().iter().map(|a| a.record.offer).collect();
+    assert_eq!(accepted.len(), 2, "{accepted:?}");
+    assert!(accepted.contains(&second), "still alive");
+    assert!(
+        accepted.contains(&third),
+        "the oldest waiting offer got the slot"
+    );
+    assert!(!accepted.contains(&fourth), "the newer one waits");
+    let ports: Vec<u16> = agent
+        .agreements()
+        .iter()
+        .map(|a| a.record.remote_port)
+        .collect();
+    assert!(
+        ports.contains(&20000),
+        "the freed port is reused: {ports:?}"
+    );
+}
+
+#[tokio::test]
+async fn one_provider_gets_one_agreement_from_its_oldest_offer() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    let offer = offer_for(&agent, &chain);
+    let older = post(&chain, provider(1), &offer, DAY);
+    chain.advance(1);
+    let newer = post(&chain, provider(1), &offer, DAY);
+
+    agent.poll().await;
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 1);
+    assert_eq!(agreements[0].record.offer, older);
+    assert_ne!(agreements[0].record.offer, newer);
+    assert_eq!(pool.snapshot().len(), 1);
+}
+
+#[tokio::test]
+async fn the_lowest_free_port_is_assigned() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    seed_agreement(&chain, provider(1), 20000, 3600);
+    seed_agreement(&chain, provider(2), 20002, 3600);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    let offer = offer_for(&agent, &chain);
+    post(&chain, provider(3), &offer, DAY);
+    post(&chain, provider(4), &offer, DAY);
+
+    agent.poll().await;
+    let mut ports: Vec<u16> = agent
+        .agreements()
+        .iter()
+        .map(|a| a.record.remote_port)
+        .collect();
+    ports.sort_unstable();
+    assert_eq!(ports, [20000, 20001, 20002, 20003]);
+}
+
+#[tokio::test]
+async fn an_unresolved_acceptance_is_adopted_at_the_next_poll_not_repeated() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    let offer = offer_for(&agent, &chain);
+    let offer_key = post(&chain, provider(1), &offer, DAY);
+    let writes_before = chain.transactions().len();
+
+    // The agreement lands, but the answer is a 504.
+    chain.unresolved_next();
+    agent.poll().await;
+    assert!(agent.agreements().is_empty(), "not known yet");
+    assert!(pool.snapshot().is_empty());
+    assert_eq!(chain.transactions().len() - writes_before, 1, "it landed");
+
+    // The next poll adopts what landed and accepts nothing twice.
+    agent.poll().await;
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 1);
+    assert_eq!(agreements[0].record.offer, offer_key);
+    assert_eq!(pool.snapshot().len(), 1);
+    assert_eq!(
+        chain.transactions().len() - writes_before,
+        1,
+        "no second agreement; the counter record is the flush's to open"
+    );
+}
+
+#[tokio::test]
+async fn an_agreement_stands_when_its_counter_record_does_not_follow() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    let offer = offer_for(&agent, &chain);
+    post(&chain, provider(1), &offer, DAY);
+
+    chain.fail_sidecar_after(1, "connection refused");
+    agent.poll().await;
+    assert_eq!(agent.agreements().len(), 1, "the agreement landed");
+    assert_eq!(pool.snapshot().len(), 1);
+    assert!(
+        counter_records(&chain).await.is_empty(),
+        "the counter record did not"
+    );
+
+    chain.heal();
+    agent.poll().await;
+    assert_eq!(agent.agreements().len(), 1, "not accepted again");
+}
+
+#[tokio::test]
+async fn a_failed_acceptance_is_retried_at_the_next_poll() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    let offer = offer_for(&agent, &chain);
+    post(&chain, provider(1), &offer, DAY);
+
+    chain.fail_sidecar("gas required exceeds allowance");
+    agent.poll().await;
+    assert!(agent.agreements().is_empty());
+    assert!(pool.snapshot().is_empty());
+
+    chain.heal();
+    agent.poll().await;
+    assert_eq!(agent.agreements().len(), 1);
+    assert_eq!(counter_records(&chain).await.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
 // The service wiring
 
 fn service_config() -> lb::config::Config {
@@ -571,5 +884,47 @@ async fn the_agent_polls_on_its_interval() {
         service.pool.snapshot().is_empty()
     })
     .await;
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_running_agent_accepts_an_offer_posted_after_start() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let mut config = service_config();
+    config
+        .marketplace
+        .as_mut()
+        .expect("present")
+        .discovery_interval = Duration::from_millis(20);
+    let service = lb::service::start_with(config, Some((chain.clone(), chain.clone())))
+        .await
+        .expect("starts");
+    let listing = chain
+        .query(&Query::kind(KIND_LB_LISTING).creator(LB))
+        .await
+        .expect("query")
+        .entities[0]
+        .key;
+    let offer = Offer {
+        lb_listing: listing,
+        specs: Specs {
+            chain_id: CHAIN_ID,
+            head: chain.head(),
+            el: "arkiv-reth/v0.2.0".to_owned(),
+            cl: "lighthouse/v8.2.1".to_owned(),
+            hw: Hardware {
+                cpus: 8,
+                mem_gb: 32,
+            },
+        },
+    };
+    post(&chain, provider(1), &offer, DAY);
+    wait_for("the offer is accepted", || {
+        service.pool.snapshot().len() == 1
+    })
+    .await;
+    let nodes = nodes(&service).await;
+    assert_eq!(nodes[0]["id"], format!("{:#x}", provider(1)));
+    assert_eq!(nodes[0]["url"], "http://127.0.0.1:20000/");
     service.shutdown().await;
 }

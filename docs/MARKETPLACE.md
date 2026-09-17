@@ -15,9 +15,9 @@ provider                        Arkiv                             LB
    │◄── reads the listing ────────│    server, cap                 │
    │ offer: node specs ──────────►│                                │
    │                              │◄── discovery poll ─────────────│  every 5 minutes
-   │                              │◄── agreement record: rate, ────│  acceptance, one
-   │◄── reads the record ─────────│    tunnel port, and a counter  │  transaction
-   │                              │    record at zero              │
+   │                              │◄── agreement record: rate, ────│  acceptance, then
+   │◄── reads the record ─────────│    tunnel port; then a counter │  its counter
+   │                              │    record at zero              │  record
    │ tunnel connects with the signed token ───────────────────────►│  admission
    │                              │        probes pass → provider serves traffic
    │                              │◄── hourly refresh of the record│  while it serves
@@ -68,8 +68,8 @@ provider already has a live offer, and while it has a live agreement,
 so an operator cannot waste gas on an offer the LB would skip.
 
 The LB polls for offers against its listing every five minutes and
-considers those that expire within two days, name its own chain, and
-report a head height close to the current one. Offers from providers
+considers those that expire within two days and name its own chain.
+Offers from providers
 that already have an agreement, and offers an agreement already points
 at, are skipped; a provider's duplicate offers are tolerated and the
 oldest taken. When there are more offers than free slots, older offers
@@ -79,13 +79,24 @@ lasts; this is a known limitation.
 
 ## Acceptance
 
-Accepting an offer is one transaction with two records in it: the
-**[agreement record](ENTITIES.md#agreement-record)**, whose key is the
-agreement id, and the agreement's first **[counter
-record](ENTITIES.md#counter-record)**, at zero. The agreement record
-carries the rate the agreement was accepted at, the tunnel port
-assigned to this provider, and the key of the offer it accepted. It is
-created with a short lifetime, two hours, called the accept window.
+Accepting an offer is two writes: the **[agreement
+record](ENTITIES.md#agreement-record)**, whose key is the agreement
+id, and then the agreement's first **[counter
+record](ENTITIES.md#counter-record)**, at zero, pointing at it. The
+agreement record carries the rate the agreement was accepted at, the
+tunnel port assigned to this provider, and the key of the offer it
+accepted. It is created with a short lifetime, two hours, called the
+accept window. If the second write fails, the agreement stands and the
+LB opens its counter record at the next daily write.
+
+The LB accepts one offer at a time, oldest first, up to its free
+slots, and gives each provider the lowest tunnel port not held by a
+live agreement. When an acceptance's answer is lost (the write may or
+may not have landed), the LB reads its own records back at the next
+poll: an agreement that landed is adopted, and one that did not is
+written then. While the chain is stalled that answer stays lost, and
+the LB accepts the same offer again at every poll until blocks come
+again; the extra agreements expire unrefreshed. A known limitation.
 
 The provider reads its record, signs its agreement id with the key that
 posted the offer, and starts its tunnel client with that signature as

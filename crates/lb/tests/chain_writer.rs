@@ -17,7 +17,7 @@ use axum::{
 };
 use lb::chain::{
     records::{Agreement, Record, Wei},
-    writer::{Batch, Create, Delete, Expiry, Extend, Group, Operation, Patch, WriteError, Writer},
+    writer::{Batch, Create, Delete, Expiry, Extend, Operation, Patch, WriteError, Writer},
 };
 use serde_json::{Value, json};
 
@@ -180,10 +180,10 @@ async fn a_batch_returns_the_extended_keys() {
     .await;
     let mut batch = Batch::new();
     for _ in 0..2 {
-        batch.push(Group::single(Operation::Extend(Extend {
+        batch.push(Operation::Extend(Extend {
             entity_key: key(),
             expires: Expiry::Seconds(1),
-        })));
+        }));
     }
     let result = writer.execute_batch(&batch).await.expect("batch");
     assert_eq!(result.tx_hash, TX);

@@ -420,11 +420,7 @@ impl ChainWriter for FakeChain {
     async fn execute_batch(&self, batch: &Batch) -> Result<BatchResult, WriteError> {
         let mut state = self.state();
         state.sidecar()?;
-        let operations: Vec<&Operation> = batch
-            .groups()
-            .iter()
-            .flat_map(|group| group.operations())
-            .collect();
+        let operations = batch.operations();
         if operations.len() > state.operation_limit {
             return Err(WriteError::TooLarge(vec![ErrorLink {
                 name: "FakeChain".to_owned(),
@@ -438,7 +434,7 @@ impl ChainWriter for FakeChain {
         }
         // Every entity a patch, delete or extend names must exist before
         // anything is applied, so a missing key fails the batch whole.
-        for operation in &operations {
+        for operation in operations {
             let key = match operation {
                 Operation::Create(_) => continue,
                 Operation::Patch(patch) => patch.entity_key,

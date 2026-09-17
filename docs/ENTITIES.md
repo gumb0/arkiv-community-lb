@@ -237,8 +237,9 @@ agreement record, and writes the count into the open record once a
 day. When the record's settlement period is over (a week
 by default, counted from `opened_block`) and the record has a count,
 that daily write closes it: it sets the final count, `state = "closed"`
-and `closed_block`, and creates the next record at zero in the same
-transaction. A closed record is never changed again.
+and `closed_block`, and creates the next record at zero. When the next
+record did not follow the close, the next daily write creates it. A
+closed record is never changed again.
 
 A record with no count is not closed; it stays open until it has one.
 When an agreement ends, its open record is closed with the count it

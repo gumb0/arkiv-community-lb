@@ -108,33 +108,15 @@ pub enum Operation {
     Extend(Extend),
 }
 
-/// Operations that must land together: an acceptance's two creates, an
-/// agreement's close patch and its successor's create. A chunk never
-/// splits a group, and a chunk is one transaction, so a group lands
-/// whole or not at all.
-#[derive(Debug, Clone)]
-pub struct Group(Vec<Operation>);
-
-impl Group {
-    pub fn new(operations: Vec<Operation>) -> Self {
-        Self(operations)
-    }
-
-    pub fn single(operation: Operation) -> Self {
-        Self(vec![operation])
-    }
-
-    pub fn operations(&self) -> &[Operation] {
-        &self.0
-    }
-}
-
-/// Operations for one or more transactions, in groups. `send` sends it
-/// as one transaction and splits it when the node refuses that as too
-/// large.
+/// Operations for one or more transactions. `send` sends it as one
+/// transaction and splits it when the node refuses that as too large,
+/// and a part that fails does not stop the rest, so any subset may
+/// land. The caller puts only independent operations in one batch: an
+/// operation that needs another to have landed goes in a later batch,
+/// built from what landed.
 #[derive(Debug, Clone, Default)]
 pub struct Batch {
-    groups: Vec<Group>,
+    operations: Vec<Operation>,
 }
 
 impl Batch {
@@ -144,31 +126,31 @@ impl Batch {
 
     pub fn single(operation: Operation) -> Self {
         let mut batch = Self::new();
-        batch.push(Group::single(operation));
+        batch.push(operation);
         batch
     }
 
-    pub fn push(&mut self, group: Group) {
-        self.groups.push(group);
+    pub fn push(&mut self, operation: Operation) {
+        self.operations.push(operation);
     }
 
     pub fn is_empty(&self) -> bool {
-        self.groups.is_empty()
+        self.operations.is_empty()
     }
 
-    pub fn groups(&self) -> &[Group] {
-        &self.groups
+    pub fn operations(&self) -> &[Operation] {
+        &self.operations
     }
 
-    /// Splits into two halves at a group boundary. `None` when there is
-    /// only one group.
+    /// Splits into two halves, in order. `None` when there is only one
+    /// operation.
     fn halves(self) -> Option<(Batch, Batch)> {
-        if self.groups.len() < 2 {
+        if self.operations.len() < 2 {
             return None;
         }
-        let mut first = self.groups;
+        let mut first = self.operations;
         let second = first.split_off(first.len() / 2);
-        Some((Batch { groups: first }, Batch { groups: second }))
+        Some((Batch { operations: first }, Batch { operations: second }))
     }
 }
 
@@ -179,7 +161,7 @@ impl Serialize for Batch {
         let mut patches = Vec::new();
         let mut deletes = Vec::new();
         let mut extensions = Vec::new();
-        for operation in self.groups.iter().flat_map(|group| group.0.iter()) {
+        for operation in &self.operations {
             match operation {
                 Operation::Create(create) => creates.push(create),
                 Operation::Patch(patch) => patches.push(patch),
@@ -224,12 +206,12 @@ pub struct Sent {
 }
 
 /// Sends a batch as one transaction. When the node refuses it as too
-/// large (a refusal, before anything is sent), it is split at a group
-/// boundary and its halves sent, in order, down to a single group,
-/// which is then reported as too large. Any other failure is reported
-/// for that part and the rest go on. Nothing sizes a batch in advance:
-/// the node's refusal is cheap and rare, and an estimate would be one
-/// more thing to keep true.
+/// large (a refusal, before anything is sent), it is split in halves
+/// and those are sent, in order, down to a single operation, which is
+/// then reported as too large. Any other failure is reported for that
+/// part and the rest go on. Nothing sizes a batch in advance: the
+/// node's refusal is cheap and rare, and an estimate would be one more
+/// thing to keep true.
 pub async fn send<W: ChainWriter>(writer: &W, batch: Batch) -> Vec<Sent> {
     let mut queue = std::collections::VecDeque::new();
     if !batch.is_empty() {
@@ -571,7 +553,7 @@ mod tests {
     fn extends(n: usize) -> Batch {
         let mut batch = Batch::new();
         for i in 0..n {
-            batch.push(Group::single(extend(i)));
+            batch.push(extend(i));
         }
         batch
     }
@@ -579,13 +561,14 @@ mod tests {
     #[test]
     fn a_batch_serializes_to_the_sidecar_shape_by_kind() {
         let mut batch = Batch::new();
-        batch.push(Group::new(vec![
-            Operation::Create(Create::new(agreement(), Expiry::Seconds(2))),
-            Operation::Delete(Delete {
-                entity_key: B256::ZERO,
-            }),
-        ]));
-        batch.push(Group::single(extend(1)));
+        batch.push(Operation::Create(Create::new(
+            agreement(),
+            Expiry::Seconds(2),
+        )));
+        batch.push(Operation::Delete(Delete {
+            entity_key: B256::ZERO,
+        }));
+        batch.push(extend(1));
         let wire = serde_json::to_value(&batch).unwrap();
         assert_eq!(wire["creates"].as_array().unwrap().len(), 1);
         assert_eq!(
@@ -607,14 +590,17 @@ mod tests {
     }
 
     #[test]
-    fn halves_split_at_a_group_boundary_in_order() {
-        let (first, second) = extends(5).halves().expect("two or more groups");
-        assert_eq!(first.groups().len(), 2);
-        assert_eq!(second.groups().len(), 3);
-        let Operation::Extend(extend) = &second.groups()[0].operations()[0] else {
+    fn halves_split_in_order() {
+        let (first, second) = extends(5).halves().expect("two or more operations");
+        assert_eq!(first.operations().len(), 2);
+        assert_eq!(second.operations().len(), 3);
+        let Operation::Extend(extend) = &second.operations()[0] else {
             panic!("an extend");
         };
         assert_eq!(extend.entity_key, B256::with_last_byte(2));
-        assert!(extends(1).halves().is_none(), "one group cannot be split");
+        assert!(
+            extends(1).halves().is_none(),
+            "one operation cannot be split"
+        );
     }
 }

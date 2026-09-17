@@ -146,12 +146,14 @@ on the 400 side automatically.
   `/execute-batch` batch must stay under it: about 70 creates of a
   marketplace record, or a hundred patches. The Rust caller sends a
   batch whole and, when the node refuses it as oversized, splits it in
-  halves and sends those, down to a single group; the refusal costs one
-  round trip and no gas, and nothing sizes a batch in advance. The Rust
-  side groups the operations that must land together (one agreement's
-  close and its successor's create; an acceptance's two creates) and
-  never splits a group: a transaction is atomic, so a group lands whole
-  or not at all.
+  halves and sends those, in order, down to a single operation; the
+  refusal costs one round trip and no gas, and nothing sizes a batch in
+  advance. A part that fails for another reason is reported and the
+  rest are still sent, so any subset of a batch can land. The Rust
+  side puts only independent operations in one batch: a counter
+  record's close and its successor's create go in two batches, the
+  second built from the closes that landed, the way an acceptance's
+  two creates are two writes.
 - Attribute string values are capped at 128 bytes by the SDK. Larger data
   belongs in the payload.
 - An attribute-filtered query can briefly trail a just-delivered receipt

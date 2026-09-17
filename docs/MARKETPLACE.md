@@ -69,13 +69,12 @@ so an operator cannot waste gas on an offer the LB would skip.
 
 The LB polls for offers against its listing every five minutes and
 considers those that expire within two days and name its own chain.
-Offers from providers
-that already have an agreement, and offers an agreement already points
-at, are skipped; a provider's duplicate offers are tolerated and the
-oldest taken. When there are more offers than free slots, older offers
-win. The poll reads one page of offers, two hundred at most. A flood
-of more offers than that would hide the real ones for as long as it
-lasts; this is a known limitation.
+Offers from providers that already have an agreement, and offers an
+agreement already points at, are skipped; a provider's duplicate
+offers are tolerated and the oldest taken. When there are more offers
+than free slots, older offers win. The poll reads one page of offers,
+two hundred at most. A flood of more offers than that would hide the
+real ones for as long as it lasts; this is a known limitation.
 
 ## Acceptance
 
@@ -166,11 +165,12 @@ on the chain, created at zero when the agreement is accepted, and the
 LB writes the count into it once a day. Every record covers one
 settlement period, a week by default, counted from the record's own
 opening: when the period is over and the record has a count, the daily
-write closes it with the final count and opens the next record at zero,
-in the same transaction. A closed record never changes again, and it is
-what settle pays. A record with no count is not closed; it stays open
-until it has one. Each agreement has its own periods, starting when
-the provider joined; nothing is shared between providers.
+write closes it with the final count and opens the next record at
+zero; if the next record did not follow, the next daily write opens
+it. A closed record never changes again, and it is what settle pays.
+A record with no count is not closed; it stays open until it has one.
+Each agreement has its own periods, starting when the provider joined;
+nothing is shared between providers.
 
 Each record names the first and last block its count covers, so a
 provider can check it against its own logs. Counts live in memory between
@@ -206,10 +206,10 @@ it reads its agreement records and its open counter records and
 continues from there; the tunnel server rejects logins until that has
 finished, and tunnel clients retry on their own. The same read runs at
 every discovery poll; a restart is the same read with nothing
-remembered yet. With the marketplace
-configured, the LB refuses to start if it cannot reach the chain or the
-sidecar; a configuration without the marketplace section runs it on
-statically configured providers alone.
+remembered yet. With the marketplace configured, the LB refuses to
+start if it cannot reach the chain or the sidecar; a configuration
+without the marketplace section runs it on statically configured
+providers alone.
 
 If the network is reset, every record is gone. The LB is restarted and
 starts from nothing: it writes its listing again and waits for offers.

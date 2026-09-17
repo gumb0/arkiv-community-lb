@@ -13,7 +13,7 @@ use lb::chain::{
     records::{
         Agreement, AttributeValue, Attributes, KIND_AGREEMENT, KIND_OFFER, Record, Stored, Wei,
     },
-    writer::{Batch, Create, Delete, Expiry, Extend, Group, Operation, Patch, WriteError, send},
+    writer::{Batch, Create, Delete, Expiry, Extend, Operation, Patch, WriteError, send},
 };
 
 const LB: Address = Address::repeat_byte(0x11);
@@ -254,14 +254,14 @@ async fn a_batch_is_all_or_nothing() {
 
     let missing = alloy_primitives::B256::repeat_byte(0xff);
     let mut batch = Batch::new();
-    batch.push(Group::single(Operation::Extend(Extend {
+    batch.push(Operation::Extend(Extend {
         entity_key: one.entity_key,
         expires: Expiry::Seconds(100),
-    })));
-    batch.push(Group::single(Operation::Extend(Extend {
+    }));
+    batch.push(Operation::Extend(Extend {
         entity_key: missing,
         expires: Expiry::Seconds(100),
-    })));
+    }));
     let error = chain
         .execute_batch(&batch)
         .await
@@ -306,28 +306,28 @@ async fn a_batch_lands_every_kind_of_operation_at_once() {
         .await
         .expect("create lands");
 
-    // An acceptance-shaped group, a close-and-open-shaped group, and
-    // the refresh's kind, in one batch.
     let mut batch = Batch::new();
-    batch.push(Group::new(vec![
-        Operation::Create(Create::new(agreement(20001).encode(), Expiry::Seconds(100))),
-        Operation::Create(Create::new(agreement(20002).encode(), Expiry::Seconds(100))),
-    ]));
-    batch.push(Group::new(vec![
-        // A close-shaped patch: the payload and an attribute together.
-        Operation::Patch(Patch {
-            entity_key: existing.entity_key,
-            set: Some(Attributes::default().with("state", AttributeValue::Str("closed".into()))),
-            payload: Some(agreement(20009).encode().payload),
-        }),
-        Operation::Delete(Delete {
-            entity_key: doomed.entity_key,
-        }),
-    ]));
-    batch.push(Group::single(Operation::Extend(Extend {
+    batch.push(Operation::Create(Create::new(
+        agreement(20001).encode(),
+        Expiry::Seconds(100),
+    )));
+    batch.push(Operation::Create(Create::new(
+        agreement(20002).encode(),
+        Expiry::Seconds(100),
+    )));
+    // A close-shaped patch: the payload and an attribute together.
+    batch.push(Operation::Patch(Patch {
+        entity_key: existing.entity_key,
+        set: Some(Attributes::default().with("state", AttributeValue::Str("closed".into()))),
+        payload: Some(agreement(20009).encode().payload),
+    }));
+    batch.push(Operation::Delete(Delete {
+        entity_key: doomed.entity_key,
+    }));
+    batch.push(Operation::Extend(Extend {
         entity_key: existing.entity_key,
         expires: Expiry::Seconds(100),
-    })));
+    }));
     let result = chain.execute_batch(&batch).await.expect("lands");
     assert_eq!(result.created_entities.len(), 2);
     assert_eq!(result.patched_entities, [existing.entity_key]);
@@ -365,10 +365,10 @@ async fn a_batch_over_the_limit_is_refused_and_send_splits_it() {
     chain.set_operation_limit(2);
     let mut batch = Batch::new();
     for port in 20000..20005 {
-        batch.push(Group::single(Operation::Create(Create::new(
+        batch.push(Operation::Create(Create::new(
             agreement(port).encode(),
             Expiry::Seconds(100),
-        ))));
+        )));
     }
     let error = chain
         .execute_batch(&batch)
@@ -381,9 +381,11 @@ async fn a_batch_over_the_limit_is_refused_and_send_splits_it() {
     let sent = send(&chain, batch).await;
     assert!(sent.iter().all(|s| s.result.is_ok()), "{sent:?}");
     assert_eq!(
-        sent.iter().map(|s| s.batch.groups().len()).sum::<usize>(),
+        sent.iter()
+            .map(|s| s.batch.operations().len())
+            .sum::<usize>(),
         5,
-        "every group landed"
+        "every operation landed"
     );
     assert!(
         sent.len() >= 3,
@@ -410,15 +412,13 @@ async fn a_batch_over_the_limit_is_refused_and_send_splits_it() {
 }
 
 #[tokio::test]
-async fn send_reports_a_group_that_is_too_large_on_its_own() {
+async fn send_reports_an_operation_that_is_too_large_on_its_own() {
     let chain = FakeChain::new(LB, 1337);
-    chain.set_operation_limit(1);
-    // An acceptance-shaped group: two creates that must land together.
-    let mut batch = Batch::new();
-    batch.push(Group::new(vec![
-        Operation::Create(Create::new(agreement(20000).encode(), Expiry::Seconds(100))),
-        Operation::Create(Create::new(agreement(20001).encode(), Expiry::Seconds(100))),
-    ]));
+    chain.set_operation_limit(0);
+    let batch = Batch::single(Operation::Create(Create::new(
+        agreement(20000).encode(),
+        Expiry::Seconds(100),
+    )));
     let sent = send(&chain, batch).await;
     assert_eq!(sent.len(), 1);
     assert!(matches!(sent[0].result, Err(WriteError::TooLarge(_))));
@@ -439,17 +439,17 @@ async fn a_part_that_fails_for_another_reason_does_not_stop_the_rest() {
         .create(&Create::new(agreement(20000).encode(), Expiry::Seconds(10)))
         .await
         .expect("create lands");
-    // One operation per transaction, so the two groups are sent apart.
+    // One operation per transaction, so the two are sent apart.
     chain.set_operation_limit(1);
     let mut batch = Batch::new();
-    batch.push(Group::single(Operation::Extend(Extend {
+    batch.push(Operation::Extend(Extend {
         entity_key: alloy_primitives::B256::repeat_byte(0xff),
         expires: Expiry::Seconds(100),
-    })));
-    batch.push(Group::single(Operation::Extend(Extend {
+    }));
+    batch.push(Operation::Extend(Extend {
         entity_key: existing.entity_key,
         expires: Expiry::Seconds(100),
-    })));
+    }));
 
     let sent = send(&chain, batch).await;
     assert_eq!(sent.len(), 2);

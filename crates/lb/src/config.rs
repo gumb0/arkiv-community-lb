@@ -388,6 +388,17 @@ impl Marketplace {
                 )));
             }
         }
+        // The refresh leaves out records memory shows expired, and
+        // memory learns a refreshed expiry at the next discovery poll:
+        // the poll has to come before the next refresh.
+        if self.discovery_interval >= self.refresh_interval {
+            return Err(ConfigError::Invalid(format!(
+                "marketplace.discovery_interval ({:?}) must be shorter than refresh_interval \
+                 ({:?}): the poll after a refresh is what tells the next refresh which records \
+                 still live",
+                self.discovery_interval, self.refresh_interval
+            )));
+        }
         if u64::from(self.max_providers) >= PAGE_LIMIT {
             return Err(ConfigError::Invalid(format!(
                 "marketplace.max_providers is {}, maximum is {}: the agreement records \
@@ -575,6 +586,20 @@ mod tests {
             .expect("a cap of zero accepts nobody");
         let marketplace = config.marketplace.expect("the section is present");
         assert_eq!(marketplace.remote_ports().count(), 0);
+    }
+
+    #[test]
+    fn the_discovery_interval_is_shorter_than_the_refresh_interval() {
+        let error = parse(&format!(
+            "{MARKETPLACE}discovery_interval = \"1h\"\nrefresh_interval = \"1h\"\n"
+        ))
+        .expect_err("must refuse");
+        assert!(error.to_string().contains("discovery_interval"), "{error}");
+        assert!(error.to_string().contains("refresh_interval"), "{error}");
+        parse(&format!(
+            "{MARKETPLACE}discovery_interval = \"59m\"\nrefresh_interval = \"1h\"\n"
+        ))
+        .expect("shorter is fine");
     }
 
     #[test]

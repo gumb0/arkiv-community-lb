@@ -358,7 +358,7 @@ async fn a_gone_agreement_leaves_the_pool_at_the_next_poll() {
     assert_eq!(agent.agreements().len(), 2);
 
     chain.advance(31);
-    agent.poll().await;
+    agent.discovery_poll().await;
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1);
     assert_eq!(agreements[0].key, long);
@@ -384,7 +384,7 @@ async fn an_agreement_unknown_to_memory_is_adopted_at_the_poll() {
 
     // Written outside memory: an acceptance whose answer never came, say.
     let key = seed_agreement(&chain, provider(1), 20005, 3600);
-    agent.poll().await;
+    agent.discovery_poll().await;
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1);
     assert_eq!(agreements[0].key, key);
@@ -404,7 +404,7 @@ async fn a_poll_over_a_page_skips_the_reconcile() {
         ));
         seed_agreement(&chain, address, 20001, 3600);
     }
-    agent.poll().await;
+    agent.discovery_poll().await;
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1, "nothing adopted, nothing dropped");
     assert_eq!(agreements[0].key, first);
@@ -420,7 +420,7 @@ async fn one_poll_drops_the_gone_and_adopts_the_new() {
 
     chain.advance(31);
     let unknown = seed_agreement(&chain, provider(2), 20001, 3600);
-    agent.poll().await;
+    agent.discovery_poll().await;
 
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1);
@@ -441,14 +441,14 @@ async fn a_poll_that_cannot_read_the_chain_changes_nothing() {
     chain.advance(31);
     let unknown = seed_agreement(&chain, provider(2), 20001, 3600);
     chain.fail_reference("connection refused");
-    agent.poll().await;
+    agent.discovery_poll().await;
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1, "a failed read is not an absence");
     assert_eq!(agreements[0].key, expiring, "and adopts nothing either");
     assert_eq!(pool.snapshot().len(), 1);
 
     chain.heal();
-    agent.poll().await;
+    agent.discovery_poll().await;
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1);
     assert_eq!(
@@ -471,7 +471,7 @@ async fn an_offer_becomes_an_agreement_and_a_counter_record() {
     chain.advance(10);
     let writes_before = chain.transactions().len();
 
-    agent.poll().await;
+    agent.discovery_poll().await;
 
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1);
@@ -515,7 +515,7 @@ async fn an_offer_becomes_an_agreement_and_a_counter_record() {
     );
 
     // The same offer is not accepted again: an agreement points at it.
-    agent.poll().await;
+    agent.discovery_poll().await;
     assert_eq!(agent.agreements().len(), 1);
     assert_eq!(chain.transactions().len() - writes_before, 2);
 }
@@ -542,7 +542,7 @@ async fn offers_are_filtered_before_any_gas_is_spent() {
 
     // Under agreement already: skipped.
     seed_agreement(&chain, provider(5), 20003, 3600);
-    agent.poll().await;
+    agent.discovery_poll().await;
     post(&chain, provider(5), &good, DAY);
 
     // A head far behind the current one is not judged: the probes are.
@@ -551,7 +551,7 @@ async fn offers_are_filtered_before_any_gas_is_spent() {
     post(&chain, provider(6), &behind, DAY);
 
     let writes_before = chain.transactions().len();
-    agent.poll().await;
+    agent.discovery_poll().await;
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 2, "the seeded one and provider 6");
     assert!(
@@ -570,7 +570,7 @@ async fn an_expired_offer_is_not_accepted() {
     chain.advance(3600 / 2);
     let writes_before = chain.transactions().len();
 
-    agent.poll().await;
+    agent.discovery_poll().await;
     assert!(agent.agreements().is_empty());
     assert_eq!(chain.transactions().len(), writes_before);
 }
@@ -588,7 +588,7 @@ async fn an_offer_that_does_not_decode_is_skipped() {
     chain.advance(1);
     let good = post(&chain, provider(2), &offer, DAY);
 
-    agent.poll().await;
+    agent.discovery_poll().await;
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1);
     assert_eq!(agreements[0].record.offer, good);
@@ -614,7 +614,7 @@ async fn more_offers_than_a_page_still_fill_the_slots_from_the_page() {
         chain.advance(1);
     }
 
-    agent.poll().await;
+    agent.discovery_poll().await;
     let mut providers: Vec<Address> = agent
         .agreements()
         .iter()
@@ -645,13 +645,13 @@ async fn the_cap_full_waits_and_a_freed_slot_goes_to_the_oldest_offer() {
         &offer_for(&agent, &chain),
         config.accept_window.as_secs(),
     );
-    agent.poll().await;
+    agent.discovery_poll().await;
     chain.advance(100);
     let offer = offer_for(&agent, &chain);
     let second = post(&chain, provider(2), &offer, DAY);
     chain.advance(1);
     let third = post(&chain, provider(3), &offer, DAY);
-    agent.poll().await;
+    agent.discovery_poll().await;
     let accepted: Vec<_> = agent.agreements().iter().map(|a| a.record.offer).collect();
     assert_eq!(accepted.len(), 2);
     assert!(
@@ -661,7 +661,7 @@ async fn the_cap_full_waits_and_a_freed_slot_goes_to_the_oldest_offer() {
     assert!(!accepted.contains(&third), "the youngest waits");
 
     // Nothing changes while the cap is full.
-    agent.poll().await;
+    agent.discovery_poll().await;
     assert_eq!(agent.agreements().len(), 2);
 
     // The first agreement ends (never refreshed: its accept window
@@ -669,7 +669,7 @@ async fn the_cap_full_waits_and_a_freed_slot_goes_to_the_oldest_offer() {
     // offer takes the freed slot, in the same poll.
     chain.advance(config.accept_window.as_secs() / 2 - 100);
     let fourth = post(&chain, provider(4), &offer, DAY);
-    agent.poll().await;
+    agent.discovery_poll().await;
     let accepted: Vec<_> = agent.agreements().iter().map(|a| a.record.offer).collect();
     assert_eq!(accepted.len(), 2, "{accepted:?}");
     assert!(accepted.contains(&second), "still alive");
@@ -699,7 +699,7 @@ async fn one_provider_gets_one_agreement_from_its_oldest_offer() {
     chain.advance(1);
     let newer = post(&chain, provider(1), &offer, DAY);
 
-    agent.poll().await;
+    agent.discovery_poll().await;
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1);
     assert_eq!(agreements[0].record.offer, older);
@@ -718,7 +718,7 @@ async fn the_lowest_free_port_is_assigned() {
     post(&chain, provider(3), &offer, DAY);
     post(&chain, provider(4), &offer, DAY);
 
-    agent.poll().await;
+    agent.discovery_poll().await;
     let mut ports: Vec<u16> = agent
         .agreements()
         .iter()
@@ -739,13 +739,13 @@ async fn an_unresolved_acceptance_is_adopted_at_the_next_poll_not_repeated() {
 
     // The agreement lands, but the answer is a 504.
     chain.unresolved_next();
-    agent.poll().await;
+    agent.discovery_poll().await;
     assert!(agent.agreements().is_empty(), "not known yet");
     assert!(pool.snapshot().is_empty());
     assert_eq!(chain.transactions().len() - writes_before, 1, "it landed");
 
     // The next poll adopts what landed and accepts nothing twice.
-    agent.poll().await;
+    agent.discovery_poll().await;
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1);
     assert_eq!(agreements[0].record.offer, offer_key);
@@ -774,7 +774,7 @@ async fn an_unresolved_acceptance_holds_its_port_and_slot() {
     // The first acceptance lands unanswered. It may have taken port
     // 20000 and a slot, so the same poll gives neither away.
     chain.unresolved_next();
-    agent.poll().await;
+    agent.discovery_poll().await;
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1, "the second offer, known");
     assert_eq!(agreements[0].record.provider, provider(2));
@@ -782,7 +782,7 @@ async fn an_unresolved_acceptance_holds_its_port_and_slot() {
 
     // The next poll adopts the first: two agreements, two ports, no
     // third at a cap of two.
-    agent.poll().await;
+    agent.discovery_poll().await;
     let mut agreements = agent.agreements();
     agreements.sort_by_key(|a| a.record.remote_port);
     assert_eq!(agreements.len(), 2);
@@ -801,7 +801,7 @@ async fn an_agreement_stands_when_its_counter_record_does_not_follow() {
     post(&chain, provider(1), &offer, DAY);
 
     chain.fail_sidecar_after(1, "connection refused");
-    agent.poll().await;
+    agent.discovery_poll().await;
     assert_eq!(agent.agreements().len(), 1, "the agreement landed");
     assert_eq!(pool.snapshot().len(), 1);
     assert!(
@@ -810,7 +810,7 @@ async fn an_agreement_stands_when_its_counter_record_does_not_follow() {
     );
 
     chain.heal();
-    agent.poll().await;
+    agent.discovery_poll().await;
     assert_eq!(agent.agreements().len(), 1, "not accepted again");
 }
 
@@ -823,14 +823,255 @@ async fn a_failed_acceptance_is_retried_at_the_next_poll() {
     post(&chain, provider(1), &offer, DAY);
 
     chain.fail_sidecar("gas required exceeds allowance");
-    agent.poll().await;
+    agent.discovery_poll().await;
     assert!(agent.agreements().is_empty());
     assert!(pool.snapshot().is_empty());
 
     chain.heal();
-    agent.poll().await;
+    agent.discovery_poll().await;
     assert_eq!(agent.agreements().len(), 1);
     assert_eq!(counter_records(&chain).await.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// The refresh
+
+/// When the entity expires, as the chain has it.
+fn expires_at(chain: &FakeChain, key: alloy_primitives::B256) -> u64 {
+    chain.entity(key).expect("stored").expires_at
+}
+
+/// Flips the marketplace provider's eligibility, the Monitor's job.
+fn set_eligible(pool: &Pool, address: Address, value: bool) {
+    pool.snapshot()
+        .iter()
+        .find(|p| p.id == format!("{address:#x}"))
+        .expect("in the pool")
+        .set_eligible(value);
+}
+
+#[tokio::test]
+async fn a_refresh_extends_the_listing_and_the_eligible_providers_only() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = marketplace();
+    let eligible = seed_agreement(&chain, provider(1), 20000, 3600);
+    let ghost = seed_agreement(&chain, provider(2), 20001, 3600);
+    // A static provider has no record to extend, eligible or not.
+    let pool = Arc::new(
+        Pool::new(&[lb::config::Provider {
+            id: "static-1".to_owned(),
+            url: "http://127.0.0.1:18545".to_owned(),
+        }])
+        .expect("pool"),
+    );
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    set_eligible(&pool, provider(1), true);
+    pool.snapshot()
+        .iter()
+        .find(|p| p.id == "static-1")
+        .expect("in the pool")
+        .set_eligible(true);
+    chain.advance(100);
+    let writes_before = chain.transactions().len();
+
+    agent.refresh().await;
+
+    let transactions = chain.transactions();
+    assert_eq!(
+        transactions.len() - writes_before,
+        1,
+        "one transaction for all of it"
+    );
+    let Transaction::Batch(log) = &transactions[writes_before] else {
+        panic!("a batch, not {:?}", transactions[writes_before]);
+    };
+    let mut extended = log.extended.clone();
+    extended.sort_unstable();
+    let mut expected = vec![agent.listing_key(), eligible];
+    expected.sort_unstable();
+    assert_eq!(
+        extended, expected,
+        "the listing and the eligible provider, nothing else"
+    );
+    let head = chain.head();
+    assert_eq!(
+        expires_at(&chain, agent.listing_key()),
+        head + config.listing_life.as_secs() / 2,
+        "the listing, to listing_life"
+    );
+    assert_eq!(
+        expires_at(&chain, eligible),
+        head + config.agreement_life.as_secs() / 2,
+        "the eligible provider, to agreement_life"
+    );
+    assert_eq!(
+        expires_at(&chain, ghost),
+        1 + 3600 / 2,
+        "the ghost keeps its accept window"
+    );
+}
+
+#[tokio::test]
+async fn a_refresh_over_the_transaction_limit_lands_in_several() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = marketplace();
+    let keys: Vec<_> = (1..=3)
+        .map(|n| seed_agreement(&chain, provider(n), 20000 + u16::from(n), 3600))
+        .collect();
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    for n in 1..=3 {
+        set_eligible(&pool, provider(n), true);
+    }
+    chain.advance(10);
+    // Room for two extends per transaction: the listing and three
+    // records need at least two.
+    chain.set_operation_limit(2);
+    let writes_before = chain.transactions().len();
+
+    agent.refresh().await;
+
+    let head = chain.head();
+    for key in &keys {
+        assert_eq!(
+            expires_at(&chain, *key),
+            head + config.agreement_life.as_secs() / 2
+        );
+    }
+    assert_eq!(
+        expires_at(&chain, agent.listing_key()),
+        head + config.listing_life.as_secs() / 2
+    );
+    assert!(chain.transactions().len() - writes_before >= 2);
+}
+
+#[tokio::test]
+async fn an_idle_lb_keeps_its_listing_alive() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = marketplace();
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    chain.advance(10);
+
+    agent.refresh().await;
+    assert_eq!(
+        expires_at(&chain, agent.listing_key()),
+        chain.head() + config.listing_life.as_secs() / 2
+    );
+}
+
+#[tokio::test]
+async fn a_quarantined_provider_misses_a_cycle_and_is_refreshed_next() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let key = seed_agreement(&chain, provider(1), 20000, 3600);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+
+    set_eligible(&pool, provider(1), true);
+    chain.advance(10);
+    agent.refresh().await;
+    let first = expires_at(&chain, key);
+
+    set_eligible(&pool, provider(1), false);
+    chain.advance(10);
+    agent.refresh().await;
+    assert_eq!(expires_at(&chain, key), first, "missed while quarantined");
+
+    set_eligible(&pool, provider(1), true);
+    chain.advance(10);
+    agent.refresh().await;
+    assert!(
+        expires_at(&chain, key) > first,
+        "refreshed once eligible again"
+    );
+}
+
+#[tokio::test]
+async fn a_record_memory_knows_expired_is_left_out_of_the_refresh() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = marketplace();
+    let expired = seed_agreement(&chain, provider(1), 20000, 60);
+    let live = seed_agreement(&chain, provider(2), 20001, 3600);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    set_eligible(&pool, provider(1), true);
+    set_eligible(&pool, provider(2), true);
+    // Past the first record's expiry, with no poll in between: memory
+    // still holds it. An extend of a gone record would fail the batch.
+    chain.advance(31);
+
+    agent.refresh().await;
+    assert_eq!(
+        expires_at(&chain, live),
+        chain.head() + config.agreement_life.as_secs() / 2,
+        "the live one is refreshed"
+    );
+    assert_eq!(
+        expires_at(&chain, expired),
+        1 + 30,
+        "the gone one is left alone"
+    );
+}
+
+#[tokio::test]
+async fn the_reconcile_learns_a_refreshed_expiry() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = marketplace();
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    post(&chain, provider(1), &offer_for(&agent, &chain), DAY);
+    agent.discovery_poll().await;
+    let key = agent.agreements()[0].key;
+    set_eligible(&pool, provider(1), true);
+
+    // Refreshed within its accept window, then a poll, then past the
+    // window: memory must know the record lives on, or the next
+    // refresh would leave it out as expired.
+    agent.refresh().await;
+    let refreshed = expires_at(&chain, key);
+    agent.discovery_poll().await;
+    chain.advance(config.accept_window.as_secs() / 2 + 1);
+    agent.refresh().await;
+    assert!(
+        expires_at(&chain, key) > refreshed,
+        "refreshed again past the accept window"
+    );
+}
+
+#[tokio::test]
+async fn a_refresh_goes_on_when_the_reference_cannot_be_read() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let key = seed_agreement(&chain, provider(1), 20000, 3600);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    set_eligible(&pool, provider(1), true);
+    let before = expires_at(&chain, key);
+    chain.advance(10);
+
+    // No head, no balance: the sidecar is up, so the extends go out.
+    chain.fail_reference("connection refused");
+    agent.refresh().await;
+    assert!(expires_at(&chain, key) > before);
+}
+
+#[tokio::test]
+async fn a_failed_refresh_changes_nothing_and_the_next_one_extends() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let key = seed_agreement(&chain, provider(1), 20000, 3600);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    set_eligible(&pool, provider(1), true);
+    let before = expires_at(&chain, key);
+    chain.advance(10);
+
+    chain.fail_sidecar("gas required exceeds allowance");
+    agent.refresh().await;
+    assert_eq!(expires_at(&chain, key), before);
+    assert_eq!(pool.snapshot().len(), 1, "nothing leaves the pool");
+
+    chain.heal();
+    agent.refresh().await;
+    assert!(expires_at(&chain, key) > before);
 }
 
 // ---------------------------------------------------------------------------
@@ -984,6 +1225,30 @@ async fn the_agent_polls_on_its_interval() {
     chain.advance(31);
     wait_for("the expired agreement leaves the pool", || {
         service.pool.snapshot().is_empty()
+    })
+    .await;
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_agent_refreshes_on_its_interval() {
+    let chain = FakeChain::new(LB, 1337);
+    let key = seed_agreement(&chain, provider(1), 20000, 3600);
+    let mut config = service_config();
+    config
+        .marketplace
+        .as_mut()
+        .expect("present")
+        .refresh_interval = Duration::from_millis(20);
+    let service = lb::service::start_with(config, Some((chain.clone(), chain.clone())))
+        .await
+        .expect("starts");
+    set_eligible(&service.pool, provider(1), true);
+    let before = expires_at(&chain, key);
+    chain.advance(10);
+
+    wait_for("the eligible provider is refreshed", || {
+        expires_at(&chain, key) > before
     })
     .await;
     service.shutdown().await;

@@ -2,7 +2,9 @@
 //! memory and kept there, and offers turned into agreements. The chain
 //! is the authority; what is here is a cache of it, rebuilt at every
 //! start and reconciled at every poll. One task, and every chain write
-//! of the LB goes through it.
+//! of the LB goes through it: the acceptances at the discovery poll,
+//! and the refresh that keeps the listing and the eligible providers'
+//! agreement records alive.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -20,7 +22,7 @@ use crate::{
             Address, Agreement, CounterRecord, CounterState, EntityKey, KIND_AGREEMENT,
             KIND_LB_LISTING, KIND_OFFER, LbListing, Offer, Record, Stored,
         },
-        writer::{Create, Expiry, Identity, Patch, WriteError},
+        writer::{Batch, Create, Expiry, Extend, Identity, Operation, Patch, WriteError, send},
     },
     config,
     pool::{Pool, Provider, marketplace_id},
@@ -153,15 +155,24 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             .collect()
     }
 
-    /// The task: a poll every discovery interval until shutdown. The
-    /// start already reconciled, so the first tick is skipped.
+    /// The task: a discovery poll every discovery interval and a refresh
+    /// every refresh interval, until shutdown. Each interval's first
+    /// tick is skipped: the start already reconciled, and the listing
+    /// was just written.
     pub async fn run(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
-        let mut ticks = tokio::time::interval(self.config.discovery_interval);
-        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        ticks.tick().await;
+        let interval = |period| {
+            let mut ticks = tokio::time::interval(period);
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticks
+        };
+        let mut discovery_polls = interval(self.config.discovery_interval);
+        let mut refreshes = interval(self.config.refresh_interval);
+        discovery_polls.tick().await;
+        refreshes.tick().await;
         loop {
             tokio::select! {
-                _ = ticks.tick() => self.poll().await,
+                _ = discovery_polls.tick() => self.discovery_poll().await,
+                _ = refreshes.tick() => self.refresh().await,
                 _ = shutdown.changed() => return,
             }
         }
@@ -171,7 +182,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     /// cannot read the chain, or finds more records than a page, changes
     /// nothing and says so; the offers are still read, so a full page of
     /// agreements does not stop acceptance, only the cap does.
-    pub async fn poll(&self) {
+    pub async fn discovery_poll(&self) {
         let head = match self.reconcile_agreements().await {
             Ok(head) => Some(head),
             Err(ReconcileError::TooMany { count }) => {
@@ -256,7 +267,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         let mut adopted = 0;
         for stored in live {
             let key = stored.key;
-            if known.contains_key(&key) {
+            if let Some(agreement) = known.get_mut(&key) {
+                // The refresh moved it; the refresh's own check leans on
+                // this being current.
+                agreement.expires_at = stored.expires_at;
                 continue;
             }
             if known
@@ -465,6 +479,110 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         }
         true
     }
+
+    /// One refresh: the listing and the eligible providers' agreement
+    /// records extended, in one batch.
+    pub async fn refresh(&self) {
+        // A dry key is refused before execution and every write stops,
+        // so a low balance is worth a warning before it gets there. A
+        // failed read does not stop the refresh: the reference being
+        // down is not the sidecar being down.
+        let balance = match self.reader.balance(self.identity.address).await {
+            Ok(balance) => {
+                if balance < self.config.gas_warn_below.0 {
+                    tracing::warn!(
+                        balance = %glm(balance),
+                        floor = %glm(self.config.gas_warn_below.0),
+                        "the LB key is low on GLM: writes stop when it runs out"
+                    );
+                }
+                Some(balance)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the LB key's balance could not be read");
+                None
+            }
+        };
+        // The head is for leaving out records memory knows expired:
+        // extending a gone record fails the whole batch.
+        let head = match self.reader.block_number().await {
+            Ok(head) => Some(head),
+            Err(error) => {
+                tracing::warn!(%error, "the head could not be read: expired records are not filtered");
+                None
+            }
+        };
+
+        let mut batch = Batch::single(Operation::Extend(Extend {
+            entity_key: self.listing_key,
+            expires: Expiry::Seconds(self.config.listing_life.as_secs()),
+        }));
+        // Eligibility at this moment is the one rule: an ineligible
+        // provider is skipped, so its record expires `agreement_life`
+        // after its last refresh, or at the accept window if it never
+        // passed a probe.
+        let eligible: HashSet<String> = self
+            .pool
+            .snapshot()
+            .iter()
+            .filter(|provider| provider.eligible())
+            .map(|provider| provider.id.clone())
+            .collect();
+        let mut skipped = 0;
+        {
+            let known = self
+                .agreements
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (key, agreement) in known.iter() {
+                if !eligible.contains(&marketplace_id(agreement.record.provider)) {
+                    skipped += 1;
+                    continue;
+                }
+                if head.is_some_and(|head| agreement.expires_at <= head) {
+                    tracing::warn!(
+                        agreement = %key,
+                        provider = %agreement.record.provider,
+                        "an eligible provider's agreement record has expired: not refreshed, \
+                         the next poll drops it"
+                    );
+                    continue;
+                }
+                batch.push(Operation::Extend(Extend {
+                    entity_key: *key,
+                    expires: Expiry::Seconds(self.config.agreement_life.as_secs()),
+                }));
+            }
+        }
+        let extends = batch.operations().len();
+
+        let mut landed = 0;
+        for sent in send(&self.writer, batch).await {
+            match sent.result {
+                Ok(result) => landed += result.extended_entities.len(),
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        extends = sent.batch.operations().len(),
+                        balance = balance.map(glm).unwrap_or_else(|| "unknown".to_owned()),
+                        "a refresh did not land: its records are extended at the next one"
+                    );
+                }
+            }
+        }
+        tracing::info!(
+            extended = landed,
+            of = extends,
+            ineligible = skipped,
+            "refresh"
+        );
+    }
+}
+
+/// An amount of wei as GLM, for logs: "0.0199", the trailing zeros cut.
+fn glm(wei: alloy_primitives::U256) -> String {
+    let text = alloy_primitives::utils::format_ether(wei);
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
 /// A lifetime in blocks, the way the sidecar converts it.
@@ -537,4 +655,19 @@ async fn ensure_listing<R: ChainReader, W: ChainWriter>(
         );
     }
     Ok(kept.key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glm;
+    use alloy_primitives::U256;
+
+    #[test]
+    fn wei_reads_as_glm_in_logs() {
+        assert_eq!(glm(U256::ZERO), "0");
+        assert_eq!(glm(U256::from(20_000_000_000_000_000u64)), "0.02");
+        assert_eq!(glm(U256::from(1_000_000_000_000_000_000u64)), "1");
+        assert_eq!(glm(U256::from(1_234_500_000_000_000_000u128)), "1.2345");
+        assert_eq!(glm(U256::from(1u64)), "0.000000000000000001");
+    }
 }

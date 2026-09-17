@@ -139,6 +139,18 @@ An expired record frees its slot. Rejoining is a new offer. There is no
 ban and no eviction in this version; a provider that misbehaves is taken
 out of rotation by the health checks and stops being refreshed.
 
+The refresh is one transaction for the listing and every healthy
+provider, and it costs gas. Before each one the LB reads its key's
+balance and warns when it is below a configured floor, because a key
+that runs dry is refused before anything executes and every write
+stops. A refresh that fails is logged with the balance and retried an
+hour later; the records it would have extended still have days to
+live. The reference being unreachable does not stop a refresh: the
+sidecar is the one that writes. A listing that disappears while the
+LB runs, after a network reset or a deletion by hand, fails every
+refresh until the LB is restarted, which recreates it; a known
+limitation.
+
 The LB notices an agreement's end at its next discovery poll, when it
 reads its own records back and finds the record gone: it closes the
 agreement's counter record with the count it holds, and frees the slot

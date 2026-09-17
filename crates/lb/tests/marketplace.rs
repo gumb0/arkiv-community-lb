@@ -562,6 +562,73 @@ async fn offers_are_filtered_before_any_gas_is_spent() {
 }
 
 #[tokio::test]
+async fn an_expired_offer_is_not_accepted() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    post(&chain, provider(1), &offer_for(&agent, &chain), 3600);
+    chain.advance(3600 / 2);
+    let writes_before = chain.transactions().len();
+
+    agent.poll().await;
+    assert!(agent.agreements().is_empty());
+    assert_eq!(chain.transactions().len(), writes_before);
+}
+
+#[tokio::test]
+async fn an_offer_that_does_not_decode_is_skipped() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    let offer = offer_for(&agent, &chain);
+    // Anyone can post against the listing. The broken one is the older.
+    let mut broken = offer.encode();
+    broken.payload = b"not json".to_vec();
+    chain.write_as(provider(1), broken, Expiry::Seconds(DAY));
+    chain.advance(1);
+    let good = post(&chain, provider(2), &offer, DAY);
+
+    agent.poll().await;
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 1);
+    assert_eq!(agreements[0].record.offer, good);
+}
+
+#[tokio::test]
+async fn more_offers_than_a_page_still_fill_the_slots_from_the_page() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let mut config = marketplace();
+    config.max_providers = 3;
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    let offer = offer_for(&agent, &chain);
+    let address = |n: u64| {
+        Address::from_word(alloy_primitives::B256::from(alloy_primitives::U256::from(
+            n + 1,
+        )))
+    };
+    // One more than a page, each a block after the last. The reconcile
+    // skips a poll over a page; the discovery works the page it got.
+    for n in 0..=PAGE_LIMIT {
+        post(&chain, address(n), &offer, DAY);
+        chain.advance(1);
+    }
+
+    agent.poll().await;
+    let mut providers: Vec<Address> = agent
+        .agreements()
+        .iter()
+        .map(|a| a.record.provider)
+        .collect();
+    providers.sort_unstable();
+    assert_eq!(
+        providers,
+        [address(0), address(1), address(2)],
+        "the three oldest"
+    );
+}
+
+#[tokio::test]
 async fn the_cap_full_waits_and_a_freed_slot_goes_to_the_oldest_offer() {
     let chain = FakeChain::new(LB, CHAIN_ID);
     let mut config = marketplace();

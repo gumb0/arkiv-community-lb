@@ -20,6 +20,7 @@ const PROVIDER: Address = Address::repeat_byte(0x22);
 fn agreement(port: u16) -> Agreement {
     Agreement {
         provider: PROVIDER,
+        offer: alloy_primitives::B256::repeat_byte(0x0f),
         wei_per_call: Wei::new(1_000_000_000_000_000),
         remote_port: port,
     }

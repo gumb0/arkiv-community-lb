@@ -76,6 +76,7 @@ fn agreement() -> Create {
     Create::new(
         Agreement {
             provider: Address::ZERO,
+            offer: B256::ZERO,
             wei_per_call: Wei::new(1_000_000_000_000_000),
             remote_port: 20007,
         }

@@ -45,6 +45,7 @@ async fn records_are_written_read_back_changed_and_expire() {
     let provider = Address::from_word(keccak256(nonce));
     let agreement = Agreement {
         provider,
+        offer: alloy_primitives::B256::ZERO,
         wei_per_call: Wei::new(1_000_000_000_000_000),
         remote_port: 20000,
     };

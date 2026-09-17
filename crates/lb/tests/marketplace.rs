@@ -61,6 +61,7 @@ fn seed_agreement(
 ) -> alloy_primitives::B256 {
     let record = Agreement {
         provider,
+        offer: alloy_primitives::B256::repeat_byte(0x0f),
         wei_per_call: RATE,
         remote_port: port,
     };
@@ -258,6 +259,7 @@ async fn records_that_do_not_decode_are_skipped() {
     let config = marketplace();
     let mut agreement = Agreement {
         provider: provider(1),
+        offer: alloy_primitives::B256::repeat_byte(0x0f),
         wei_per_call: RATE,
         remote_port: 20000,
     }

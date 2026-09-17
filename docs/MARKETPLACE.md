@@ -15,12 +15,14 @@ provider                        Arkiv                             LB
    │◄── reads the listing ────────│    server, cap                 │
    │ offer: node specs ──────────►│                                │
    │                              │◄── discovery poll ─────────────│  every 5 minutes
-   │                              │◄── agreement record: rate, ────│  acceptance
-   │◄── reads the record ─────────│    tunnel port                 │
+   │                              │◄── agreement record: rate, ────│  acceptance, one
+   │◄── reads the record ─────────│    tunnel port, and a counter  │  transaction
+   │                              │    record at zero              │
    │ tunnel connects with the signed token ───────────────────────►│  admission
    │                              │        probes pass → provider serves traffic
    │                              │◄── hourly refresh of the record│  while it serves
-   │                              │◄── counters, per period ───────│  requests served
+   │                              │◄── daily count into the counter│  requests served
+   │                              │    record; closed per period   │
    │                              │◄── receipts ───── settle ──────│  after payout
 ```
 
@@ -49,34 +51,41 @@ carries no price. A provider that does not accept the rate does not post
 an offer.
 
 The listing is updated at a restart when the configuration changed, and
-it is kept alive by the same hourly refresh as the agreement records, so
-a listing that exists belongs to a running LB.
+it is kept alive by the same hourly refresh as the agreement records,
+with a lifetime of thirty days, so a listing that exists belongs to an
+LB that has run within the last month.
 
 ## Offers
 
-A provider posts an **[offer](ENTITIES.md#offer)** addressed to one LB:
-its node's chain id, head height, client versions and a few hardware
-facts, all read from the node by the tooling. The offer lives for a day.
-An unanswered offer expires by itself; to try again, the provider posts
-a new offer.
+A provider posts an **[offer](ENTITIES.md#offer)** that points at the
+LB's listing: its node's chain id, head height, client versions and a
+few hardware facts, all read from the node by the tooling. The offer
+lives for a day. An unanswered offer expires by itself; to try again,
+the provider posts a new offer.
 
-The tooling refuses to post while the node is still syncing, and while
-the provider already has a live agreement, so an operator cannot waste
-gas on an offer the LB would skip.
+The tooling refuses to post while the node is still syncing, while the
+provider already has a live offer, and while it has a live agreement,
+so an operator cannot waste gas on an offer the LB would skip.
 
-The LB polls for offers addressed to it every five minutes and
+The LB polls for offers against its listing every five minutes and
 considers those that expire within two days, name its own chain, and
 report a head height close to the current one. Offers from providers
-that already have an agreement are skipped. When there are more offers
-than free slots, older offers win.
+that already have an agreement, and offers an agreement already points
+at, are skipped; a provider's duplicate offers are tolerated and the
+oldest taken. When there are more offers than free slots, older offers
+win. The poll reads one page of offers, two hundred at most. A flood
+of more offers than that would hide the real ones for as long as it
+lasts; this is a known limitation.
 
 ## Acceptance
 
-Accepting an offer is one write: the **[agreement
-record](ENTITIES.md#agreement-record)**, whose key is the agreement id.
-It carries the rate the agreement was accepted at and the tunnel port
-assigned to this provider. The record is created with a short lifetime,
-two hours, called the accept window.
+Accepting an offer is one transaction with two records in it: the
+**[agreement record](ENTITIES.md#agreement-record)**, whose key is the
+agreement id, and the agreement's first **[counter
+record](ENTITIES.md#counter-record)**, at zero. The agreement record
+carries the rate the agreement was accepted at, the tunnel port
+assigned to this provider, and the key of the offer it accepted. It is
+created with a short lifetime, two hours, called the accept window.
 
 The provider reads its record, signs its agreement id with the key that
 posted the offer, and starts its tunnel client with that signature as
@@ -119,6 +128,14 @@ An expired record frees its slot. Rejoining is a new offer. There is no
 ban and no eviction in this version; a provider that misbehaves is taken
 out of rotation by the health checks and stops being refreshed.
 
+The LB notices an agreement's end at its next discovery poll, when it
+reads its own records back and finds the record gone: it closes the
+agreement's counter record with the count it holds, and frees the slot
+and the port. That is up to five minutes after the record expired. The
+delay changes nothing for the provider: a record only expires after
+its provider has been out of rotation for three days, so no request
+reaches it in those five minutes.
+
 ## Slots and the cap
 
 The LB accepts up to a configured number of providers, one agreement
@@ -131,30 +148,40 @@ M slots taken" by counting the LB's live agreement records.
 ## Counting
 
 The LB counts completed requests per agreement (answers relayed to a
-client.) A node's JSON-RPC error is an answer and counts. Requests are
-grouped into settlement periods, a day by default, and the counts are
-written to the chain every hour as one
-**[counters](ENTITIES.md#counters)** record per period. At the end of a
-period the LB writes the final counts and marks the record closed; a
-closed record never changes again.
+client.) A node's JSON-RPC error is an answer and counts. Each
+agreement has one open **[counter record](ENTITIES.md#counter-record)**
+on the chain, created at zero when the agreement is accepted, and the
+LB writes the count into it once a day. Every record covers one
+settlement period, a week by default, counted from the record's own
+opening: when the period is over and the record has a count, the daily
+write closes it with the final count and opens the next record at zero,
+in the same transaction. A closed record never changes again, and it is
+what settle pays. A record with no count is not closed; it stays open
+until it has one. Each agreement has its own periods, starting when
+the provider joined; nothing is shared between providers.
 
-Counts live in memory between writes, so a crash loses at most an hour
-of counting. Everything else is on chain, and the LB rebuilds its state
-from the chain at every start.
+Each record names the first and last block its count covers, so a
+provider can check it against its own logs. Counts live in memory between
+writes, so a crash loses at most a day of counting; a deliberate stop
+writes them first. Everything else is on chain, and the LB rebuilds its
+state from the chain at every start.
 
 ## Settlement
 
-**Settle** is a separate command-line tool with its own keys, run on a
-schedule, once a week by default. A run reads every closed period that
-has no receipts yet and computes what each provider is owed: count
-times rate, from the counters records. It pays each provider once for
-all those periods, with one GLM transfer on the payout chain, and
-writes one **[receipt](ENTITIES.md#receipt)** per agreement and period,
-all carrying that transfer's hash. Receipts are permanent and cannot be
-changed, not even by settle.
+**Settle** is a separate command-line tool with its own key, run on a
+schedule, once a week by default. A run reads every closed counter
+record that has no receipt yet and computes what each provider is
+owed: count times rate, from the records. It pays each provider once
+for all of its records, with one GLM transfer on the payout chain, and
+writes one **[receipt](ENTITIES.md#receipt)** per counter record. A
+provider's receipts from one run all carry the hash of that one
+transfer, and each names its own share of it. Receipts are permanent
+and cannot be changed, not even by settle.
 
-A run can be repeated: agreements that already have a receipt for a
-period are skipped. A rehearsal mode computes the same ledger without
+Settle uses one key on both chains: the same address sends the
+transfer and writes the receipt, so anyone can check a receipt against
+the payout chain. A run can be repeated: records that already have a
+receipt are skipped. A rehearsal mode computes the same ledger without
 paying or writing anything.
 
 Payouts go to the address that posted the offer, on the payout chain.
@@ -163,9 +190,11 @@ The provider's key is therefore also its payout key.
 ## Restarts and resets
 
 The LB keeps no marketplace state that is not on the chain. At startup
-it reads its agreement records and its open counters record and
+it reads its agreement records and its open counter records and
 continues from there; the tunnel server rejects logins until that has
-finished, and tunnel clients retry on their own. With the marketplace
+finished, and tunnel clients retry on their own. The same read runs at
+every discovery poll; a restart is the same read with nothing
+remembered yet. With the marketplace
 configured, the LB refuses to start if it cannot reach the chain or the
 sidecar; a configuration without the marketplace section runs it on
 statically configured providers alone.
@@ -174,7 +203,9 @@ If the network is reset, every record is gone. The LB is restarted and
 starts from nothing: it writes its listing again and waits for offers.
 Providers post again; their keys are unchanged. Work that was counted
 but not yet settled cannot be paid after a reset, so the operator runs
-settle before an announced reset.
+settle before an announced reset. A replaced listing has the same
+effect on offers: they point at the old listing's key and are never
+found, so a new listing is a new deployment for everyone.
 
 ## What the provider does
 
@@ -184,8 +215,9 @@ runs:
 1. `keystore` creates the provider key once.
 2. `post-offer` reads the LB listing, shows the rate, and posts the offer
    through the provider's own node. No API key is needed anywhere.
-3. `status` shows the offer, the agreement, the slot count, and the
-   receipts.
+3. `status` shows the offer, the agreement, the slot count, the open
+   counter record, the closed records not yet paid, and the receipts,
+   following the pointers from one record to the next.
 4. `tunnel-token` signs the agreement id and writes the token and the
    assigned port into the node's configuration; the existing setup
    script renders the tunnel client's config from them.
@@ -200,3 +232,8 @@ runs:
 - **Capacity in the listing.** A live free-slot count, next to the cap.
 - **A retry of a failed refresh in the same hour**, rebuilding the
   batch from the chain, instead of waiting for the next one.
+- **Paging the offer read.** Reading past the first page of offers,
+  oldest first, so a flood of offers cannot hide real ones.
+- **A registry.** A network-level key that creates every LB listing
+  and hands it to its LB, so the tooling ships one address for any
+  number of LBs.

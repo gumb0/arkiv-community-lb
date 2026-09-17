@@ -24,8 +24,13 @@ first-class concern, not an add-on.
 - A provider is **eligible** when its probes pass: in rotation, receiving
   traffic, and refreshed. **Active** and **dormant** (tunnel up / down) are
   descriptive words only; no rule depends on them.
-- The in-memory set of provider entries is the **provider pool**; "registry"
-  is reserved for the on-chain marketplace records.
+- The in-memory set of provider entries is the **provider pool**. The chain
+  records are **the marketplace records**, never "the registry": that word
+  names a proposed network-level key that would create LB listings.
+- A **counter** is the LB's in-memory count for one agreement; a **counter
+  record** is the chain entity that carries one agreement's count for one
+  **settlement period**, which is per agreement and set by the LB, not a
+  term of the deal. Records **point at** each other by entity key.
 
 ## Architecture rules
 
@@ -45,8 +50,8 @@ first-class concern, not an add-on.
   drift is caught by the test rig's round-trip scenarios — not by a shared
   library.
 - **The Rust process holds no keys.** The writer sidecar holds the
-  deployment's Arkiv key (env-injected); settle signs with its own keys,
-  provided per invocation; the Polygon payout key never exists on the LB
+  deployment's Arkiv key (a mounted file); settle signs with its own key,
+  one on both chains, provided per invocation; it never exists on the LB
   host's long-running processes.
 - Client headers are never forwarded to providers, and a provider's JSON-RPC
   error is an answer, not a failure — passed through, never retried elsewhere.

@@ -43,7 +43,7 @@ not operator-chosen.
   alive on-chain. The flow is designed in [docs/MARKETPLACE.md](docs/MARKETPLACE.md);
   the records every codebase encodes against are in
   [docs/ENTITIES.md](docs/ENTITIES.md).
-- A settle CLI: computes per-period payouts from on-chain records and pays GLM
+- A settle CLI: pays each closed counter record from on-chain records in GLM
   on the payout chain.
 
 The node-operator side lives in the companion repo,

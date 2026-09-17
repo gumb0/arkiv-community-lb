@@ -392,6 +392,7 @@ mod tests {
     fn agreement() -> EncodedRecord {
         Agreement {
             provider: Address::ZERO,
+            offer: B256::ZERO,
             wei_per_call: Wei::new(1),
             remote_port: 20000,
         }

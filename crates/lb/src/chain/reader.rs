@@ -9,7 +9,7 @@ use reqwest::{Url, header};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::records::{ArkivEntity, AttributeValue, SCHEMA_VERSION, parse_u64};
+use super::records::{ArkivEntity, AttributeValue, EntityKey, SCHEMA_VERSION, parse_u64};
 
 /// The node's page maximum. Asking for more is an error, not a smaller
 /// page, so no read ever asks for more.
@@ -63,6 +63,10 @@ impl Query {
 
     pub fn attr_u64(self, name: &'static str, value: u64) -> Self {
         self.attribute(name, AttributeValue::U64(value))
+    }
+
+    pub fn attr_key(self, name: &'static str, value: EntityKey) -> Self {
+        self.attribute(name, AttributeValue::Key(value))
     }
 
     fn attribute(mut self, name: &'static str, value: AttributeValue) -> Self {
@@ -292,14 +296,20 @@ mod tests {
         let lb: Address = "0x411e31d7ebbfd636af234954db5f598cd80a878c"
             .parse()
             .unwrap();
+        let listing: EntityKey =
+            "0x8863000000000000000000000000000000000000000000000000000000009057"
+                .parse()
+                .unwrap();
         let query = Query::kind(KIND_OFFER)
             .attr_addr("lb", lb)
+            .attr_key("lb_listing", listing)
             .expires_after(1000)
             .expires_by(87_400);
         assert_eq!(
             query.text(),
             "kind = str('rpc.offer') AND v = i32(1) \
              AND lb = addr(0x411e31d7ebbfd636af234954db5f598cd80a878c) \
+             AND lb_listing = key(0x8863000000000000000000000000000000000000000000000000000000009057) \
              AND $expiresAt > u64(1000) AND $expiresAt <= u64(87400)"
         );
     }

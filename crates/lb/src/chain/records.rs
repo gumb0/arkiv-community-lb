@@ -1,8 +1,9 @@
 //! The marketplace records, exactly as `docs/ENTITIES.md` specifies them.
 //! Every record is one struct: attributes are the fields a query filters
 //! by, the payload is JSON with the rest, and a field lives in one place
-//! only. Encoding and decoding are symmetric, and unknown payload fields
-//! are ignored so a newer writer does not break an older reader.
+//! only. Records point at each other by entity key. Encoding and
+//! decoding are symmetric, and unknown payload fields are ignored so a
+//! newer writer does not break an older reader.
 
 use std::collections::BTreeMap;
 
@@ -14,7 +15,7 @@ pub const SCHEMA_VERSION: i32 = 1;
 pub const KIND_LB_LISTING: &str = "rpc.lb_listing";
 pub const KIND_OFFER: &str = "rpc.offer";
 pub const KIND_AGREEMENT: &str = "rpc.agreement";
-pub const KIND_COUNTERS: &str = "rpc.counters";
+pub const KIND_COUNTER: &str = "rpc.counter";
 pub const KIND_RECEIPT: &str = "rpc.receipt";
 
 pub use alloy_primitives::Address;
@@ -194,13 +195,6 @@ impl Attributes {
         match self.present(name)? {
             AttributeValue::I32(n) => Ok(*n),
             other => Err(other.mismatch(name, "i32")),
-        }
-    }
-
-    fn u64(&self, name: &'static str) -> Result<u64, RecordError> {
-        match self.present(name)? {
-            AttributeValue::U64(n) => Ok(*n),
-            other => Err(other.mismatch(name, "u64")),
         }
     }
 
@@ -396,8 +390,8 @@ struct OfferPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Offer {
-    /// The LB the offer addresses.
-    pub lb: Address,
+    /// The LB listing the offer answers.
+    pub lb_listing: EntityKey,
     pub specs: Specs,
 }
 
@@ -406,7 +400,7 @@ impl Record for Offer {
 
     fn encode(&self) -> EncodedRecord {
         encode(
-            Attributes::new(Self::KIND).with("lb", AttributeValue::Addr(self.lb)),
+            Attributes::new(Self::KIND).with("lb_listing", AttributeValue::Key(self.lb_listing)),
             &OfferPayload {
                 specs: self.specs.clone(),
             },
@@ -414,10 +408,10 @@ impl Record for Offer {
     }
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
-        let lb = entity.typed_attributes().addr("lb")?;
+        let lb_listing = entity.typed_attributes().key("lb_listing")?;
         let payload: OfferPayload = entity.payload()?;
         Ok(Self {
-            lb,
+            lb_listing,
             specs: payload.specs,
         })
     }
@@ -435,6 +429,8 @@ struct AgreementPayload {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agreement {
     pub provider: Address,
+    /// The accepted offer.
+    pub offer: EntityKey,
     pub wei_per_call: Wei,
     pub remote_port: u16,
 }
@@ -444,7 +440,9 @@ impl Record for Agreement {
 
     fn encode(&self) -> EncodedRecord {
         encode(
-            Attributes::new(Self::KIND).with("provider", AttributeValue::Addr(self.provider)),
+            Attributes::new(Self::KIND)
+                .with("provider", AttributeValue::Addr(self.provider))
+                .with("offer", AttributeValue::Key(self.offer)),
             &AgreementPayload {
                 wei_per_call: self.wei_per_call,
                 remote_port: self.remote_port,
@@ -453,10 +451,11 @@ impl Record for Agreement {
     }
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
-        let provider = entity.typed_attributes().addr("provider")?;
+        let attributes = entity.typed_attributes();
         let payload: AgreementPayload = entity.payload()?;
         Ok(Self {
-            provider,
+            provider: attributes.addr("provider")?,
+            offer: attributes.key("offer")?,
             wei_per_call: payload.wei_per_call,
             remote_port: payload.remote_port,
         })
@@ -464,15 +463,15 @@ impl Record for Agreement {
 }
 
 // ---------------------------------------------------------------------------
-// Counters
+// Counter record
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PeriodState {
+pub enum CounterState {
     Open,
     Closed,
 }
 
-impl PeriodState {
+impl CounterState {
     fn as_str(self) -> &'static str {
         match self {
             Self::Open => "open",
@@ -482,49 +481,52 @@ impl PeriodState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CounterRow {
+struct CounterPayload {
+    count: u64,
+    wei_per_call: Wei,
+    opened_block: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    closed_block: Option<u64>,
+}
+
+/// One agreement's count for one settlement period. An agreement has
+/// exactly one open counter record while it lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CounterRecord {
     pub agreement: EntityKey,
     pub provider: Address,
+    pub state: CounterState,
     pub count: u64,
     pub wei_per_call: Wei,
+    /// The head when counting for this record started.
+    pub opened_block: u64,
+    /// The head at the closing flush; absent while open.
+    pub closed_block: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct CountersPayload {
-    period_end: u64,
-    rows: Vec<CounterRow>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Counters {
-    /// The period's start, unix seconds.
-    pub period: u64,
-    pub state: PeriodState,
-    pub period_end: u64,
-    pub rows: Vec<CounterRow>,
-}
-
-impl Record for Counters {
-    const KIND: &'static str = KIND_COUNTERS;
+impl Record for CounterRecord {
+    const KIND: &'static str = KIND_COUNTER;
 
     fn encode(&self) -> EncodedRecord {
         encode(
             Attributes::new(Self::KIND)
-                .with("period", AttributeValue::U64(self.period))
+                .with("agreement", AttributeValue::Key(self.agreement))
+                .with("provider", AttributeValue::Addr(self.provider))
                 .with("state", AttributeValue::Str(self.state.as_str().to_owned())),
-            &CountersPayload {
-                period_end: self.period_end,
-                rows: self.rows.clone(),
+            &CounterPayload {
+                count: self.count,
+                wei_per_call: self.wei_per_call,
+                opened_block: self.opened_block,
+                closed_block: self.closed_block,
             },
         )
     }
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let attributes = entity.typed_attributes();
-        let period = attributes.u64("period")?;
         let state = match attributes.str("state")? {
-            "open" => PeriodState::Open,
-            "closed" => PeriodState::Closed,
+            "open" => CounterState::Open,
+            "closed" => CounterState::Closed,
             other => {
                 return Err(RecordError::AttributeType {
                     name: "state",
@@ -533,12 +535,15 @@ impl Record for Counters {
                 });
             }
         };
-        let payload: CountersPayload = entity.payload()?;
+        let payload: CounterPayload = entity.payload()?;
         Ok(Self {
-            period,
+            agreement: attributes.key("agreement")?,
+            provider: attributes.addr("provider")?,
             state,
-            period_end: payload.period_end,
-            rows: payload.rows,
+            count: payload.count,
+            wei_per_call: payload.wei_per_call,
+            opened_block: payload.opened_block,
+            closed_block: payload.closed_block,
         })
     }
 }
@@ -549,23 +554,26 @@ impl Record for Counters {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Payout {
     pub chain_id: u64,
-    /// The transfer's transaction hash; `None` for a zero-amount receipt.
-    pub tx: Option<String>,
+    /// The transfer's transaction hash.
+    pub tx: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ReceiptPayload {
+    agreement: EntityKey,
     count: u64,
     wei_per_call: Wei,
     amount_wei: Wei,
     payout: Payout,
 }
 
+/// Settle's record that one counter record was paid, in full.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receipt {
-    pub period: u64,
-    pub agreement: EntityKey,
+    /// The counter record paid.
+    pub counter: EntityKey,
     pub provider: Address,
+    pub agreement: EntityKey,
     pub count: u64,
     pub wei_per_call: Wei,
     pub amount_wei: Wei,
@@ -578,10 +586,10 @@ impl Record for Receipt {
     fn encode(&self) -> EncodedRecord {
         encode(
             Attributes::new(Self::KIND)
-                .with("period", AttributeValue::U64(self.period))
-                .with("agreement", AttributeValue::Key(self.agreement))
+                .with("counter", AttributeValue::Key(self.counter))
                 .with("provider", AttributeValue::Addr(self.provider)),
             &ReceiptPayload {
+                agreement: self.agreement,
                 count: self.count,
                 wei_per_call: self.wei_per_call,
                 amount_wei: self.amount_wei,
@@ -594,9 +602,9 @@ impl Record for Receipt {
         let attributes = entity.typed_attributes();
         let payload: ReceiptPayload = entity.payload()?;
         Ok(Self {
-            period: attributes.u64("period")?,
-            agreement: attributes.key("agreement")?,
+            counter: attributes.key("counter")?,
             provider: attributes.addr("provider")?,
+            agreement: payload.agreement,
             count: payload.count,
             wei_per_call: payload.wei_per_call,
             amount_wei: payload.amount_wei,
@@ -613,6 +621,7 @@ mod tests {
     const LB: &str = "0x411e31d7ebbfd636af234954db5f598cd80a878c";
     const PROVIDER: &str = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
     const KEY: &str = "0x8863000000000000000000000000000000000000000000000000000000009057";
+    const OFFER: &str = "0x0ffe000000000000000000000000000000000000000000000000000000000001";
 
     fn addr(text: &str) -> Address {
         text.parse().expect("test address parses")
@@ -684,7 +693,7 @@ mod tests {
     #[test]
     fn offer_round_trips() {
         let offer = Offer {
-            lb: addr(LB),
+            lb_listing: key(KEY),
             specs: Specs {
                 chain_id: 7_738_577,
                 head: 123_456,
@@ -698,8 +707,8 @@ mod tests {
         };
         let encoded = offer.encode();
         assert_eq!(
-            encoded.attributes.to_wire()["lb"],
-            json!({ "type": "addr", "value": LB })
+            encoded.attributes.to_wire()["lb_listing"],
+            json!({ "type": "key", "value": KEY })
         );
         assert_eq!(
             payload_json(&encoded),
@@ -722,14 +731,17 @@ mod tests {
     fn agreement_round_trips() {
         let agreement = Agreement {
             provider: addr(PROVIDER),
+            offer: key(OFFER),
             wei_per_call: Wei::new(1_000_000_000_000_000),
             remote_port: 20007,
         };
         let encoded = agreement.encode();
+        let wire = encoded.attributes.to_wire();
         assert_eq!(
-            encoded.attributes.to_wire()["provider"],
+            wire["provider"],
             json!({ "type": "addr", "value": PROVIDER })
         );
+        assert_eq!(wire["offer"], json!({ "type": "key", "value": OFFER }));
         assert_eq!(
             payload_json(&encoded),
             json!({ "wei_per_call": "1000000000000000", "remote_port": 20007 })
@@ -743,6 +755,7 @@ mod tests {
     fn a_stored_record_carries_what_the_chain_added() {
         let agreement = Agreement {
             provider: addr(PROVIDER),
+            offer: key(OFFER),
             wei_per_call: Wei::new(5),
             remote_port: 20000,
         };
@@ -759,71 +772,112 @@ mod tests {
     }
 
     #[test]
-    fn counters_round_trip_with_the_period_as_attributes() {
-        let counters = Counters {
-            period: 1_789_000_000,
-            state: PeriodState::Closed,
-            period_end: 1_789_086_400,
-            rows: vec![CounterRow {
-                agreement: key(KEY),
-                provider: addr(PROVIDER),
-                count: 48_213,
-                wei_per_call: Wei::new(1_000_000_000_000_000),
-            }],
+    fn a_counter_record_round_trips_open_and_closed() {
+        let open = CounterRecord {
+            agreement: key(KEY),
+            provider: addr(PROVIDER),
+            state: CounterState::Open,
+            count: 48_213,
+            wei_per_call: Wei::new(1_000_000_000_000_000),
+            opened_block: 1_204_000,
+            closed_block: None,
         };
-        let encoded = counters.encode();
+        let encoded = open.encode();
         let wire = encoded.attributes.to_wire();
+        assert_eq!(wire["agreement"], json!({ "type": "key", "value": KEY }));
         assert_eq!(
-            wire["period"],
-            json!({ "type": "u64", "value": "1789000000" })
+            wire["provider"],
+            json!({ "type": "addr", "value": PROVIDER })
         );
-        assert_eq!(wire["state"], json!({ "type": "str", "value": "closed" }));
+        assert_eq!(wire["state"], json!({ "type": "str", "value": "open" }));
         assert_eq!(
             payload_json(&encoded),
             json!({
-                "period_end": 1789086400,
-                "rows": [{
-                    "agreement": KEY,
-                    "provider": PROVIDER,
-                    "count": 48213,
-                    "wei_per_call": "1000000000000000",
-                }]
-            })
+                "count": 48213,
+                "wei_per_call": "1000000000000000",
+                "opened_block": 1204000,
+            }),
+            "closed_block is absent while open"
         );
         let entity = read_back(&encoded);
-        assert!(entity.is(KIND_COUNTERS));
-        assert_eq!(Counters::decode(&entity).unwrap(), counters);
+        assert!(entity.is(KIND_COUNTER));
+        assert_eq!(CounterRecord::decode(&entity).unwrap(), open);
+
+        let closed = CounterRecord {
+            state: CounterState::Closed,
+            count: 96_426,
+            closed_block: Some(1_506_400),
+            ..open
+        };
+        let encoded = closed.encode();
+        assert_eq!(
+            encoded.attributes.to_wire()["state"],
+            json!({ "type": "str", "value": "closed" })
+        );
+        assert_eq!(
+            payload_json(&encoded),
+            json!({
+                "count": 96426,
+                "wei_per_call": "1000000000000000",
+                "opened_block": 1204000,
+                "closed_block": 1506400,
+            })
+        );
+        assert_eq!(CounterRecord::decode(&read_back(&encoded)).unwrap(), closed);
+    }
+
+    #[test]
+    fn an_unknown_counter_state_is_an_error() {
+        let mut encoded = CounterRecord {
+            agreement: key(KEY),
+            provider: addr(PROVIDER),
+            state: CounterState::Open,
+            count: 1,
+            wei_per_call: Wei::new(1),
+            opened_block: 1,
+            closed_block: None,
+        }
+        .encode();
+        encoded.attributes = encoded
+            .attributes
+            .with("state", AttributeValue::Str("paid".to_owned()));
+        assert_eq!(
+            CounterRecord::decode(&read_back(&encoded)),
+            Err(RecordError::AttributeType {
+                name: "state",
+                found: "paid".to_owned(),
+                expected: "open or closed",
+            })
+        );
     }
 
     #[test]
     fn receipt_round_trips() {
         let tx = "0x925d000000000000000000000000000000000000000000000000000000000033c7";
         let receipt = Receipt {
-            period: 1_789_000_000,
-            agreement: key(KEY),
+            counter: key(KEY),
             provider: addr(PROVIDER),
+            agreement: key(OFFER),
             count: 48_213,
             wei_per_call: Wei::new(1_000_000_000_000_000),
             amount_wei: Wei::new(48_213_000_000_000_000_000),
             payout: Payout {
                 chain_id: 560_048,
-                tx: Some(tx.to_owned()),
+                tx: tx.to_owned(),
             },
         };
         let encoded = receipt.encode();
         let wire = encoded.attributes.to_wire();
-        assert_eq!(
-            wire["period"],
-            json!({ "type": "u64", "value": "1789000000" })
-        );
-        assert_eq!(wire["agreement"], json!({ "type": "key", "value": KEY }));
+        assert_eq!(wire["counter"], json!({ "type": "key", "value": KEY }));
         assert_eq!(
             wire["provider"],
             json!({ "type": "addr", "value": PROVIDER })
         );
+        assert!(wire.get("agreement").is_none(), "the agreement is payload");
         assert_eq!(
             payload_json(&encoded),
             json!({
+                "agreement": OFFER,
                 "count": 48213,
                 "wei_per_call": "1000000000000000",
                 "amount_wei": "48213000000000000000",
@@ -836,28 +890,10 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_receipt_has_no_transaction() {
-        let receipt = Receipt {
-            period: 1_789_000_000,
-            agreement: key(KEY),
-            provider: addr(PROVIDER),
-            count: 0,
-            wei_per_call: Wei::new(1_000_000_000_000_000),
-            amount_wei: Wei::new(0),
-            payout: Payout {
-                chain_id: 560_048,
-                tx: None,
-            },
-        };
-        let encoded = receipt.encode();
-        assert_eq!(payload_json(&encoded)["payout"]["tx"], json!(null));
-        assert_eq!(Receipt::decode(&read_back(&encoded)).unwrap(), receipt);
-    }
-
-    #[test]
     fn unknown_payload_fields_are_ignored() {
         let mut encoded = Agreement {
             provider: addr(PROVIDER),
+            offer: key(OFFER),
             wei_per_call: Wei::new(5),
             remote_port: 20000,
         }
@@ -913,6 +949,7 @@ mod tests {
     fn a_missing_attribute_is_an_error() {
         let mut encoded = Agreement {
             provider: addr(PROVIDER),
+            offer: key(OFFER),
             wei_per_call: Wei::new(5),
             remote_port: 20000,
         }
@@ -928,6 +965,7 @@ mod tests {
     fn an_attribute_of_the_wrong_type_is_an_error() {
         let mut encoded = Agreement {
             provider: addr(PROVIDER),
+            offer: key(OFFER),
             wei_per_call: Wei::new(5),
             remote_port: 20000,
         }

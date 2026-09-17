@@ -94,6 +94,7 @@ async fn a_query_selects_every_record_field_at_the_page_limit_with_the_key() {
 async fn rows_parse_into_stored_records_and_a_cursor_means_more() {
     let encoded = Agreement {
         provider: Address::ZERO,
+        offer: alloy_primitives::B256::ZERO,
         wei_per_call: lb::chain::records::Wei::new(5),
         remote_port: 20001,
     }

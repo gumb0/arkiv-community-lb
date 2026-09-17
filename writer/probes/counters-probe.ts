@@ -79,7 +79,7 @@ const createdEntities = await createInBatches(
     payload: jsonToPayload({ count: 48213 + i, wei_per_call: wei }),
     contentType: "application/json",
     attributes: {
-      kind: str("rpc.counters"),
+      kind: str("rpc.counter"),
       v: i32(1),
       agreement: key(agreementKey(i)),
       provider: addr(provider(i)),
@@ -108,7 +108,7 @@ await report("counters close (count and state)", closeTx, n)
 
 const receipts = await createInBatches(
   "receipt create",
-  createdEntities.map((countersKey, i) => ({
+  createdEntities.map((counterKey, i) => ({
     payload: jsonToPayload({
       agreement: agreementKey(i),
       count: 144639 + i,
@@ -120,7 +120,7 @@ const receipts = await createInBatches(
     attributes: {
       kind: str("rpc.receipt"),
       v: i32(1),
-      counters: key(countersKey),
+      counter: key(counterKey),
       provider: addr(provider(i)),
     },
     expires: ExpirationTime.fromBlocks(300),

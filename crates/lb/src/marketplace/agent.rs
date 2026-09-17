@@ -1,20 +1,27 @@
-//! The marketplace agent's startup: the LB's state on the chain, read
-//! back into memory. The chain is the authority; what is here is a
-//! cache of it, rebuilt at every start.
+//! The marketplace agent: the LB's state on the chain, read back into
+//! memory and kept there. The chain is the authority; what is here is a
+//! cache of it, rebuilt at every start and reconciled at every poll.
+//! One task, and every chain write of the LB goes through it.
 
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex},
+};
+
+use tokio::sync::watch;
 
 use crate::{
     chain::{
         ChainReader, ChainWriter,
         reader::{PAGE_LIMIT, Query, ReadError},
         records::{
-            Agreement, EntityKey, KIND_AGREEMENT, KIND_LB_LISTING, LbListing, Record, Stored,
+            Address, Agreement, EntityKey, KIND_AGREEMENT, KIND_LB_LISTING, LbListing, Record,
+            Stored,
         },
         writer::{Create, Expiry, Identity, Patch, WriteError},
     },
     config,
-    pool::{Pool, Provider},
+    pool::{Pool, Provider, marketplace_id},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -33,42 +40,93 @@ pub enum StartError {
     Listing(#[source] WriteError),
 }
 
-#[derive(Debug)]
-pub struct Agent {
+/// Why a reconcile did not happen. At startup either is a reason not
+/// to start; at a poll, a reason to skip this one.
+#[derive(Debug, thiserror::Error)]
+enum ReconcileError {
+    #[error("the chain could not be read")]
+    Chain(#[source] ReadError),
+    #[error("{count} agreement records, more than one page holds")]
+    TooMany { count: u64 },
+}
+
+pub struct Agent<R, W> {
+    reader: R,
+    writer: W,
+    config: config::Marketplace,
+    pool: Arc<Pool>,
     identity: Identity,
     listing_key: EntityKey,
     /// The live agreement records, by key: the slot state.
     agreements: Mutex<HashMap<EntityKey, Stored<Agreement>>>,
 }
 
-impl Agent {
+impl<R, W> std::fmt::Debug for Agent<R, W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let agreements = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        f.debug_struct("Agent")
+            .field("identity", &self.identity)
+            .field("listing_key", &self.listing_key)
+            .field("agreements", &agreements)
+            .finish()
+    }
+}
+
+impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     /// Reads the LB's records back from the chain and makes the listing
     /// match the configuration. Every failure here is a reason not to
     /// start: without the chain the LB does not know its own providers.
-    pub async fn start<R: ChainReader, W: ChainWriter>(
-        reader: &R,
-        writer: &W,
-        config: &config::Marketplace,
-        pool: &Pool,
+    pub async fn start(
+        reader: R,
+        writer: W,
+        config: config::Marketplace,
+        pool: Arc<Pool>,
     ) -> Result<Self, StartError> {
         let identity = writer.identity().await.map_err(StartError::Sidecar)?;
-        let head = reader.block_number().await.map_err(StartError::Chain)?;
-        // The reload only reads and can refuse the start; the listing
+        let agent = Self {
+            reader,
+            writer,
+            config,
+            pool,
+            identity,
+            listing_key: EntityKey::ZERO,
+            agreements: Mutex::new(HashMap::new()),
+        };
+        // The reconcile only reads and can refuse the start; the listing
         // writes. This order keeps a refused start from writing anything.
-        let agreements = reload_agreements(reader, pool, identity.address, head).await?;
-        if agreements.len() > config.max_providers as usize {
+        agent.reconcile().await.map_err(|error| match error {
+            ReconcileError::Chain(error) => StartError::Chain(error),
+            ReconcileError::TooMany { count } => StartError::TooManyAgreements { count },
+        })?;
+        let live = agent.agreements().len();
+        if live > agent.config.max_providers as usize {
             tracing::warn!(
-                live = agreements.len(),
-                cap = config.max_providers,
+                live,
+                cap = agent.config.max_providers,
                 "more agreements than the cap allows: nobody is evicted, no offer is accepted \
                  until enough expire"
             );
         }
-        let listing_key = ensure_listing(reader, writer, config, identity.address, head).await?;
+        let head = agent
+            .reader
+            .block_number()
+            .await
+            .map_err(StartError::Chain)?;
+        let listing_key = ensure_listing(
+            &agent.reader,
+            &agent.writer,
+            &agent.config,
+            agent.identity.address,
+            head,
+        )
+        .await?;
         Ok(Self {
-            identity,
             listing_key,
-            agreements: Mutex::new(agreements),
+            ..agent
         })
     }
 
@@ -89,57 +147,128 @@ impl Agent {
             .cloned()
             .collect()
     }
-}
 
-/// The LB's own agreement records, each one a marketplace provider in
-/// the pool. Expired records have vanished from the chain, so what is
-/// there is what is live. One page must hold them all: the count is
-/// checked first, since a page that is full says nothing about what
-/// lies beyond it.
-async fn reload_agreements<R: ChainReader>(
-    reader: &R,
-    pool: &Pool,
-    lb: alloy_primitives::Address,
-    head: u64,
-) -> Result<HashMap<EntityKey, Stored<Agreement>>, StartError> {
-    let query = Query::kind(KIND_AGREEMENT).creator(lb).expires_after(head);
-    let count = reader.count(&query).await.map_err(StartError::Chain)?;
-    if count > PAGE_LIMIT {
-        return Err(StartError::TooManyAgreements { count });
+    /// The task: a poll every discovery interval until shutdown. The
+    /// start already reconciled, so the first tick is skipped.
+    pub async fn run(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
+        let mut ticks = tokio::time::interval(self.config.discovery_interval);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticks.tick().await;
+        loop {
+            tokio::select! {
+                _ = ticks.tick() => self.poll().await,
+                _ = shutdown.changed() => return,
+            }
+        }
     }
-    let page = reader.query(&query).await.map_err(StartError::Chain)?;
-    let mut agreements = HashMap::new();
-    for entity in &page.entities {
-        let stored = match Stored::<Agreement>::decode(entity) {
-            Ok(stored) => stored,
-            Err(error) => {
-                tracing::warn!(key = %entity.key, %error, "an agreement record does not decode: skipped");
+
+    /// One discovery poll. The reconcile comes first; a poll that cannot
+    /// read the chain, or finds more records than a page, changes
+    /// nothing and says so.
+    pub async fn poll(&self) {
+        match self.reconcile().await {
+            Ok(()) => {}
+            Err(ReconcileError::TooMany { count }) => tracing::error!(
+                count,
+                "more agreement records than one page holds: this poll's reconcile is skipped"
+            ),
+            Err(ReconcileError::Chain(error)) => {
+                tracing::warn!(%error, "the chain could not be read: this poll's reconcile is skipped");
+            }
+        }
+    }
+
+    /// Memory against the chain. The LB's live agreement records are
+    /// read (count then page: a full page says nothing about what lies
+    /// beyond it); an agreement the chain has and memory does not is
+    /// adopted, one memory has and the chain does not is over: its
+    /// provider leaves the pool and its slot and port are free. Expired
+    /// records have vanished from the chain, so what is there is what
+    /// is live. Nothing is applied on a read that failed.
+    async fn reconcile(&self) -> Result<(), ReconcileError> {
+        let head = self
+            .reader
+            .block_number()
+            .await
+            .map_err(ReconcileError::Chain)?;
+        let query = Query::kind(KIND_AGREEMENT)
+            .creator(self.identity.address)
+            .expires_after(head);
+        let count = self
+            .reader
+            .count(&query)
+            .await
+            .map_err(ReconcileError::Chain)?;
+        if count > PAGE_LIMIT {
+            return Err(ReconcileError::TooMany { count });
+        }
+        let page = self
+            .reader
+            .query(&query)
+            .await
+            .map_err(ReconcileError::Chain)?;
+        // In the page's order: when two records name the same provider,
+        // the first one the page lists is the one kept.
+        let mut live = Vec::new();
+        for entity in &page.entities {
+            match Stored::<Agreement>::decode(entity) {
+                Ok(stored) => live.push(stored),
+                Err(error) => {
+                    tracing::warn!(key = %entity.key, %error, "an agreement record does not decode: skipped");
+                }
+            }
+        }
+        let live_keys: HashSet<EntityKey> = live.iter().map(|stored| stored.key).collect();
+
+        let mut known = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let gone: Vec<EntityKey> = known
+            .keys()
+            .filter(|key| !live_keys.contains(*key))
+            .copied()
+            .collect();
+        for key in gone {
+            let Some(agreement) = known.remove(&key) else {
+                continue;
+            };
+            self.pool.remove(&marketplace_id(agreement.record.provider));
+            tracing::info!(
+                provider = %agreement.record.provider,
+                agreement = %key,
+                "agreement over: its record is gone from the chain"
+            );
+        }
+        let mut adopted = 0;
+        for stored in live {
+            let key = stored.key;
+            if known.contains_key(&key) {
                 continue;
             }
-        };
-        if agreements
-            .values()
-            .any(|known: &Stored<Agreement>| known.record.provider == stored.record.provider)
-        {
-            tracing::warn!(
-                provider = %stored.record.provider,
-                key = %stored.key,
-                "a second agreement record for one provider: skipped"
-            );
-            continue;
+            if known
+                .values()
+                .any(|other| other.record.provider == stored.record.provider)
+            {
+                tracing::warn!(
+                    provider = %stored.record.provider,
+                    key = %key,
+                    "a second agreement record for one provider: skipped"
+                );
+                continue;
+            }
+            self.pool.add(Provider::from_marketplace(
+                stored.record.provider,
+                key,
+                stored.record.remote_port,
+            ));
+            tracing::info!(provider = %stored.record.provider, agreement = %key, "agreement adopted");
+            known.insert(key, stored);
+            adopted += 1;
         }
-        pool.add(Provider::from_marketplace(
-            stored.record.provider,
-            stored.key,
-            stored.record.remote_port,
-        ));
-        agreements.insert(stored.key, stored);
+        tracing::debug!(live = known.len(), adopted, "reconciled with the chain");
+        Ok(())
     }
-    tracing::info!(
-        agreements = agreements.len(),
-        "marketplace providers reloaded from the chain"
-    );
-    Ok(agreements)
 }
 
 /// One live listing that says what the configuration says: created if
@@ -150,7 +279,7 @@ async fn ensure_listing<R: ChainReader, W: ChainWriter>(
     reader: &R,
     writer: &W,
     config: &config::Marketplace,
-    lb: alloy_primitives::Address,
+    lb: Address,
     head: u64,
 ) -> Result<EntityKey, StartError> {
     let desired = LbListing {

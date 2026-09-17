@@ -75,6 +75,11 @@ pub struct Provider {
     last_probe_ms: AtomicU64,
 }
 
+/// A marketplace provider's id in the pool: its address, lowercase.
+pub fn marketplace_id(address: Address) -> String {
+    format!("{address:#x}")
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("provider {id:?}: url {url:?} does not parse")]
 pub struct InvalidUrl {
@@ -99,7 +104,7 @@ impl Provider {
     pub fn from_marketplace(address: Address, agreement_id: EntityKey, port: u16) -> Self {
         let url = Url::parse(&format!("http://127.0.0.1:{port}")).expect("a loopback url parses");
         Self::new(
-            format!("{address:#x}"),
+            marketplace_id(address),
             url,
             Source::Marketplace {
                 address,

@@ -76,6 +76,11 @@ first-class concern, not an add-on.
   else. Standard codes (−32700, −32601, …) are always a provider's answer;
   never fabricate them. The client-facing table is `docs/ENDPOINT.md`; the
   architecture note is `docs/PROXY.md`.
+- **The marketplace agent is one task**, with a timer per loop, and every
+  chain write of the LB goes through it, so the sidecar never has two of
+  the LB's writes queued behind each other. Its memory is a cache of the
+  chain, rebuilt at start and reconciled at every discovery poll; the
+  chain decides which agreements exist.
 - Providers behind NAT reach the LB through **frp tunnels**; a tunneled
   provider is a plain `http://127.0.0.1:<port>` URL to the Proxy. The choice,
   the admission design, and the measurements are in `docs/TUNNELING.md` — not

@@ -3,7 +3,7 @@
 
 mod common;
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::Address;
 use common::fake_chain::{FakeChain, Transaction};
@@ -68,15 +68,21 @@ fn seed_agreement(
     chain.write_as(LB, record.encode(), Expiry::Seconds(life))
 }
 
-async fn start(chain: &FakeChain, config: &Marketplace, pool: &Pool) -> Result<Agent, StartError> {
-    Agent::start(chain, chain, config, pool).await
+type FakeAgent = Agent<FakeChain, FakeChain>;
+
+async fn start(
+    chain: &FakeChain,
+    config: &Marketplace,
+    pool: &Arc<Pool>,
+) -> Result<FakeAgent, StartError> {
+    Agent::start(chain.clone(), chain.clone(), config.clone(), pool.clone()).await
 }
 
 #[tokio::test]
 async fn a_first_start_writes_the_listing_and_reloads_nothing() {
     let chain = FakeChain::new(LB, 1337);
     let config = marketplace();
-    let pool = Pool::new(&[]).expect("empty pool");
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &config, &pool).await.expect("starts");
 
     assert_eq!(agent.identity().address, LB);
@@ -110,7 +116,7 @@ async fn agreement_records_become_marketplace_providers() {
     let first = seed_agreement(&chain, provider(1), 20000, 3600);
     let second = seed_agreement(&chain, provider(2), 20003, 3600);
     let config = marketplace();
-    let pool = Pool::new(&[]).expect("empty pool");
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &config, &pool).await.expect("starts");
 
     let agreements = agent.agreements();
@@ -148,7 +154,7 @@ async fn an_expired_agreement_is_gone_and_stays_gone() {
     let chain = FakeChain::new(LB, 1337);
     seed_agreement(&chain, provider(1), 20000, 60);
     chain.advance(30);
-    let pool = Pool::new(&[]).expect("empty pool");
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
     assert!(agent.agreements().is_empty());
     assert!(pool.snapshot().is_empty());
@@ -159,7 +165,7 @@ async fn a_second_record_for_one_provider_is_skipped() {
     let chain = FakeChain::new(LB, 1337);
     let first = seed_agreement(&chain, provider(1), 20000, 3600);
     seed_agreement(&chain, provider(1), 20001, 3600);
-    let pool = Pool::new(&[]).expect("empty pool");
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1);
@@ -175,7 +181,7 @@ async fn a_cap_below_the_live_count_evicts_nobody() {
     }
     let mut config = marketplace();
     config.max_providers = 2;
-    let pool = Pool::new(&[]).expect("empty pool");
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &config, &pool).await.expect("starts");
     assert_eq!(agent.agreements().len(), 3);
     assert_eq!(pool.snapshot().len(), 3);
@@ -186,7 +192,7 @@ async fn an_unchanged_listing_is_left_alone() {
     let chain = FakeChain::new(LB, 1337);
     let config = marketplace();
     let existing = chain.write_as(LB, listing_of(&config).encode(), Expiry::Seconds(3600));
-    let pool = Pool::new(&[]).expect("empty pool");
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &config, &pool).await.expect("starts");
     assert_eq!(agent.listing_key(), existing);
     assert!(chain.transactions().is_empty(), "nothing to write");
@@ -200,7 +206,7 @@ async fn a_changed_configuration_patches_the_oldest_listing_and_ignores_the_rest
     let newer = chain.write_as(LB, listing_of(&old).encode(), Expiry::Seconds(2000));
     let older = chain.write_as(LB, listing_of(&old).encode(), Expiry::Seconds(1000));
     let config = marketplace();
-    let pool = Pool::new(&[]).expect("empty pool");
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &config, &pool).await.expect("starts");
 
     assert_eq!(
@@ -230,7 +236,7 @@ async fn a_changed_configuration_patches_the_oldest_listing_and_ignores_the_rest
 async fn refuses_to_start_without_the_sidecar() {
     let chain = FakeChain::new(LB, 1337);
     chain.fail_sidecar("connection refused");
-    let pool = Pool::new(&[]).expect("empty pool");
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let error = start(&chain, &marketplace(), &pool)
         .await
         .expect_err("refuses");
@@ -242,7 +248,7 @@ async fn refuses_to_start_without_the_sidecar() {
 async fn refuses_to_start_without_the_reference() {
     let chain = FakeChain::new(LB, 1337);
     chain.fail_reference("connection refused");
-    let pool = Pool::new(&[]).expect("empty pool");
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let error = start(&chain, &marketplace(), &pool)
         .await
         .expect_err("refuses");
@@ -269,7 +275,7 @@ async fn records_that_do_not_decode_are_skipped() {
     let mut listing = listing_of(&config).encode();
     listing.payload = b"{}".to_vec();
     let broken = chain.write_as(LB, listing, Expiry::Seconds(3600));
-    let pool = Pool::new(&[]).expect("empty pool");
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &config, &pool).await.expect("starts");
 
     assert!(agent.agreements().is_empty(), "the agreement is skipped");
@@ -290,7 +296,7 @@ async fn refuses_to_start_when_the_records_do_not_fit_one_page() {
         ));
         seed_agreement(&chain, address, 20000, 3600);
     }
-    let pool = Pool::new(&[]).expect("empty pool");
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let error = start(&chain, &marketplace(), &pool)
         .await
         .expect_err("refuses");
@@ -300,6 +306,115 @@ async fn refuses_to_start_when_the_records_do_not_fit_one_page() {
     assert!(
         chain.transactions().is_empty(),
         "a refused start writes nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_gone_agreement_leaves_the_pool_at_the_next_poll() {
+    let chain = FakeChain::new(LB, 1337);
+    let short = seed_agreement(&chain, provider(1), 20000, 60);
+    let long = seed_agreement(&chain, provider(2), 20001, 3600);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    assert_eq!(agent.agreements().len(), 2);
+
+    chain.advance(31);
+    agent.poll().await;
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 1);
+    assert_eq!(agreements[0].key, long);
+    let members = pool.snapshot();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].id, format!("{:#x}", provider(2)));
+    assert!(
+        chain.entity(short).is_some(),
+        "expired, not deleted; just gone from reads"
+    );
+    assert!(
+        chain.transactions().len() <= 1,
+        "the reconcile writes nothing"
+    );
+}
+
+#[tokio::test]
+async fn an_agreement_unknown_to_memory_is_adopted_at_the_poll() {
+    let chain = FakeChain::new(LB, 1337);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    assert!(agent.agreements().is_empty());
+
+    // Written outside memory: an acceptance whose answer never came, say.
+    let key = seed_agreement(&chain, provider(1), 20005, 3600);
+    agent.poll().await;
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 1);
+    assert_eq!(agreements[0].key, key);
+    assert_eq!(pool.snapshot()[0].url.as_str(), "http://127.0.0.1:20005/");
+}
+
+#[tokio::test]
+async fn a_poll_over_a_page_skips_the_reconcile() {
+    let chain = FakeChain::new(LB, 1337);
+    let first = seed_agreement(&chain, provider(1), 20000, 3600);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+
+    for n in 0..PAGE_LIMIT {
+        let address = Address::from_word(alloy_primitives::B256::from(
+            alloy_primitives::U256::from(n + 1),
+        ));
+        seed_agreement(&chain, address, 20001, 3600);
+    }
+    agent.poll().await;
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 1, "nothing adopted, nothing dropped");
+    assert_eq!(agreements[0].key, first);
+    assert_eq!(pool.snapshot().len(), 1);
+}
+
+#[tokio::test]
+async fn one_poll_drops_the_gone_and_adopts_the_new() {
+    let chain = FakeChain::new(LB, 1337);
+    let expiring = seed_agreement(&chain, provider(1), 20000, 60);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+
+    chain.advance(31);
+    let unknown = seed_agreement(&chain, provider(2), 20001, 3600);
+    agent.poll().await;
+
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 1);
+    assert_eq!(agreements[0].key, unknown);
+    assert_ne!(agreements[0].key, expiring);
+    let members = pool.snapshot();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].id, format!("{:#x}", provider(2)));
+}
+
+#[tokio::test]
+async fn a_poll_that_cannot_read_the_chain_changes_nothing() {
+    let chain = FakeChain::new(LB, 1337);
+    let expiring = seed_agreement(&chain, provider(1), 20000, 60);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+
+    chain.advance(31);
+    let unknown = seed_agreement(&chain, provider(2), 20001, 3600);
+    chain.fail_reference("connection refused");
+    agent.poll().await;
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 1, "a failed read is not an absence");
+    assert_eq!(agreements[0].key, expiring, "and adopts nothing either");
+    assert_eq!(pool.snapshot().len(), 1);
+
+    chain.heal();
+    agent.poll().await;
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 1);
+    assert_eq!(
+        agreements[0].key, unknown,
+        "the next poll catches up both ways"
     );
 }
 
@@ -423,4 +538,38 @@ async fn an_unparsable_writer_url_refuses_to_start() {
     let error = lb::service::start(config).await.expect_err("refuses");
     assert!(error.to_string().contains("writer_url"), "{error}");
     assert!(error.to_string().contains("not a url"), "{error}");
+}
+
+async fn wait_for(what: &str, condition: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !condition() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for: {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+#[tokio::test]
+async fn the_agent_polls_on_its_interval() {
+    let chain = FakeChain::new(LB, 1337);
+    seed_agreement(&chain, provider(1), 20000, 60);
+    let mut config = service_config();
+    config
+        .marketplace
+        .as_mut()
+        .expect("present")
+        .discovery_interval = Duration::from_millis(20);
+    let service = lb::service::start_with(config, Some((chain.clone(), chain.clone())))
+        .await
+        .expect("starts");
+    assert_eq!(service.pool.snapshot().len(), 1);
+
+    chain.advance(31);
+    wait_for("the expired agreement leaves the pool", || {
+        service.pool.snapshot().is_empty()
+    })
+    .await;
+    service.shutdown().await;
 }

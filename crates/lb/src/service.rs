@@ -103,14 +103,14 @@ fn parse_url(what: &'static str, url: &str) -> Result<reqwest::Url, StartError> 
 /// needs and a static-only configuration ignores. With the marketplace
 /// configured, the chain is read before anything binds: a start that
 /// cannot reach the reference or the sidecar touches no port.
-pub async fn start_with<R: ChainReader, W: ChainWriter>(
+pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
     config: Config,
     chain: Option<(R, W)>,
 ) -> Result<Service, StartError> {
     let pool = Arc::new(pool::Pool::new(&config.providers)?);
-    if let Some(marketplace) = &config.marketplace {
+    let agent = if let Some(marketplace) = &config.marketplace {
         let (reader, writer) = chain.expect("the marketplace needs chain clients");
-        let agent = Agent::start(&reader, &writer, marketplace, &pool)
+        let agent = Agent::start(reader, writer, marketplace.clone(), pool.clone())
             .await
             .map_err(StartError::Marketplace)?;
         let identity = agent.identity();
@@ -128,7 +128,10 @@ pub async fn start_with<R: ChainReader, W: ChainWriter>(
             agreements = agent.agreements().len(),
             "marketplace agent started"
         );
-    }
+        Some(Arc::new(agent))
+    } else {
+        None
+    };
 
     let bind = |addr: SocketAddr| async move {
         TcpListener::bind(addr)
@@ -168,6 +171,9 @@ pub async fn start_with<R: ChainReader, W: ChainWriter>(
             shutdown.subscribe(),
         ),
     ];
+    if let Some(agent) = agent {
+        tasks.push(tokio::spawn(agent.run(shutdown.subscribe())));
+    }
     if !config.health.disable_probing {
         let reference = match &config.reference {
             Some(url) => Some(Reader::new(

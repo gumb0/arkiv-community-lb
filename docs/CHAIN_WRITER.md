@@ -116,15 +116,18 @@ chain, receipt polling included) regardless of how many operations it
 carries. Coalescing a cycle's operations into one `/execute-batch` is how writes
 stay cheap.
 
-## Three outcomes of a write operation
+## Four outcomes of a write operation
 
-A write fails, succeeds — or goes **unresolved**, and the third outcome
-needs different handling from the first:
+A write fails, succeeds — or goes **unresolved**, and that outcome needs
+different handling from the others:
 
 - **400** — the body did not decode. Nothing was sent. Fix the request.
+- **413** — the node refused the transaction as oversized. Nothing was
+  sent. A batch answered this way is split and its halves sent again.
 - **500** — the write failed: the transaction reverted or could not be
   sent. The body carries the walked error chain,
-  `{ "error": [{ "name", "message" }, ...] }`.
+  `{ "error": [{ "name", "message", "details"? }, ...] }`; `details` is
+  the node's own message where viem carries it, `message` its summary.
 - **504** — the transaction was sent but no receipt arrived within the
   wait (180 s). It may still be mined. The body carries
   `{ "pending": { "txHash": ... } }`, and the caller resolves it by

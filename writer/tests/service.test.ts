@@ -359,6 +359,21 @@ describe("failures", () => {
     equal(at(chain, 1, "error chain").message, "execution reverted")
   })
 
+  it("a transaction the node calls oversized is 413 with the node's words", async () => {
+    // Built the way viem builds it: the node's message in `details` on
+    // every link, the summary in `message`.
+    const details = "oversized data: transaction size 131509, limit 131072"
+    const rpc = Object.assign(new Error("Missing or invalid parameters."), { details })
+    fake.state.failWith = new EntityMutationError("Transaction failed", { cause: rpc })
+    const { status, body } = await post("/execute-batch", { creates: [minimalCreate] })
+    fake.state.failWith = undefined
+
+    equal(status, 413)
+    const chain = body.error as { name: string; message: string; details?: string }[]
+    equal(at(chain, 0, "error chain").details, undefined)
+    equal(at(chain, 1, "error chain").details, details)
+  })
+
   it("a receipt timeout is 504 with the pending hash, not 500", async () => {
     // Built the way the SDK builds it: viem's timeout as the cause, the
     // hash as a field.

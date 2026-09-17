@@ -20,10 +20,12 @@
 //   expires      "permanent" | { seconds: n } | { blocks: n }
 //                | { atBlock: "decimal string" }
 //   responses    the SDK's return shape, with bigints as decimal strings
-// Errors: 400 for a body that does not decode, 500 for a failed write, and
-// 504 for a write whose receipt did not arrive in time — the transaction may
-// still be mined, so 504 means "unresolved", never "retry me". All three carry
-// { error: [{ name, message }, ...] } — the walked cause chain; 504 also
+// Errors: 400 for a body that does not decode, 413 for a transaction the
+// node refuses as oversized (nothing was sent: split the batch), 500 for a
+// failed write, and 504 for a write whose receipt did not arrive in time —
+// the transaction may still be mined, so 504 means "unresolved", never
+// "retry me". All carry { error: [{ name, message, details? }, ...] } — the
+// walked cause chain, with viem's details where it has them; 504 also
 // carries { pending: { txHash } } so the caller can settle it by polling.
 
 import {
@@ -194,15 +196,26 @@ function decodeBatch(wire: unknown): BatchOps {
   return ops
 }
 
-function errorChain(error: unknown): { name: string; message: string }[] {
-  const chain: { name: string; message: string }[] = []
+type ErrorLink = { name: string; message: string; details?: string }
+
+function errorChain(error: unknown): ErrorLink[] {
+  const chain: ErrorLink[] = []
   let current: unknown = error
   while (current instanceof Error && chain.length < 5) {
-    chain.push({ name: current.constructor.name, message: current.message })
+    const link: ErrorLink = { name: current.constructor.name, message: current.message }
+    // viem keeps the node's own words here; the message is its summary.
+    const details = (current as { details?: unknown }).details
+    if (typeof details === "string" && details) link.details = details
+    chain.push(link)
     current = current.cause
   }
   if (chain.length === 0) chain.push({ name: "Unknown", message: String(error) })
   return chain
+}
+
+/** The node refused the transaction for its size; nothing was sent. */
+function isOversized(chain: ErrorLink[]): boolean {
+  return chain.some((link) => link.details?.startsWith("oversized data"))
 }
 
 /**
@@ -276,6 +289,7 @@ export function startService(writer: Writer, options: ServiceOptions = {}): Prom
       const chain = errorChain(error)
       const pending = pendingTxHash(error)
       if (pending) return respond(504, { error: chain, pending: { txHash: pending } })
+      if (status === 500 && isOversized(chain)) return respond(413, { error: chain })
       respond(status, { error: chain })
     }
 

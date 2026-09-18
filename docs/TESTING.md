@@ -21,8 +21,11 @@ The marketplace agent's suites run over a fake chain
 traits the real read client and writer client implement, with a head
 the test moves by hand, so expiry is a number and not a wait. Its own
 suite (`tests/chain_fake.rs`) walks the same steps as the live chain
-smoke, so the fake keeps the promises the node keeps. No test in this
-tier talks to a chain.
+smoke, so the fake keeps the promises the node keeps. The admission
+suite (`tests/admission.rs`) signs tokens with a real key
+(`tests/common/signer.rs`), the way the provider tooling does, so the
+signature recovery is exercised and not faked. No test in this tier
+talks to a chain.
 
 **2. The writer package.** Typecheck and unit tests need no chain and
 run in CI unattended. The live smokes run against a throwaway local

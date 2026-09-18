@@ -25,6 +25,15 @@ not operator-chosen.
   contract in [docs/CHAIN_WRITER.md](docs/CHAIN_WRITER.md). Unit-tested
   without a chain; live smoke tests run against a throwaway local node
   (`scripts/dev-node.sh`) in CI.
+- **The marketplace agent** (`crates/lb/src/marketplace/`): with the
+  `[marketplace]` section configured, the LB writes its listing on
+  Arkiv, discovers provider offers against it, accepts them into
+  agreements with a tunnel port each, keeps the agreements of the
+  providers that are healthy alive with an hourly refresh, and admits
+  each provider's tunnel by a signature over its agreement id. The flow
+  is [docs/MARKETPLACE.md](docs/MARKETPLACE.md); the records every
+  codebase encodes against are [docs/ENTITIES.md](docs/ENTITIES.md).
+  Tested in-process over a fake chain.
 - **The host stack** (`compose.yaml`, `Dockerfile`, `tunnel/`): the LB
   and the tunnel server for NAT'd providers, deployed together —
   operations in [docs/RUNBOOK.md](docs/RUNBOOK.md), the tunnel decision
@@ -39,10 +48,8 @@ not operator-chosen.
 
 ## Still to come
 
-- A marketplace agent: discovers provider offers on Arkiv and keeps agreements
-  alive on-chain. The flow is designed in [docs/MARKETPLACE.md](docs/MARKETPLACE.md);
-  the records every codebase encodes against are in
-  [docs/ENTITIES.md](docs/ENTITIES.md).
+- The counter flush: the requests each provider served, written into
+  its counter record on Arkiv once a day, closed per settlement period.
 - A settle CLI: pays each closed counter record from on-chain records in GLM
   on the payout chain.
 

@@ -127,8 +127,10 @@ The token is a signature, not a secret: the record is public, and
 copying it does not let anyone produce the signature. There is no
 shared tunnel password.
 
-Once the tunnel is up, the LB probes the node like any other provider.
-After the probes pass, the provider is in rotation and serves traffic.
+Once the tunnel is up, the LB probes the node like any other provider,
+starting at once: its probes were failing and backing off while the
+tunnel was not there, and an admitted tunnel ends the wait. After the
+probes pass, the provider is in rotation and serves traffic.
 
 ## Staying under agreement
 
@@ -254,9 +256,9 @@ runs:
 3. `status` shows the offer, the agreement, the slot count, the open
    counter record, the closed records not yet paid, and the receipts,
    following the pointers from one record to the next.
-4. `tunnel-token` signs the agreement id and writes the token and the
-   assigned port into the node's configuration; the existing setup
-   script renders the tunnel client's config from them.
+4. `tunnel-token` signs the agreement id and writes the id, the token
+   and the assigned port into the node's configuration; the existing
+   setup script renders the tunnel client's config from them.
 
 ## Future improvements
 

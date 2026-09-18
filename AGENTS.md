@@ -83,7 +83,11 @@ first-class concern, not an add-on.
   chain write of the LB goes through it, so the sidecar never has two of
   the LB's writes queued behind each other. Its memory is a cache of the
   chain, rebuilt at start and reconciled at every discovery poll; the
-  chain decides which agreements exist.
+  chain decides which agreements exist. One rule keeps them alive: the
+  refresh extends the listing and the records of the providers that are
+  eligible at that moment, and nothing else decides who stays. The
+  tunnel server's admission callback is a route on the admin listener
+  that reads the agent's agreements (`docs/TUNNELING.md`).
 - Providers behind NAT reach the LB through **frp tunnels**; a tunneled
   provider is a plain `http://127.0.0.1:<port>` URL to the Proxy. The choice,
   the admission design, and the measurements are in `docs/TUNNELING.md` — not

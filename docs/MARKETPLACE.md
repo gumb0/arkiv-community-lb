@@ -99,17 +99,24 @@ the LB accepts the same offer again at every poll until blocks come
 again; the extra agreements expire unrefreshed. A known limitation.
 
 The provider reads its record, signs its agreement id with the key that
-posted the offer, and starts its tunnel client with that signature as
-its token and the assigned port. The tunnel server asks the LB whether
-to admit each client that connects. The LB admits it only if the
-signature was made by the record's provider and the requested port is
-the record's port. A rejection is shown word for word in the provider's
-tunnel log, and each one names the fix:
+posted the offer, and starts its tunnel client with the agreement id
+and that signature as its metadata, and the assigned port. The tunnel
+server asks the LB whether to admit each client that connects. The LB
+admits it only if the signature was made by the record's provider and
+the requested port is the record's port. A rejection is shown word for
+word in the provider's tunnel log, and each one names the fix:
 
-- `no agreement for this signature`
-- `signature does not match the agreement's provider`
+- `agreement id is not an entity key`
+- `token is not a signature`
+- `no agreement 0x…` (the id, in full)
+- `signature was not made by the agreement's provider over this
+  agreement id` (a signature by another key and one over another id
+  look the same)
 - `port 20007 requested, agreement assigns 20003`
-- `load balancer starting, retry`
+
+While the LB is starting, the tunnel server cannot reach it and refuses
+every login with its own message, `register control error`; the client
+retries on its own and is admitted once the LB is up.
 
 The token is a signature, not a secret: the record is public, and
 copying it does not let anyone produce the signature. There is no

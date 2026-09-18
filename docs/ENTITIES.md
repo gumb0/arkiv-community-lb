@@ -187,12 +187,14 @@ arkiv-rpc:<agreement id>
 
 with the key that posted the offer, as an EIP-191 personal message
 (viem's `signMessage`; the agreement id lowercase and `0x`-prefixed),
-and presents the signature as its tunnel token. The LB recovers the
-signer, looks the agreement id up among its own records, and admits the
-tunnel only if the signer equals that record's `provider` and the
-requested remote port equals the record's `remote_port`. The agreement
-id is an entity key, and entity keys are derived from the creator's
-address among other inputs, so a signature is valid for one LB only.
+and its tunnel client carries two metadata values: `agreement`, the
+id, and `token`, the signature as a `0x`-prefixed hex string of 65
+bytes. The LB looks the id up among its own records, recovers the
+signer from the token and the message, and admits the tunnel only if
+the signer equals that record's `provider` and the requested remote
+port equals the record's `remote_port`. The agreement id is an entity
+key, and entity keys are derived from the creator's address among
+other inputs, so a signature is valid for one LB only.
 
 ## Counter record
 

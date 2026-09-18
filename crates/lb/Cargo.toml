@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-alloy-primitives = { version = "1.7.2", default-features = false, features = ["std", "serde"] }
+alloy-primitives = { version = "1.7.2", default-features = false, features = ["std", "serde", "k256"] }
 arc-swap = "1.9.2"
 base64 = "0.22.1"
 axum = "0.8.9"
@@ -30,3 +30,4 @@ path = "src/main.rs"
 
 [dev-dependencies]
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+k256 = "0.13.4"

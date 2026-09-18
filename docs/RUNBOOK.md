@@ -55,9 +55,9 @@ them:
    - `writer.key` — the sidecar's signing key, as one line. This is the
      LB's on-chain identity: the address it derives to is what the
      provider tooling ships, so a new key is a new LB.
-   - `cp tunnel/frps.example.toml tunnel/frps.toml` — set `auth.token`
-     to a fresh secret: `openssl rand -hex 16`. Provider operators get
-     this token.
+   - `cp tunnel/frps.example.toml tunnel/frps.toml`. There is no
+     shared token: the LB admits each provider's tunnel by a signature
+     (`TUNNELING.md`).
    - `cp config.example.toml config.toml` — set
      `listen.public = "0.0.0.0:8545"`, set `health.chain_id` to the
      network's chain id (a wrong value quarantines every provider),

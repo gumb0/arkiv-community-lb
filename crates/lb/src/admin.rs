@@ -16,14 +16,15 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use serde::Serialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::{
     config,
     forwarder::{Forwarder, Outcome},
     jsonrpc,
-    pool::{Pool, Provider},
+    marketplace::admission::{Agreements, Op, Token, decide_admission},
+    pool::{Pool, Provider, marketplace_id},
     proxy,
 };
 
@@ -33,6 +34,8 @@ struct AdminState {
     ready: Arc<AtomicBool>,
     forwarder: Forwarder,
     attempt_timeout: Duration,
+    /// The live agreements, when the marketplace is configured.
+    agreements: Option<Arc<dyn Agreements>>,
 }
 
 pub fn router(
@@ -40,11 +43,19 @@ pub fn router(
     ready: Arc<AtomicBool>,
     forwarder: Forwarder,
     proxy: &config::Proxy,
+    agreements: Option<Arc<dyn Agreements>>,
 ) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/health", get(health))
         .route("/nodes", get(nodes))
-        .route("/node/{id}", post(forward_to_node))
+        .route("/node/{id}", post(forward_to_node));
+    // The admission route exists only with the marketplace: without it
+    // there are no agreements to admit against, and the tunnel server's
+    // config does not name the route.
+    if agreements.is_some() {
+        router = router.route("/admission", post(admission));
+    }
+    router
         .layer(DefaultBodyLimit::max(
             proxy.max_request_size.as_u64() as usize
         ))
@@ -53,7 +64,136 @@ pub fn router(
             ready,
             forwarder,
             attempt_timeout: proxy.attempt_timeout,
+            agreements,
         })
+}
+
+/// What the tunnel server posts before it lets a client in: the op, and
+/// a content whose shape depends on it (`docs/TUNNELING.md`).
+#[derive(Deserialize)]
+struct FrpsRequest {
+    op: String,
+    #[serde(default)]
+    content: Value,
+}
+
+/// The client's metadata, as its config sets it.
+#[derive(Deserialize, Default)]
+struct Metas {
+    agreement: Option<String>,
+    token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LoginContent {
+    #[serde(default)]
+    metas: Metas,
+    #[serde(default)]
+    client_address: String,
+}
+
+/// A proxy registration: the client's metas ride under `user`, the
+/// proxy's own fields beside it.
+#[derive(Deserialize)]
+struct NewProxyContent {
+    #[serde(default)]
+    user: UserInfo,
+    #[serde(default)]
+    proxy_name: String,
+    #[serde(default)]
+    remote_port: u16,
+}
+
+#[derive(Deserialize, Default)]
+struct UserInfo {
+    #[serde(default)]
+    metas: Metas,
+}
+
+/// The tunnel server's callback. Every answer is a 200: `unchange` lets
+/// the client in as it is, `reject` turns it away with a reason its
+/// operator reads in the client's own log. A body that is not the
+/// callback's shape is a 400, which the tunnel server treats as a
+/// plugin error and refuses the client for.
+async fn admission(
+    State(state): State<AdminState>,
+    body: Result<Json<FrpsRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let agreements = state
+        .agreements
+        .as_ref()
+        .expect("the route is mounted with the agreements");
+    let Json(request) = match body {
+        Ok(body) => body,
+        Err(rejection) => {
+            tracing::warn!(%rejection, "admission: the body does not parse as a callback");
+            return (StatusCode::BAD_REQUEST, rejection.body_text()).into_response();
+        }
+    };
+    // The content is typed per op. `who` is what the log names the
+    // client by: its address at login, its proxy's name at registration.
+    // An op this route was not configured for passes through.
+    let parsed = match request.op.as_str() {
+        "Login" => serde_json::from_value::<LoginContent>(request.content)
+            .map(|login| (Op::Login, login.metas, login.client_address)),
+        "NewProxy" => serde_json::from_value::<NewProxyContent>(request.content).map(|proxy| {
+            (
+                Op::NewProxy {
+                    remote_port: proxy.remote_port,
+                },
+                proxy.user.metas,
+                proxy.proxy_name,
+            )
+        }),
+        _ => return Json(json!({ "unchange": true })).into_response(),
+    };
+    let (op, metas, who) = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            tracing::warn!(op = request.op, %error, "admission: the content does not parse");
+            return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
+        }
+    };
+    let op_name = request.op.as_str();
+    let decision =
+        Token::parse(metas.agreement.as_deref(), metas.token.as_deref()).and_then(|token| {
+            let stored = agreements.agreement(token.agreement);
+            decide_admission(op, &token, stored.as_ref())
+                .map(|()| stored.expect("admitted, so the agreement was found"))
+        });
+    match decision {
+        Ok(stored) => {
+            tracing::info!(
+                op = op_name,
+                provider = %stored.record.provider,
+                agreement = %stored.key,
+                port = stored.record.remote_port,
+                client = who,
+                "tunnel admitted"
+            );
+            // The proxy is what carries traffic, so the probe is asked
+            // for once it is registered, not at login.
+            if let Op::NewProxy { .. } = op
+                && let Some(provider) = state
+                    .pool
+                    .snapshot()
+                    .iter()
+                    .find(|provider| provider.id == marketplace_id(stored.record.provider))
+            {
+                provider.schedule_probe_now();
+            }
+            Json(json!({ "unchange": true })).into_response()
+        }
+        Err(rejection) => {
+            tracing::warn!(
+                op = op_name,
+                reason = %rejection,
+                client = who,
+                "tunnel rejected"
+            );
+            Json(json!({ "reject": true, "reject_reason": rejection.to_string() })).into_response()
+        }
+    }
 }
 
 /// Liveness is answering at all; `ready` says the boot window is

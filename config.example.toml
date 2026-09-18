@@ -11,8 +11,9 @@
 [listen]
 # The served JSON-RPC endpoint.
 public = "0.0.0.0:8545"
-# Admin API (/health, /nodes, /node/{id}) — loopback by default; it has
-# no authentication, so if you widen it, it should be firewalled.
+# Admin API (/health, /nodes, /node/{id}, and /admission for the tunnel
+# server) — loopback by default; it has no authentication, so if you
+# widen it, it should be firewalled.
 admin = "127.0.0.1:9545"
 
 [health]

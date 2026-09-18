@@ -11,10 +11,6 @@ use alloy_primitives::Signature;
 
 use crate::chain::records::{Agreement, EntityKey, Stored};
 
-/// The client metadata names, as the tunnel client sends them.
-pub const AGREEMENT_META: &str = "agreement";
-pub const TOKEN_META: &str = "token";
-
 /// What frps is asking about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -58,6 +54,12 @@ impl fmt::Display for Rejection {
             ),
         }
     }
+}
+
+/// Where the route finds this LB's live agreements: the agent, and in
+/// tests whatever stands in for it.
+pub trait Agreements: Send + Sync {
+    fn agreement(&self, key: EntityKey) -> Option<Stored<Agreement>>;
 }
 
 /// The message a provider signs for its token: the agreement id under

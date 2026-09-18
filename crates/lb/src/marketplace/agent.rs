@@ -25,6 +25,7 @@ use crate::{
         writer::{Batch, Create, Expiry, Extend, Identity, Operation, Patch, WriteError, send},
     },
     config,
+    marketplace::admission::Agreements,
     pool::{Pool, Provider, marketplace_id},
 };
 
@@ -63,6 +64,12 @@ pub struct Agent<R, W> {
     listing_key: EntityKey,
     /// The live agreement records, by key: the slot state.
     agreements: Mutex<HashMap<EntityKey, Stored<Agreement>>>,
+}
+
+impl<R: ChainReader, W: ChainWriter> Agreements for Agent<R, W> {
+    fn agreement(&self, key: EntityKey) -> Option<Stored<Agreement>> {
+        Agent::agreement(self, key)
+    }
 }
 
 impl<R, W> std::fmt::Debug for Agent<R, W> {
@@ -143,6 +150,14 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
 
     pub fn listing_key(&self) -> EntityKey {
         self.listing_key
+    }
+
+    pub fn agreement(&self, key: EntityKey) -> Option<Stored<Agreement>> {
+        self.agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .cloned()
     }
 
     /// The live agreements as the agent knows them, in no particular order.

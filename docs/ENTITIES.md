@@ -176,25 +176,9 @@ startup and at every discovery poll: `$creator == LB_ADDRESS AND kind ==
 "rpc.agreement"`; the same set answers "does an agreement point at this
 offer" and "does this provider have a live agreement".
 
-### The admission token
-
-The tunnel server admits a provider's tunnel by a signature, not by a
-shared secret. The provider signs the UTF-8 message
-
-```
-arkiv-rpc:<agreement id>
-```
-
-with the key that posted the offer, as an EIP-191 personal message
-(viem's `signMessage`; the agreement id lowercase and `0x`-prefixed),
-and its tunnel client carries two metadata values: `agreement`, the
-id, and `token`, the signature as a `0x`-prefixed hex string of 65
-bytes. The LB looks the id up among its own records, recovers the
-signer from the token and the message, and admits the tunnel only if
-the signer equals that record's `provider` and the requested remote
-port equals the record's `remote_port`. The agreement id is an entity
-key, and entity keys are derived from the creator's address among
-other inputs, so a signature is valid for one LB only.
+The record's key is also what the provider signs to get its tunnel
+admitted: the message and the check are in
+[TUNNELING.md](TUNNELING.md#admission).
 
 ## Counter record
 

@@ -57,7 +57,8 @@ pub struct Provider {
     pub chain_verified: AtomicBool,
     /// When the next probe is due. Failing probes past the quarantine
     /// point push this out. A `Mutex` because `Instant` has no atomic;
-    /// only the Monitor touches it, briefly.
+    /// the Monitor touches it, briefly, and `schedule_probe_now` once
+    /// per admitted tunnel.
     next_probe: Mutex<Instant>,
     /// Consecutive unanswered probes, the backoff input. Kept apart
     /// from the health streak so traffic failures cannot deepen the
@@ -137,6 +138,14 @@ impl Provider {
         self.next_probe
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Makes the next probe due at once. A marketplace provider enters
+    /// the pool before its tunnel exists, so its probes fail and back
+    /// off; when the tunnel is admitted, waiting out that backoff would
+    /// keep a working node out of rotation for minutes.
+    pub fn schedule_probe_now(&self) {
+        *self.next_probe() = Instant::now();
     }
 
     /// One more probe gone unanswered.

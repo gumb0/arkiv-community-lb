@@ -15,7 +15,10 @@ use crate::{
     chain::{ChainReader, ChainWriter, reader::Reader, writer::Writer},
     config::Config,
     forwarder::Forwarder,
-    marketplace::agent::{self, Agent},
+    marketplace::{
+        admission::Agreements,
+        agent::{self, Agent},
+    },
     monitor, pool, proxy,
 };
 
@@ -167,7 +170,13 @@ pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
         serve(public, proxy::router(state), shutdown.subscribe()),
         serve(
             admin,
-            admin::router(pool.clone(), ready.clone(), forwarder, &config.proxy),
+            admin::router(
+                pool.clone(),
+                ready.clone(),
+                forwarder,
+                &config.proxy,
+                agent.clone().map(|agent| agent as Arc<dyn Agreements>),
+            ),
             shutdown.subscribe(),
         ),
     ];

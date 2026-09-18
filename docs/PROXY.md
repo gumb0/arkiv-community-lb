@@ -10,7 +10,8 @@ the hot-path component that forwards requests is the Proxy.
 
 The LB serves two HTTP listeners with strictly separate surfaces: the
 **public** endpoint (JSON-RPC, permissive CORS) and the **admin** API
-(`/health`, `/nodes`, `/node/{id}`) — loopback by default,
+(`/health`, `/nodes`, `/node/{id}`, and `/admission`, the tunnel
+server's callback, `TUNNELING.md`) — loopback by default,
 unauthenticated, so widening its bind is a firewall decision.
 Nothing from one listener exists on the other.
 

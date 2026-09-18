@@ -10,16 +10,16 @@ bindPort = 7000
 # else can reach it.
 proxyBindAddr = "127.0.0.1"
 
-# Static shared token — interim, replaced by per-provider signature
-# admission (see docs/TUNNELING.md). Generate: openssl rand -hex 16
-auth.token = "<token>"
+# No shared token: the admission hook below is the only gate (see
+# docs/TUNNELING.md). A client's token is a signature it alone can make.
 
-# Admission hook (planned): frps calls this local HTTP endpoint on every
-# Login and NewProxy, carrying the client's metadata and requested port;
-# the handler verifies and accepts or rejects with a reason the node
-# operator sees in their own client log.
-#[[httpPlugins]]
-#name = "admission"
-#addr = "127.0.0.1:9001"
-#path = "/handler"
-#ops = ["Login", "NewProxy"]
+# Admission: frps posts every Login and NewProxy to the LB's admin
+# listener, with the client's metadata and requested port, and lets the
+# client in or turns it away with the reason the node operator reads in
+# their own client log. When the LB is down, frps cannot reach the
+# route and refuses every client, which is the safe way round.
+[[httpPlugins]]
+name = "admission"
+addr = "127.0.0.1:9545"
+path = "/admission"
+ops = ["Login", "NewProxy"]

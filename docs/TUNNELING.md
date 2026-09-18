@@ -48,24 +48,40 @@ machine):
 - Dead client → connecting to its port on the LB host fails instantly with
   connection refused: a clean signal for failover.
 
-## Admission (planned)
+## Admission
 
 frp's shared `auth.token` cannot distinguish providers, and any secret
 delivered through public on-chain terms would be public too. So the token
-is unforgeable instead of secret: the provider signs its agreement id
-with the key that posted its offer and uses the signature as its token.
-The id is the agreement record's entity key, which is derived from the
-LB's address among other things, so the signature is bound to one LB
-without naming it. frps forwards every `Login`/`NewProxy` to a
-local HTTP endpoint on the LB (`httpPlugins`), which verifies the
-signature, checks that the requested port is the one assigned in the
-agreement, and accepts or rejects.
+is unforgeable instead of secret: the provider signs the UTF-8 message
+
+```
+arkiv-rpc:<agreement id>
+```
+
+with the key that posted its offer, as an EIP-191 personal message
+(viem's `signMessage`; the agreement id lowercase and `0x`-prefixed),
+and its client carries two metadata values: `agreement`, the id, and
+`token`, the signature as a `0x`-prefixed hex string of 65 bytes. The
+id is the agreement record's entity key
+([ENTITIES.md](ENTITIES.md#agreement-record)), which is derived from
+the LB's address among other things, so the signature is bound to one
+LB without naming it. frps posts every `Login` and `NewProxy` to
+`/admission` on the LB's admin listener (`httpPlugins` in the server
+config), which looks the agreement up, recovers the signer from the
+token, checks at `NewProxy` that the requested port is the one the
+agreement assigns, and answers admit or reject. frps has no token of
+its own: the route is the only gate.
 
 The interface is verified against v0.61.1: client metadata and the
-requested port arrive in the callbacks; a rejection reason is shown
-verbatim in the provider's own client log; a rejected client retries about
-every 33 s, so a fixed agreement admits on the next retry with no restart
-on the provider side.
+requested port arrive in the callbacks, posted to the configured path
+with `?op=…&version=0.1.0` appended; a rejection reason is shown
+verbatim in the provider's own client log; a rejected client retries
+about every 33 s, so a fixed agreement admits on the next retry with no
+restart on the provider side. It fails closed: when frps cannot reach
+the route, while the LB starts or is down, it refuses every client with
+its own message, `register control error`, and the client retries.
+The rejection texts are listed in
+[MARKETPLACE.md](MARKETPLACE.md#acceptance).
 
 ## Alternatives considered
 
@@ -95,10 +111,10 @@ on the provider side.
 
 `tunnel/frps.example.toml`. Points that matter: the control port is the
 only firewall opening; forwarded provider ports bind to loopback
-(the LB is their only client); the admission hook is present but
-commented until the marketplace lands.
+(the LB is their only client); the admission hook points at the LB's
+admin listener on the same host, and there is no shared token.
 
 The server runs from the repo's compose stack: copy the example to
-`tunnel/frps.toml`, set a real token, `docker compose up -d`. The image
+`tunnel/frps.toml`, `docker compose up -d`. The image
 is built locally from the pinned release, checksum verified — same as
 the client in the node distribution.

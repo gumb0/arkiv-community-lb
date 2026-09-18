@@ -52,8 +52,8 @@ services:
         max-size: "50m"
         max-file: "5"
   # The tunnel server NAT'd provider nodes connect to (docs/TUNNELING.md).
-  # Usage: copy tunnel/frps.example.toml to tunnel/frps.toml, set a real
-  # token, then `docker compose up -d`.
+  # Usage: copy tunnel/frps.example.toml to tunnel/frps.toml, then
+  # `docker compose up -d`.
   tunnel:
     build: ./tunnel
     # Host networking, like the LB: the forwarded provider ports bind

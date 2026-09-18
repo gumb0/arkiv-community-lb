@@ -70,7 +70,10 @@ first-class concern, not an add-on.
   `record_served`, `quarantine`) — never raw from other modules — and every
   eligibility flip logs exactly one event naming its source. Scheduling
   state (cadences, backoff clocks, the unanswered-probe streak behind
-  the backoff) is written only by the Monitor.
+  the backoff) is written only by the Monitor, with one exception: an
+  admitted tunnel makes the provider's next probe due at once
+  (`schedule_probe_now`), so a node is not kept waiting on a backed-off probe
+  after it connects.
 - **LB-generated JSON-RPC errors** use codes −32050…−32054 and every message
   starts with `lb: ` — the prefix is applied in `jsonrpc.rs` and nowhere
   else. Standard codes (−32700, −32601, …) are always a provider's answer;

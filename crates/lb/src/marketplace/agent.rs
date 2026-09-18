@@ -379,16 +379,31 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 tracing::debug!(key = %offer.key, provider = %offer.creator, "provider already under agreement: skipped");
                 continue;
             }
-            let Some(port) = self
-                .config
-                .remote_ports()
-                .find(|port| !used_ports.contains(port))
-            else {
-                // Unreachable by construction: the cap's worth of ports and
-                // fewer agreements than the cap leave one free.
+            // The lowest port no live agreement holds, unless the tunnel
+            // server still has it bound: a client whose agreement ended
+            // and that never left keeps its port, and the next holder
+            // could not register on it. Such a port is skipped for this
+            // poll and tried again at the next.
+            let mut port = None;
+            for candidate in self.config.remote_ports() {
+                if used_ports.contains(&candidate) {
+                    continue;
+                }
+                if port_is_bound(candidate).await {
+                    tracing::warn!(
+                        port = candidate,
+                        "tunnel port bound though no agreement holds it: a stale tunnel; skipped"
+                    );
+                    used_ports.insert(candidate);
+                    continue;
+                }
+                port = Some(candidate);
+                break;
+            }
+            let Some(port) = port else {
                 tracing::error!(
-                    "no free tunnel port though the cap has room: a port outside the configured \
-                     range is in use, or the slot state is wrong"
+                    "no usable tunnel port though the cap has room: every free port is bound \
+                     by a stale tunnel, or the slot state is wrong"
                 );
                 break;
             };
@@ -598,6 +613,19 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
 fn glm(wei: alloy_primitives::U256) -> String {
     let text = alloy_primitives::utils::format_ether(wei);
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+/// Whether something listens on this port on loopback, where the tunnel
+/// server binds the forwarded ports. A connect on loopback is answered
+/// or refused at once. A timeout, which a firewall dropping loopback
+/// packets would cause, counts as free: counted as bound, it would
+/// make every port look taken and nothing would ever be accepted.
+async fn port_is_bound(port: u16) -> bool {
+    let connect = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port));
+    matches!(
+        tokio::time::timeout(Duration::from_millis(200), connect).await,
+        Ok(Ok(_))
+    )
 }
 
 /// A lifetime in blocks, the way the sidecar converts it.

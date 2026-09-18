@@ -90,13 +90,18 @@ LB opens its counter record at the next daily write.
 
 The LB accepts one offer at a time, oldest first, up to its free
 slots, and gives each provider the lowest tunnel port not held by a
-live agreement. When an acceptance's answer is lost (the write may or
-may not have landed), its port and slot stay held, and the LB reads
-its own records back at the next poll: an agreement that landed is
-adopted, and one that did not is written then, its port and slot free
-again. While the chain is stalled that answer stays lost, and
-the LB accepts the same offer again at every poll until blocks come
-again; the extra agreements expire unrefreshed. A known limitation.
+live agreement and not bound on the tunnel server. A tunnel client
+whose agreement ended and that never left keeps its port bound; the
+LB does not close tunnels, so it skips such a port and logs it, and
+takes it back once the client is gone. A known limitation: a proper
+fix closes the tunnel when the agreement ends. When an acceptance's
+answer is lost (the write may or may not have landed), its port and
+slot stay held, and the LB reads its own records back at the next
+poll: an agreement that landed is adopted, and one that did not is
+written then, its port and slot free again. While the chain is
+stalled that answer stays lost, and the LB accepts the same offer
+again at every poll until blocks come again; the extra agreements
+expire unrefreshed. A known limitation.
 
 The provider reads its record, signs its agreement id with the key that
 posted the offer, and starts its tunnel client with the agreement id

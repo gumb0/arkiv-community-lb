@@ -758,6 +758,46 @@ async fn an_unresolved_acceptance_is_adopted_at_the_next_poll_not_repeated() {
 }
 
 #[tokio::test]
+async fn a_port_bound_by_a_stale_tunnel_is_skipped() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let mut config = marketplace();
+    config.max_providers = 2;
+    // A range nothing else on this machine is likely to use.
+    config.remote_port_start = 41100;
+    // A tunnel whose agreement ended but whose client never left: the
+    // tunnel server still has its port bound on loopback.
+    let stale = tokio::net::TcpListener::bind("127.0.0.1:41100")
+        .await
+        .expect("binds");
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    let offer = offer_for(&agent, &chain);
+    post(&chain, provider(1), &offer, DAY);
+    chain.advance(1);
+    post(&chain, provider(2), &offer, DAY);
+
+    agent.discovery_poll().await;
+    let agreements = agent.agreements();
+    assert_eq!(agreements.len(), 1, "the second slot has no usable port");
+    assert_eq!(agreements[0].record.provider, provider(1));
+    assert_eq!(
+        agreements[0].record.remote_port, 41101,
+        "past the bound one"
+    );
+
+    // The stale client leaves: its port is usable again.
+    drop(stale);
+    agent.discovery_poll().await;
+    let mut ports: Vec<u16> = agent
+        .agreements()
+        .iter()
+        .map(|a| a.record.remote_port)
+        .collect();
+    ports.sort_unstable();
+    assert_eq!(ports, [41100, 41101]);
+}
+
+#[tokio::test]
 async fn an_unresolved_acceptance_holds_its_port_and_slot() {
     let chain = FakeChain::new(LB, CHAIN_ID);
     let mut config = marketplace();

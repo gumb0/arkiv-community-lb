@@ -34,7 +34,9 @@ no separate snapshot or cache.
 [
   {
     "id": "node-1",
+    "source": "static",
     "url": "http://127.0.0.1:18545/",
+    "agreement_id": null,
     "eligible": true,
     "ineligibility_reason": null,
     "chain_verified": true,
@@ -43,10 +45,32 @@ no separate snapshot or cache.
     "served": 98,
     "transport_failures": 2,
     "last_probe_ms": 12
+  },
+  {
+    "id": "0x2121212121212121212121212121212121212121",
+    "source": "marketplace",
+    "url": "http://127.0.0.1:20007/",
+    "agreement_id": "0x9c0f…",
+    "eligible": false,
+    "ineligibility_reason": "probe",
+    "chain_verified": false,
+    "health_streak": -2,
+    "last_height": null,
+    "served": 0,
+    "transport_failures": 0,
+    "last_probe_ms": null
   }
 ]
 ```
 
+- `source` is `static` for a provider from the configuration file and
+  `marketplace` for one under an agreement (`MARKETPLACE.md`). A
+  marketplace provider's `id` is its address, the one on its offer and
+  its records; a static provider's is the configured handle.
+- `url` is what the Proxy dials: a static provider's configured
+  address, or a marketplace provider's tunnel, a loopback port on this
+  host. `agreement_id` is the key of a marketplace provider's agreement
+  record, null for a static one.
 - `ineligibility_reason` says why a provider is out of rotation:
   `probe`, `traffic`, `lag`, or `chain` — the source of its latest
   health signal. It is `null` while the provider is eligible. A fresh

@@ -1152,8 +1152,13 @@ async fn the_service_starts_the_agent_when_the_section_is_present() {
     let nodes = nodes(&service).await;
     assert_eq!(nodes.as_array().expect("a list").len(), 2);
     assert_eq!(nodes[0]["id"], "static-1");
+    assert_eq!(nodes[0]["source"], "static");
+    assert_eq!(nodes[0]["url"], "http://127.0.0.1:18545/");
+    assert_eq!(nodes[0]["agreement_id"], serde_json::Value::Null);
     assert_eq!(nodes[1]["id"], format!("{:#x}", provider(1)));
+    assert_eq!(nodes[1]["source"], "marketplace");
     assert_eq!(nodes[1]["url"], "http://127.0.0.1:20007/");
+    assert_eq!(nodes[1]["agreement_id"], format!("{key:#x}"));
     assert_eq!(nodes[1]["eligible"], false);
     assert!(chain.entity(key).is_some());
     assert!(

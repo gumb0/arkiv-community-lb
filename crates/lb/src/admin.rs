@@ -24,7 +24,7 @@ use crate::{
     forwarder::{Forwarder, Outcome},
     jsonrpc,
     marketplace::admission::{Agreements, Op, Token, decide_admission},
-    pool::{Pool, Provider, marketplace_id},
+    pool::{Pool, Provider, Source, marketplace_id},
     proxy,
 };
 
@@ -260,7 +260,9 @@ async fn forward_to_node(
 #[derive(Serialize)]
 struct NodeView {
     id: String,
+    source: &'static str,
     url: String,
+    agreement_id: Option<String>,
     eligible: bool,
     ineligibility_reason: Option<&'static str>,
     chain_verified: bool,
@@ -273,9 +275,17 @@ struct NodeView {
 
 impl From<&Provider> for NodeView {
     fn from(provider: &Provider) -> Self {
+        let (source, agreement_id) = match &provider.source {
+            Source::Static => ("static", None),
+            Source::Marketplace { agreement_id, .. } => {
+                ("marketplace", Some(format!("{agreement_id:#x}")))
+            }
+        };
         Self {
             id: provider.id.clone(),
+            source,
             url: provider.url.to_string(),
+            agreement_id,
             eligible: provider.eligible(),
             ineligibility_reason: provider.ineligibility_reason(),
             chain_verified: provider.chain_verified.load(Ordering::Relaxed),

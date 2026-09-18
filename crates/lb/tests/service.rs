@@ -200,7 +200,9 @@ async fn nodes_is_a_current_view_of_the_pool() {
         initial,
         serde_json::json!([{
             "id": "node-1",
+            "source": "static",
             "url": "http://127.0.0.1:18545/",
+            "agreement_id": null,
             "eligible": false,
             "ineligibility_reason": "probe",
             "chain_verified": false,
@@ -250,7 +252,9 @@ async fn nodes_is_a_current_view_of_the_pool() {
         .expect("json");
     let node = &current[0];
     assert_eq!(node["id"], "node-1");
+    assert_eq!(node["source"], "static");
     assert_eq!(node["url"], "http://127.0.0.1:18545/");
+    assert_eq!(node["agreement_id"], serde_json::Value::Null);
     assert_eq!(node["eligible"], true);
     assert_eq!(
         node["ineligibility_reason"],

@@ -181,13 +181,17 @@ impl Monitor {
     }
 
     /// Whether this provider may be probed this round: confirmed on the
-    /// right chain, re-verifying first on a chain round. With no
+    /// right chain, re-verifying first on a chain round, or at once
+    /// when the provider asked for it, as a newcomer does. With no
     /// `chain_id` configured, everyone is cleared.
     async fn chain_cleared(&self, provider: &Provider, chain_round: bool) -> bool {
         let Some(expected) = self.config.chain_id else {
             return true;
         };
-        if chain_round {
+        // The request is taken either way, so a chain round does not
+        // leave it behind for a second check next sweep.
+        let asked = provider.take_chain_check_due();
+        if chain_round || asked {
             self.verify_chain(provider, expected).await;
         }
         provider.chain_verified.load(Ordering::Relaxed)

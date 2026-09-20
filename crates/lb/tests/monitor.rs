@@ -614,6 +614,30 @@ async fn a_chain_id_change_after_admission_evicts_and_a_fix_readmits() {
 }
 
 #[tokio::test]
+async fn a_provider_that_joins_between_chain_rounds_is_checked_and_admitted_at_once() {
+    let (first, _rpc) = rpc_provider(CHAIN_ID).await;
+    let (joiner, _rpc_joiner) = rpc_provider(CHAIN_ID).await;
+    // Chain rounds far apart: without the newcomer's own request the
+    // joiner's first check, and so its first probe, would wait an hour.
+    let service = start_monitored(&[first], |config| {
+        config.health.chainid_check_interval = Duration::from_secs(3600);
+    })
+    .await;
+    wait_for_all_admitted(&service).await;
+
+    let added = service.pool.add(lb::pool::Provider::from_marketplace(
+        alloy_primitives::Address::repeat_byte(0x21),
+        alloy_primitives::B256::repeat_byte(0x9c),
+        joiner.port(),
+    ));
+    wait_for("the joiner admitted between chain rounds", || {
+        added.eligible()
+    })
+    .await;
+    assert!(added.chain_verified.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
 async fn a_dead_provider_is_probed_ever_more_rarely() {
     let (a, rpc_a) = rpc_provider(CHAIN_ID).await;
     let (b, rpc_b) = rpc_provider(CHAIN_ID).await;

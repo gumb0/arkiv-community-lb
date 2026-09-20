@@ -136,7 +136,7 @@ pub trait ChainReader: Send + Sync {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
-    #[error("the reference could not be reached: {0}")]
+    #[error("the reference could not be reached: {}", super::transport_causes(.0))]
     Transport(#[from] reqwest::Error),
     #[error("the reference answered {0}")]
     Status(u16),

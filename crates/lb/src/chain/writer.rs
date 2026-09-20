@@ -366,7 +366,7 @@ pub enum WriteError {
     },
     #[error("the sidecar answered {status} with an unexpected body: {body}")]
     Unexpected { status: u16, body: String },
-    #[error("the sidecar could not be reached: {0}")]
+    #[error("the sidecar could not be reached: {}", super::transport_causes(.0))]
     Transport(#[from] reqwest::Error),
 }
 

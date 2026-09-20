@@ -284,4 +284,8 @@ async fn an_unreachable_sidecar_is_a_transport_error() {
     );
     let error = writer.create(&agreement()).await.expect_err("unreachable");
     assert!(matches!(error, WriteError::Transport(_)));
+    assert!(
+        error.to_string().to_lowercase().contains("refused"),
+        "{error}"
+    );
 }

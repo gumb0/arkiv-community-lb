@@ -197,4 +197,9 @@ async fn an_unreachable_reference_is_a_transport_error() {
     );
     let error = reader.block_number().await.expect_err("unreachable");
     assert!(matches!(error, ReadError::Transport(_)));
+    // The reason, not only "error sending request".
+    assert!(
+        error.to_string().to_lowercase().contains("refused"),
+        "{error}"
+    );
 }

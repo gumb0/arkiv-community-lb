@@ -85,7 +85,7 @@ async fn a_query_selects_every_record_field_at_the_page_limit_with_the_key() {
     assert_eq!(body["params"][0], query.text());
     assert_eq!(
         body["params"][1]["select"],
-        json!({ "key": true, "creator": true, "expiresAt": true, "payload": true, "attributes": true })
+        json!({ "key": true, "creator": true, "createdAt": true, "expiresAt": true, "payload": true, "attributes": true })
     );
     assert_eq!(body["params"][1]["limit"], format!("{PAGE_LIMIT:#x}"));
 }
@@ -111,6 +111,7 @@ async fn rows_parse_into_stored_records_and_a_cursor_means_more() {
     let row = json!({
         "key": KEY,
         "creator": LB,
+        "createdAt": "0x191",
         "expiresAt": "0x92e21",
         "payload": format!("0x{payload_hex}"),
         "attributes": attributes,

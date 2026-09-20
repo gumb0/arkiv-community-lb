@@ -210,6 +210,7 @@ impl Reader {
                 "select": {
                     "key": true,
                     "creator": true,
+                    "createdAt": true,
                     "expiresAt": true,
                     "payload": true,
                     "attributes": true,

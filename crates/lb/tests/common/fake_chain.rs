@@ -51,6 +51,8 @@ struct State {
 pub struct Entity {
     pub key: EntityKey,
     pub creator: Address,
+    /// The head when it was written, like the node's creation block.
+    pub created_at: u64,
     pub expires_at: u64,
     pub attributes: Attributes,
     pub payload: Vec<u8>,
@@ -194,6 +196,7 @@ impl State {
         self.entities.push(Entity {
             key,
             creator,
+            created_at: self.head,
             expires_at,
             attributes,
             payload,
@@ -317,6 +320,7 @@ impl Entity {
         ArkivEntity {
             key: self.key,
             creator: self.creator,
+            created_at: self.created_at,
             expires_at: self.expires_at,
             payload: Bytes::from(self.payload.clone()),
             attributes,

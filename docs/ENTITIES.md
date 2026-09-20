@@ -292,6 +292,10 @@ with the provider tooling, next to the LB address.
   expire in the same block.
 - Parse tolerantly: read the fields named here, ignore unknown fields,
   and skip records with an unknown `v`.
+- When one of several records of a kind is wanted, the oldest, pick it
+  by its creation block (`createdAt`, selected with the query). Not by
+  expiry, which moves with every refresh, and not by the page's order,
+  which the node does not define.
 - The queries above are written in a simplified form. The node's query
   language wraps every value in its type: `kind = str('rpc.offer') AND
   lb_listing = key(0x8863…9057) AND $expiresAt > u64(1204000)`.

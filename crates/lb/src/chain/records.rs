@@ -228,6 +228,8 @@ pub struct ArkivAttribute {
 pub struct ArkivEntity {
     pub key: EntityKey,
     pub creator: Address,
+    #[serde(rename = "createdAt", deserialize_with = "deserialize_quantity")]
+    pub created_at: u64,
     #[serde(rename = "expiresAt", deserialize_with = "deserialize_quantity")]
     pub expires_at: u64,
     pub payload: Bytes,
@@ -304,12 +306,15 @@ pub trait Record: Sized {
 }
 
 /// A record together with what the chain added to it: its key, its
-/// creator and its expiry. What a reader hands out — the record alone
-/// says who wrote it or when it expires only through these.
+/// creator, the block it was created at and its expiry. What a reader
+/// hands out — the record alone says who wrote it or when only through
+/// these. The creation block is what "oldest" means: an expiry moves
+/// with every refresh, a creation block never does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stored<T> {
     pub key: EntityKey,
     pub creator: Address,
+    pub created_at: u64,
     pub expires_at: u64,
     pub record: T,
 }
@@ -319,6 +324,7 @@ impl<T: Record> Stored<T> {
         Ok(Self {
             key: entity.key,
             creator: entity.creator,
+            created_at: entity.created_at,
             expires_at: entity.expires_at,
             record: T::decode(entity)?,
         })
@@ -655,6 +661,7 @@ mod tests {
         serde_json::from_value(json!({
             "key": KEY,
             "creator": LB,
+            "createdAt": "0x191",
             "expiresAt": "0x92e21",
             "payload": format!("0x{payload_hex}"),
             "attributes": attributes,
@@ -765,6 +772,7 @@ mod tests {
             Stored {
                 key: key(KEY),
                 creator: addr(LB),
+                created_at: 0x191,
                 expires_at: 0x92e21,
                 record: agreement,
             }

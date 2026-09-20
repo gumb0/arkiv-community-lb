@@ -18,6 +18,7 @@ fn agreement(provider: &Signer, port: u16) -> Stored<Agreement> {
     Stored {
         key: AGREEMENT,
         creator: alloy_primitives::Address::repeat_byte(0x11),
+        created_at: 1,
         expires_at: 1000,
         record: Agreement {
             provider: provider.address(),

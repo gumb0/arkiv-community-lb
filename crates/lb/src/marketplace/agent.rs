@@ -246,8 +246,6 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             .query(&query)
             .await
             .map_err(ReconcileError::Chain)?;
-        // In the page's order: when two records name the same provider,
-        // the first one the page lists is the one kept.
         let mut live = Vec::new();
         for entity in &page.entities {
             match Stored::<Agreement>::decode(entity) {
@@ -257,6 +255,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 }
             }
         }
+        // Oldest first, so when two records name the same provider the
+        // older one is the one kept. By creation block: a page's own
+        // order promises nothing, and an expiry moves with every refresh.
+        live.sort_by_key(|stored| (stored.created_at, stored.key));
         let live_keys: HashSet<EntityKey> = live.iter().map(|stored| stored.key).collect();
 
         let mut known = self
@@ -283,8 +285,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         for stored in live {
             let key = stored.key;
             if let Some(agreement) = known.get_mut(&key) {
-                // The refresh moved it; the refresh's own check leans on
-                // this being current.
+                // The refresh moved the expiry, and its own check leans
+                // on this being current; the creation block was an
+                // estimate at acceptance.
+                agreement.created_at = stored.created_at;
                 agreement.expires_at = stored.expires_at;
                 continue;
             }
@@ -350,8 +354,9 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             }
             offers.push(offer);
         }
-        // Oldest first: the earliest expiry is the earliest post.
-        offers.sort_by_key(|offer| offer.expires_at);
+        // Oldest first, by creation block: the earliest post, whatever
+        // lifetime it was given.
+        offers.sort_by_key(|offer| (offer.created_at, offer.key));
 
         let (free, taken_providers, taken_offers, taken_ports) = {
             let known = self
@@ -457,9 +462,13 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             }
         };
         let agreement_key = created.entity_key;
+        // The create's answer carries no creation block; the head the
+        // poll read is at most a few blocks early, and the reconcile
+        // reads the exact one back.
         let stored = Stored {
             key: created.entity_key,
             creator: self.identity.address,
+            created_at: head,
             expires_at: created.expires_at,
             record: agreement,
         };
@@ -662,8 +671,9 @@ async fn ensure_listing<R: ChainReader, W: ChainWriter>(
             }
         })
         .collect();
-    // Oldest first: the earliest expiry is the earliest write.
-    listings.sort_by_key(|listing| listing.expires_at);
+    // Oldest first, by creation block, not by expiry: the kept listing
+    // is refreshed and its expiry moves ahead of an extra's.
+    listings.sort_by_key(|listing| (listing.created_at, listing.key));
     let mut listings = listings.into_iter();
     let Some(kept) = listings.next() else {
         let created = writer

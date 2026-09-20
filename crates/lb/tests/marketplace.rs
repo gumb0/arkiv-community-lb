@@ -202,13 +202,16 @@ async fn an_expired_agreement_is_gone_and_stays_gone() {
 #[tokio::test]
 async fn a_second_record_for_one_provider_is_skipped() {
     let chain = FakeChain::new(LB, 1337);
-    let first = seed_agreement(&chain, provider(1), 20000, 3600);
+    // The older record has been refreshed, so its expiry is the later
+    // one; the younger expires first and is the one to ignore.
+    let first = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    chain.advance(10);
     seed_agreement(&chain, provider(1), 20001, 3600);
     let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
     let agreements = agent.agreements();
     assert_eq!(agreements.len(), 1);
-    assert_eq!(agreements[0].key, first, "the first record seen is kept");
+    assert_eq!(agreements[0].key, first, "the oldest record is kept");
     assert_eq!(pool.snapshot().len(), 1);
 }
 
@@ -242,8 +245,11 @@ async fn a_changed_configuration_patches_the_oldest_listing_and_ignores_the_rest
     let chain = FakeChain::new(LB, 1337);
     let mut old = marketplace();
     old.wei_per_call = Wei::new(5);
-    let newer = chain.write_as(LB, listing_of(&old).encode(), Expiry::Seconds(2000));
-    let older = chain.write_as(LB, listing_of(&old).encode(), Expiry::Seconds(1000));
+    // The older listing has been refreshed since, so its expiry is the
+    // later one: expiry says nothing about age.
+    let older = chain.write_as(LB, listing_of(&old).encode(), Expiry::Seconds(20000));
+    chain.advance(10);
+    let newer = chain.write_as(LB, listing_of(&old).encode(), Expiry::Seconds(1000));
     let config = marketplace();
     let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &config, &pool).await.expect("starts");
@@ -251,7 +257,7 @@ async fn a_changed_configuration_patches_the_oldest_listing_and_ignores_the_rest
     assert_eq!(
         agent.listing_key(),
         older,
-        "the earliest expiry is the oldest"
+        "the first created is the oldest"
     );
     assert_eq!(chain.transactions(), [Transaction::Patch(older)]);
     let kept = chain.entity(older).expect("kept");

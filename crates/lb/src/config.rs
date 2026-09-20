@@ -159,6 +159,10 @@ pub struct Marketplace {
     pub counter_record_life: Duration,
     #[serde(with = "humantime_serde", default = "default_offer_max_lifetime")]
     pub offer_max_lifetime: Duration,
+    #[serde(with = "humantime_serde", default = "default_settlement_period")]
+    pub settlement_period: Duration,
+    #[serde(with = "humantime_serde", default = "default_flush_interval")]
+    pub flush_interval: Duration,
     /// In the toml as GLM, held as wei.
     #[serde(
         deserialize_with = "deserialize_glm",
@@ -196,6 +200,12 @@ fn default_counter_record_life() -> Duration {
 }
 fn default_offer_max_lifetime() -> Duration {
     Duration::from_secs(2 * 24 * 60 * 60)
+}
+fn default_settlement_period() -> Duration {
+    Duration::from_secs(7 * 24 * 60 * 60)
+}
+fn default_flush_interval() -> Duration {
+    Duration::from_secs(24 * 60 * 60)
 }
 fn default_gas_warn_below() -> Wei {
     glm("0.02").expect("the default parses")
@@ -364,6 +374,8 @@ impl Marketplace {
             ("listing_life", self.listing_life),
             ("counter_record_life", self.counter_record_life),
             ("offer_max_lifetime", self.offer_max_lifetime),
+            ("settlement_period", self.settlement_period),
+            ("flush_interval", self.flush_interval),
         ] {
             if duration.is_zero() {
                 return Err(ConfigError::Invalid(format!(
@@ -397,6 +409,15 @@ impl Marketplace {
                  ({:?}): the poll after a refresh is what tells the next refresh which records \
                  still live",
                 self.discovery_interval, self.refresh_interval
+            )));
+        }
+        // A flush less often than the agreements live could lose a
+        // whole agreement's count.
+        if self.flush_interval > self.agreement_life {
+            return Err(ConfigError::Invalid(format!(
+                "marketplace.flush_interval ({:?}) must be at most agreement_life ({:?}): \
+                 an agreement's count must reach the chain before the agreement can end",
+                self.flush_interval, self.agreement_life
             )));
         }
         if u64::from(self.max_providers) >= PAGE_LIMIT {
@@ -476,6 +497,11 @@ mod tests {
         );
         assert_eq!(marketplace.offer_max_lifetime, Duration::from_secs(172_800));
         assert_eq!(marketplace.gas_warn_below, Wei::new(20_000_000_000_000_000));
+        assert_eq!(
+            marketplace.settlement_period,
+            Duration::from_secs(7 * 86_400)
+        );
+        assert_eq!(marketplace.flush_interval, Duration::from_secs(86_400));
     }
 
     #[test]
@@ -548,6 +574,8 @@ mod tests {
             "listing_life",
             "counter_record_life",
             "offer_max_lifetime",
+            "settlement_period",
+            "flush_interval",
         ] {
             let error = parse(&format!("{MARKETPLACE}{name} = \"0s\"\n")).expect_err("must refuse");
             assert!(error.to_string().contains(name), "{error}");
@@ -569,7 +597,11 @@ mod tests {
                 assert!(error.to_string().contains(name), "{odd}: {error}");
                 assert!(error.to_string().contains("even"), "{odd}: {error}");
             }
-            parse(&format!("{MARKETPLACE}{name} = \"4s\"\n")).expect("even seconds are fine");
+            // A four-second agreement life needs a flush that fits it.
+            parse(&format!(
+                "{MARKETPLACE}{name} = \"4s\"\nflush_interval = \"2s\"\n"
+            ))
+            .expect("even seconds are fine");
         }
         parse(&format!("{MARKETPLACE}discovery_interval = \"3s\"\n"))
             .expect("an interval is not a lifetime");
@@ -600,6 +632,15 @@ mod tests {
             "{MARKETPLACE}discovery_interval = \"59m\"\nrefresh_interval = \"1h\"\n"
         ))
         .expect("shorter is fine");
+    }
+
+    #[test]
+    fn a_flush_fits_an_agreement() {
+        let error =
+            parse(&format!("{MARKETPLACE}flush_interval = \"4d\"\n")).expect_err("must refuse");
+        assert!(error.to_string().contains("agreement_life"), "{error}");
+        parse(&format!("{MARKETPLACE}flush_interval = \"3d\"\n"))
+            .expect("as long as the agreement life is fine");
     }
 
     #[test]

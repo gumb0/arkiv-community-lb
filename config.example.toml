@@ -121,6 +121,19 @@ counter_record_life = "180d"
 # ones out of discovery for good; re-posting costs gas every time.
 # An even number of seconds: lifetimes are whole blocks of two seconds.
 offer_max_lifetime = "2d"
+# How long each agreement's counter record covers before it is closed
+# and the next one opened: the settlement period. Each record's period
+# starts when that record is opened, so there is no common settlement
+# day: one provider's period may run Monday to Monday, another's
+# Wednesday to Wednesday. A record closes at the first flush after
+# its period ends, so a period runs up to one flush interval longer
+# than this, and a period shorter than the flush interval closes at
+# every flush.
+settlement_period = "7d"
+# How often the counts are written into the counter records. A crash
+# loses at most this much counting; a deliberate stop writes the
+# counts first. At most agreement_life.
+flush_interval = "1d"
 # The signing key's balance, in GLM, below which every refresh logs a
 # warning.
 gas_warn_below = "0.02"

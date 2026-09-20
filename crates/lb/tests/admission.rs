@@ -238,6 +238,8 @@ async fn service_with(provider: &Signer, port: u16) -> (lb::service::Service, B2
         listing_life: Duration::from_secs(30 * 24 * 3600),
         counter_record_life: Duration::from_secs(180 * 24 * 3600),
         offer_max_lifetime: Duration::from_secs(2 * 24 * 3600),
+        settlement_period: Duration::from_secs(7 * 24 * 3600),
+        flush_interval: Duration::from_secs(24 * 3600),
         gas_warn_below: Wei::new(1),
     });
     let service = lb::service::start_with(config, Some((chain.clone(), chain)))

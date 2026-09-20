@@ -72,8 +72,12 @@ first-class concern, not an add-on.
   state (cadences, backoff clocks, the unanswered-probe streak behind
   the backoff) is written only by the Monitor, with one exception: an
   admitted tunnel makes the provider's next probe due at once
-  (`schedule_probe_now`), so a node is not kept waiting on a backed-off probe
-  after it connects.
+  (`mark_admitted`), so a node is not kept waiting on a backed-off probe
+  after it connects. The admission also owes the provider a chain
+  check from the next sweep on, retried on the probe backoff until one
+  passes, and one extend of its agreement at its first flip to
+  eligible; before the tunnel, later flips, and later reconnects owe
+  nothing, so a node that comes and goes cannot make the LB write.
 - **LB-generated JSON-RPC errors** use codes −32050…−32054 and every message
   starts with `lb: ` — the prefix is applied in `jsonrpc.rs` and nowhere
   else. Standard codes (−32700, −32601, …) are always a provider's answer;

@@ -614,10 +614,10 @@ async fn a_chain_id_change_after_admission_evicts_and_a_fix_readmits() {
 }
 
 #[tokio::test]
-async fn a_provider_that_joins_between_chain_rounds_is_checked_and_admitted_at_once() {
+async fn a_tunnel_admitted_between_chain_rounds_is_checked_and_admitted_at_once() {
     let (first, _rpc) = rpc_provider(CHAIN_ID).await;
-    let (joiner, _rpc_joiner) = rpc_provider(CHAIN_ID).await;
-    // Chain rounds far apart: without the newcomer's own request the
+    let (joiner, rpc_joiner) = rpc_provider(CHAIN_ID).await;
+    // Chain rounds far apart: without the admission's own check the
     // joiner's first check, and so its first probe, would wait an hour.
     let service = start_monitored(&[first], |config| {
         config.health.chainid_check_interval = Duration::from_secs(3600);
@@ -625,16 +625,51 @@ async fn a_provider_that_joins_between_chain_rounds_is_checked_and_admitted_at_o
     .await;
     wait_for_all_admitted(&service).await;
 
+    // Joined the pool, tunnel not admitted: nothing is asked of it.
     let added = service.pool.add(lb::pool::Provider::from_marketplace(
         alloy_primitives::Address::repeat_byte(0x21),
         alloy_primitives::B256::repeat_byte(0x9c),
         joiner.port(),
     ));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(rpc_joiner.requests.load(Ordering::Relaxed), 0);
+
+    added.mark_admitted();
     wait_for("the joiner admitted between chain rounds", || {
         added.eligible()
     })
     .await;
     assert!(added.chain_verified.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn an_admitted_tunnels_failing_chain_check_backs_off_like_a_probe() {
+    let (first, _rpc) = rpc_provider(CHAIN_ID).await;
+    let (joiner, rpc_joiner) = rpc_provider(CHAIN_ID).await;
+    rpc_joiner.down.store(true, Ordering::Relaxed);
+    let service = start_monitored(&[first], |config| {
+        config.health.chainid_check_interval = Duration::from_secs(3600);
+    })
+    .await;
+    wait_for_all_admitted(&service).await;
+    let added = service.pool.add(lb::pool::Provider::from_marketplace(
+        alloy_primitives::Address::repeat_byte(0x21),
+        alloy_primitives::B256::repeat_byte(0x9c),
+        joiner.port(),
+    ));
+    added.mark_admitted();
+
+    // Fifteen sweeps' worth: retried, but doubling after flip_after
+    // failures, so well under one check per sweep.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let checks = rpc_joiner.requests.load(Ordering::Relaxed);
+    assert!((2..=8).contains(&checks), "{checks} checks");
+    assert!(added.chain_check_owed(), "still owed until one passes");
+
+    // The node comes up: the next retry passes and the probes follow.
+    rpc_joiner.down.store(false, Ordering::Relaxed);
+    wait_for("admitted once the node answers", || added.eligible()).await;
+    assert!(!added.chain_check_owed());
 }
 
 #[tokio::test]

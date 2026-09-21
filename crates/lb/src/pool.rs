@@ -469,6 +469,20 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_period_leaves_what_was_served_after_its_count_was_taken() {
+        let pool = pool(&["a"]);
+        let provider = &pool.snapshot()[0];
+        provider.seed_served(10);
+        // The closing write carries ten; three more are answered while
+        // it is in flight, and they belong to the next period.
+        for _ in 0..3 {
+            provider.record_served();
+        }
+        provider.subtract_served(10);
+        assert_eq!(provider.served.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
     fn providers_are_born_ineligible() {
         let pool = pool(&["a", "b"]);
         assert!(pool.snapshot().iter().all(|provider| !provider.eligible()));

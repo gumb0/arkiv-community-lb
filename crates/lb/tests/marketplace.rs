@@ -1181,6 +1181,14 @@ async fn counter(chain: &FakeChain, key: alloy_primitives::B256) -> CounterRecor
         .record
 }
 
+/// What this provider's entry has counted for its period.
+fn served_by(pool: &Pool, address: Address) -> u64 {
+    pool.get(&format!("{address:#x}"))
+        .expect("in the pool")
+        .served
+        .load(Ordering::Relaxed)
+}
+
 /// Requests answered by this provider, the way the Proxy counts them.
 fn serve(pool: &Pool, address: Address, requests: u64) {
     let member = pool.get(&format!("{address:#x}")).expect("in the pool");
@@ -1491,6 +1499,124 @@ async fn a_close_that_did_not_land_gets_no_successor_and_is_closed_next_time() {
     assert_eq!(closed.count, 14, "the count of this flush");
     assert_eq!(counter_records(&chain).await.len(), 2);
     assert_eq!(pool.snapshot()[0].served.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn one_flush_writes_each_agreement_its_own_count() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = short_periods();
+    // One with no record at all, one with a record still in its
+    // period, one with a record whose period is over. Seeded a block
+    // apart, so they join the pool in this order and the one that
+    // closes is not the first member.
+    let fresh = seed_agreement(&chain, provider(3), 20002, 3 * DAY);
+    chain.advance(1);
+    let counting = seed_agreement(&chain, provider(2), 20001, 3 * DAY);
+    chain.advance(1);
+    let closing = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let closing_key = seed_counter(&chain, closing, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    assert_eq!(
+        pool.snapshot()[0].id,
+        format!("{:#x}", provider(3)),
+        "the closing one is not first"
+    );
+    chain.advance(20);
+    let counting_key = seed_counter(&chain, counting, provider(2), 0, chain.head());
+    serve(&pool, provider(1), 1);
+    serve(&pool, provider(2), 2);
+    serve(&pool, provider(3), 3);
+
+    agent.flush().await;
+
+    let closed = counter(&chain, closing_key).await;
+    assert_eq!(closed.state, CounterState::Closed);
+    assert_eq!(closed.count, 11, "its own record's count and its own one");
+    let open = counter(&chain, counting_key).await;
+    assert_eq!(open.state, CounterState::Open, "its period is not over");
+    assert_eq!(open.count, 2, "its own two");
+    let opened: Vec<_> = counter_records(&chain)
+        .await
+        .into_iter()
+        .filter(|record| record.record.agreement == fresh)
+        .collect();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0].record.count, 0, "opened at zero");
+
+    // Only the closed period left its entry.
+    assert_eq!(served_by(&pool, provider(1)), 0);
+    assert_eq!(served_by(&pool, provider(2)), 2);
+    assert_eq!(served_by(&pool, provider(3)), 3);
+}
+
+#[tokio::test]
+async fn a_flush_over_the_transaction_limit_lands_in_several() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let records: Vec<_> = (1..=3)
+        .map(|n| {
+            let agreement = seed_agreement(&chain, provider(n), 20000 + u16::from(n), 3 * DAY);
+            seed_counter(&chain, agreement, provider(n), 0, 1)
+        })
+        .collect();
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    for n in 1..=3 {
+        serve(&pool, provider(n), u64::from(n));
+    }
+    // Room for two patches per transaction: three need at least two.
+    chain.set_operation_limit(2);
+    let writes_before = chain.transactions().len();
+
+    agent.flush().await;
+    for (n, key) in records.iter().enumerate() {
+        assert_eq!(
+            counter(&chain, *key).await.count,
+            n as u64 + 1,
+            "every count lands, whichever part carried it"
+        );
+    }
+    assert!(chain.transactions().len() - writes_before >= 2, "split");
+}
+
+#[tokio::test]
+async fn a_successor_that_did_not_land_is_opened_at_the_next_flush() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = short_periods();
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    serve(&pool, provider(1), 3);
+    chain.advance(20);
+
+    // The close lands and the batch that carries its successor does not.
+    chain.fail_sidecar_after(1, "connection refused");
+    agent.flush().await;
+    let closed = counter(&chain, key).await;
+    assert_eq!(closed.state, CounterState::Closed);
+    assert_eq!(closed.count, 13, "the period is written and paid");
+    assert_eq!(counter_records(&chain).await.len(), 1, "no successor");
+    assert_eq!(
+        served_by(&pool, provider(1)),
+        0,
+        "the closed period left the entry"
+    );
+
+    // The agreement has no open record, so the next flush opens one,
+    // and the one after writes what has been served since.
+    chain.heal();
+    serve(&pool, provider(1), 4);
+    agent.flush().await;
+    let records = counter_records(&chain).await;
+    let successor = records
+        .iter()
+        .find(|record| record.key != key)
+        .expect("opened");
+    assert_eq!(successor.record.count, 0, "opened at zero");
+    agent.flush().await;
+    assert_eq!(counter(&chain, successor.key).await.count, 4);
+    assert_eq!(counter(&chain, key).await.count, 13, "the closed stands");
 }
 
 // ---------------------------------------------------------------------------

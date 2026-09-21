@@ -19,8 +19,9 @@ use crate::{
         ChainReader, ChainWriter,
         reader::{PAGE_LIMIT, Query, ReadError},
         records::{
-            Address, Agreement, CounterRecord, CounterState, EntityKey, KIND_AGREEMENT,
-            KIND_COUNTER, KIND_LB_LISTING, KIND_OFFER, LbListing, Offer, Record, Stored,
+            Address, Agreement, AttributeValue, Attributes, CounterRecord, CounterState, EntityKey,
+            KIND_AGREEMENT, KIND_COUNTER, KIND_LB_LISTING, KIND_OFFER, LbListing, Offer, Record,
+            Stored,
         },
         writer::{Batch, Create, Expiry, Extend, Identity, Operation, Patch, WriteError, send},
     },
@@ -804,6 +805,15 @@ struct Landed {
     created: usize,
 }
 
+/// A record whose settlement period is over, as the closing write
+/// leaves it: which agreement it belongs to, and the count that write
+/// carried.
+struct Closing {
+    agreement: EntityKey,
+    counter: EntityKey,
+    count: u64,
+}
+
 impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     /// One flush: what each provider served, into its agreement's
     /// counter record.
@@ -826,20 +836,33 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             }
         };
 
-        let counts = self.counts_batch(&open, head);
+        let (counts, closing) = self.counts_batch(&open, head);
         let landed = self.send_flush(counts).await;
+        // A successor is only right once its predecessor is closed:
+        // sent together, a close that did not land would leave the
+        // agreement with two open records.
+        let successors = self.end_periods(&closing, &landed, head);
+        let closed = successors.operations().len();
+        let followed = self.send_flush(successors).await;
 
         tracing::info!(
-            patched = landed.patched.len(),
-            opened = landed.created,
+            patched = landed.patched.len() - closed,
+            closed,
+            opened = landed.created + followed.created,
             "flush"
         );
     }
 
-    /// The batch one flush writes: what every open counter record is
-    /// owed.
-    fn counts_batch(&self, open: &HashMap<EntityKey, Stored<CounterRecord>>, head: u64) -> Batch {
+    /// The first batch: what every open counter record is owed, and
+    /// the closes it asks for, which the second batch follows.
+    fn counts_batch(
+        &self,
+        open: &HashMap<EntityKey, Stored<CounterRecord>>,
+        head: u64,
+    ) -> (Batch, Vec<Closing>) {
+        let period = blocks(self.config.settlement_period);
         let mut batch = Batch::new();
+        let mut closing = Vec::new();
         let known = self
             .agreements
             .lock()
@@ -859,6 +882,18 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             };
             let served = entry.served.load(std::sync::atomic::Ordering::Relaxed);
             match open.get(key) {
+                // A period is over once the head has passed the
+                // record's opening by one. A record that counted
+                // nothing is not closed: it waits for a count.
+                Some(stored) if served > 0 && head >= stored.record.opened_block + period => {
+                    tracing::info!(agreement = %key, counter = %stored.key, count = served, "the settlement period is over: the counter record is closed");
+                    batch.push(Operation::Patch(close_patch(stored, served, head)));
+                    closing.push(Closing {
+                        agreement: *key,
+                        counter: stored.key,
+                        count: served,
+                    });
+                }
                 // The chain already says what the entry counted.
                 Some(stored) if stored.record.count == served => {}
                 // The record is a copy of the entry's count, not a
@@ -887,7 +922,48 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 }
             }
         }
-        batch
+        (batch, closing)
+    }
+
+    /// The second batch: a successor for every close that landed. A
+    /// close that did not land changes nothing and is made again at
+    /// the next flush.
+    fn end_periods(&self, closing: &[Closing], landed: &Landed, head: u64) -> Batch {
+        let mut successors = Batch::new();
+        let mut known = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for close in closing {
+            if !landed.patched.contains(&close.counter) {
+                continue;
+            }
+            let Some(live) = known.get_mut(&close.agreement) else {
+                continue;
+            };
+            let record = &live.agreement.record;
+            // The period is written, so its count is no longer the
+            // entry's. Subtracted, not cleared: a request served while
+            // the write was in flight belongs to the next period.
+            if let Some(entry) = self.pool.get(&marketplace_id(record.provider)) {
+                entry.subtract_served(close.count);
+            }
+            live.counter = None;
+            successors.push(Operation::Create(Create::new(
+                CounterRecord {
+                    agreement: close.agreement,
+                    provider: record.provider,
+                    state: CounterState::Open,
+                    count: 0,
+                    wei_per_call: record.wei_per_call,
+                    opened_block: head,
+                    closed_block: None,
+                }
+                .encode(),
+                Expiry::Seconds(self.config.counter_record_life.as_secs()),
+            )));
+        }
+        successors
     }
 
     /// Sends one of the flush's batches and gathers what landed. Every
@@ -927,6 +1003,22 @@ fn count_patch(stored: &Stored<CounterRecord>, count: u64) -> Patch {
     Patch {
         entity_key: stored.key,
         set: None,
+        payload: Some(record.encode().payload),
+    }
+}
+
+/// The last write a record takes: its final count, the block it was
+/// closed at, and the state attribute settle reads it by.
+fn close_patch(stored: &Stored<CounterRecord>, count: u64, head: u64) -> Patch {
+    let record = CounterRecord {
+        count,
+        state: CounterState::Closed,
+        closed_block: Some(head),
+        ..stored.record.clone()
+    };
+    Patch {
+        entity_key: stored.key,
+        set: Some(Attributes::default().with("state", AttributeValue::Str("closed".to_owned()))),
         payload: Some(record.encode().payload),
     }
 }

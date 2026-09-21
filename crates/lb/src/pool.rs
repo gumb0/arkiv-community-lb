@@ -185,6 +185,18 @@ impl Provider {
         self.served.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// The settlement period just written and closed: its count is no
+    /// longer the entry's to carry. Subtracted rather than cleared, so
+    /// a request served while the closing write was in flight stays
+    /// and belongs to the next period.
+    pub fn subtract_served(&self, count: u64) {
+        let _ = self
+            .served
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |served| {
+                Some(served.saturating_sub(count))
+            });
+    }
+
     /// What this settlement period already counted on the chain, from
     /// the agreement's open counter record. Added, not stored, so a
     /// request served between the entry joining the pool and the record

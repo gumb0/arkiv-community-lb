@@ -1353,6 +1353,120 @@ async fn the_agent_flushes_on_its_interval() {
 }
 
 // ---------------------------------------------------------------------------
+// The settlement period
+
+/// A marketplace with short periods, so a flush by hand can close one.
+fn short_periods() -> Marketplace {
+    Marketplace {
+        settlement_period: Duration::from_secs(20),
+        flush_interval: Duration::from_secs(20),
+        ..marketplace()
+    }
+}
+
+#[tokio::test]
+async fn a_period_over_closes_the_record_and_opens_its_successor() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = short_periods();
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    serve(&pool, provider(1), 3);
+    chain.advance(20);
+    let head = chain.head();
+    let writes_before = chain.transactions().len();
+
+    agent.flush().await;
+    let closed = counter(&chain, key).await;
+    assert_eq!(closed.state, CounterState::Closed);
+    assert_eq!(closed.count, 13, "what the entry counted this period");
+    assert_eq!(closed.opened_block, 1, "the period it covers");
+    assert_eq!(closed.closed_block, Some(head));
+    assert_eq!(
+        chain.transactions().len() - writes_before,
+        2,
+        "the close, then the successor"
+    );
+    assert_eq!(
+        pool.snapshot()[0].served.load(Ordering::Relaxed),
+        0,
+        "the written period leaves the entry"
+    );
+
+    let records = counter_records(&chain).await;
+    let successor = records
+        .iter()
+        .find(|record| record.key != key)
+        .expect("the successor");
+    assert_eq!(successor.record.state, CounterState::Open);
+    assert_eq!(successor.record.count, 0, "it counts from here");
+    assert_eq!(successor.record.opened_block, head, "the close's block");
+    assert_eq!(successor.record.agreement, agreement);
+    assert_eq!(successor.record.wei_per_call, RATE);
+
+    // The next period counts into the successor.
+    serve(&pool, provider(1), 2);
+    agent.flush().await;
+    assert_eq!(counter(&chain, successor.key).await.count, 2);
+    assert_eq!(
+        counter(&chain, key).await.count,
+        13,
+        "the closed one stands"
+    );
+}
+
+#[tokio::test]
+async fn a_record_with_no_count_stays_open_past_its_period() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 0, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &short_periods(), &pool)
+        .await
+        .expect("starts");
+    chain.advance(100);
+    let writes_before = chain.transactions().len();
+
+    agent.flush().await;
+    assert_eq!(chain.transactions().len(), writes_before, "nothing written");
+    assert_eq!(counter(&chain, key).await.state, CounterState::Open);
+    assert_eq!(counter_records(&chain).await.len(), 1, "no successor");
+}
+
+#[tokio::test]
+async fn a_close_that_did_not_land_gets_no_successor_and_is_closed_next_time() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &short_periods(), &pool)
+        .await
+        .expect("starts");
+    serve(&pool, provider(1), 3);
+    chain.advance(20);
+
+    chain.fail_sidecar("gas required exceeds allowance");
+    agent.flush().await;
+    assert_eq!(counter(&chain, key).await.state, CounterState::Open);
+    assert_eq!(counter_records(&chain).await.len(), 1, "no successor");
+    assert_eq!(
+        pool.snapshot()[0].served.load(Ordering::Relaxed),
+        13,
+        "the period is still the entry's to write"
+    );
+
+    chain.heal();
+    serve(&pool, provider(1), 1);
+    agent.flush().await;
+    let closed = counter(&chain, key).await;
+    assert_eq!(closed.state, CounterState::Closed);
+    assert_eq!(closed.count, 14, "the count of this flush");
+    assert_eq!(counter_records(&chain).await.len(), 2);
+    assert_eq!(pool.snapshot()[0].served.load(Ordering::Relaxed), 0);
+}
+
+// ---------------------------------------------------------------------------
 // The refresh
 
 /// When the entity expires, as the chain has it.

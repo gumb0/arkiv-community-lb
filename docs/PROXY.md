@@ -81,7 +81,10 @@ no separate snapshot or cache.
   for consecutive failures.
 - `last_height` is the last successfully decoded block height, or
   `null` before one is observed. Height zero is reported as zero.
-- `served` counts completed public forwards, the billing basis.
+- `served` counts completed public forwards in the current settlement
+  period, the billing basis. A marketplace provider's count starts
+  from what its open counter record on the chain already holds, so a
+  restart of the LB does not lose the period's count.
 - `transport_failures` counts public forwarding attempts that produced
   no provider answer, such as connection errors, timeouts, non-2xx
   statuses, and incomplete response bodies.

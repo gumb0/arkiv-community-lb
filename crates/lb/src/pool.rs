@@ -69,7 +69,9 @@ pub struct Provider {
     /// from the health streak so traffic failures cannot deepen the
     /// backoff.
     unanswered_probe_streak: AtomicU32,
-    /// Completed forwards, the billing basis.
+    /// Completed forwards in the current settlement period, the
+    /// billing basis: what the agreement's open counter record on the
+    /// chain should say.
     pub served: AtomicU64,
     /// Client-traffic attempts that did not produce a provider answer.
     pub transport_failures: AtomicU64,
@@ -181,6 +183,14 @@ impl Provider {
     /// billing basis.
     pub fn record_served(&self) {
         self.served.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// What this settlement period already counted on the chain, from
+    /// the agreement's open counter record. Added, not stored, so a
+    /// request served between the entry joining the pool and the record
+    /// being read is not lost.
+    pub fn seed_served(&self, count: u64) {
+        self.served.fetch_add(count, Ordering::Relaxed);
     }
 
     /// One client-traffic attempt that produced no provider answer.
@@ -374,6 +384,14 @@ impl Pool {
         provider
     }
 
+    /// The member with this id, while it is one.
+    pub fn get(&self, id: &str) -> Option<Arc<Provider>> {
+        self.snapshot()
+            .iter()
+            .find(|provider| provider.id == id)
+            .cloned()
+    }
+
     /// Removes the provider with this id. Once this returns, no new
     /// selection can pick it; a selection already holding it finishes
     /// with it.
@@ -424,6 +442,18 @@ mod tests {
             })
             .collect();
         Pool::new(&providers).expect("urls parse")
+    }
+
+    #[test]
+    fn a_seeded_count_adds_to_what_the_entry_already_served() {
+        let pool = pool(&["a"]);
+        let provider = &pool.snapshot()[0];
+        // A request answered before the agreement's record was read
+        // still counts: the period's count on the chain is added to it,
+        // not written over it.
+        provider.record_served();
+        provider.seed_served(48213);
+        assert_eq!(provider.served.load(Ordering::Relaxed), 48214);
     }
 
     #[test]

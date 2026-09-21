@@ -51,8 +51,9 @@ pub enum StartError {
 }
 
 /// One agreement's open counter record, as the chain last showed it.
-/// Not its count: that changes with every request the provider
-/// serves, and the flush reads the record again before it writes.
+/// Its count is not here: the provider entry's served count is this
+/// period's count, seeded from the record when the agreement is
+/// adopted, so there is one number and not two that can disagree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCounter {
     /// The counter record's own key: the entity the flush patches.
@@ -443,6 +444,16 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 live.counter = None;
                 continue;
             };
+            // The count the record carries is this period's so far, so
+            // the entry counts on from it. Only when the record was
+            // unknown: counting it in twice would bill it twice.
+            if live.counter.is_none()
+                && let Some(entry) = self
+                    .pool
+                    .get(&marketplace_id(live.agreement.record.provider))
+            {
+                entry.seed_served(stored.record.count);
+            }
             live.counter = Some(open_counter(&stored));
         }
         Ok(())

@@ -3,7 +3,10 @@
 
 mod common;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, atomic::Ordering},
+    time::Duration,
+};
 
 use alloy_primitives::Address;
 use common::fake_chain::{FakeChain, Transaction};
@@ -542,6 +545,11 @@ async fn an_offer_becomes_an_agreement_and_a_counter_record() {
         "the agent knows the record it opened"
     );
     assert_eq!(
+        members[0].served.load(Ordering::Relaxed),
+        0,
+        "counts from 0"
+    );
+    assert_eq!(
         chain.transactions().len() - writes_before,
         2,
         "the agreement, then its counter record"
@@ -929,6 +937,11 @@ async fn an_open_counter_record_reloads_at_start() {
             opened_block: 900,
         })
     );
+    assert_eq!(
+        pool.snapshot()[0].served.load(Ordering::Relaxed),
+        48213,
+        "the period's count so far, counted on from"
+    );
 }
 
 #[tokio::test]
@@ -938,6 +951,7 @@ async fn an_agreement_without_an_open_record_is_known_to_need_one() {
     let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
     assert_eq!(agent.open_counters()[&agreement], None);
+    assert_eq!(pool.snapshot()[0].served.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
@@ -953,6 +967,11 @@ async fn of_two_open_records_for_one_agreement_the_oldest_counts() {
         .clone()
         .expect("one counts");
     assert_eq!(open.key, first);
+    assert_eq!(
+        pool.snapshot()[0].served.load(Ordering::Relaxed),
+        10,
+        "the oldest record's count, not the younger's"
+    );
 }
 
 #[tokio::test]
@@ -983,6 +1002,16 @@ async fn an_agreement_adopted_at_a_poll_learns_its_open_record() {
         .clone()
         .expect("learned at the poll");
     assert_eq!(open.key, counter);
+    assert_eq!(
+        pool.snapshot()[0].served.load(Ordering::Relaxed),
+        7,
+        "the entry counts on from the record"
+    );
+
+    // The same read runs at every poll, and a record already known is
+    // not counted in a second time.
+    agent.discovery_poll().await;
+    assert_eq!(pool.snapshot()[0].served.load(Ordering::Relaxed), 7);
 
     // Gone from the chain: gone from the agent's records too.
     chain.advance(3600 / 2);
@@ -1015,6 +1044,33 @@ async fn a_counter_record_deleted_from_the_chain_is_forgotten() {
         None,
         "the next flush opens a fresh one"
     );
+    assert_eq!(
+        pool.snapshot()[0].served.load(Ordering::Relaxed),
+        5,
+        "what the record counted is the entry's now"
+    );
+}
+
+#[tokio::test]
+async fn each_provider_is_seeded_from_the_record_of_its_own_agreement() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let first = seed_agreement(&chain, provider(1), 20000, 3600);
+    let second = seed_agreement(&chain, provider(2), 20001, 3600);
+    seed_counter(&chain, first, provider(1), 11, 1);
+    // A record that counted nothing yet, which seeds nothing.
+    seed_counter(&chain, second, provider(2), 0, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+
+    assert_eq!(agent.open_counters().len(), 2);
+    for (address, count) in [(provider(1), 11), (provider(2), 0)] {
+        let entry = pool.get(&format!("{address:#x}")).expect("in the pool");
+        assert_eq!(
+            entry.served.load(Ordering::Relaxed),
+            count,
+            "{address} counts from its own record"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1046,6 +1102,38 @@ async fn a_counter_record_that_does_not_decode_is_skipped() {
             .key,
         good
     );
+    assert_eq!(pool.snapshot()[0].served.load(Ordering::Relaxed), 9);
+}
+
+#[tokio::test]
+async fn a_record_replaced_by_another_is_not_counted_in_again() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3600);
+    let first = seed_counter(&chain, agreement, provider(1), 5, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    assert_eq!(pool.snapshot()[0].served.load(Ordering::Relaxed), 5);
+
+    // The record is gone and another stands in its place, by a hand or
+    // by a write whose answer was lost.
+    chain
+        .delete(&Delete { entity_key: first })
+        .await
+        .expect("deleted");
+    let second = seed_counter(&chain, agreement, provider(1), 5, 1);
+    agent.discovery_poll().await;
+    assert_eq!(
+        agent.open_counters()[&agreement]
+            .clone()
+            .expect("the one on the chain")
+            .key,
+        second
+    );
+    assert_eq!(
+        pool.snapshot()[0].served.load(Ordering::Relaxed),
+        5,
+        "the entry was already counting: the count is not added twice"
+    );
 }
 
 #[tokio::test]
@@ -1063,6 +1151,7 @@ async fn a_poll_over_a_page_of_open_records_leaves_memory_as_it_is() {
     }
     agent.discovery_poll().await;
     assert_eq!(agent.open_counters()[&agreement], None);
+    assert_eq!(pool.snapshot()[0].served.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]

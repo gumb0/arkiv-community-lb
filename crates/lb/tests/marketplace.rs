@@ -1352,6 +1352,33 @@ async fn the_agent_flushes_on_its_interval() {
     service.shutdown().await;
 }
 
+#[tokio::test]
+async fn a_younger_open_record_is_deleted_at_the_flush() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let oldest = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    // A create whose answer was lost, landing after the LB had opened
+    // another: two open records for one agreement.
+    chain.advance(3);
+    let younger = seed_counter(&chain, agreement, provider(1), 0, 4);
+
+    agent.flush().await;
+    assert!(chain.entity(younger).is_none(), "the younger is deleted");
+    assert_eq!(counter_records(&chain).await.len(), 1);
+    assert_eq!(
+        counter(&chain, oldest).await.count,
+        10,
+        "the oldest counts on, untouched"
+    );
+    assert_eq!(pool.snapshot()[0].served.load(Ordering::Relaxed), 10);
+
+    serve(&pool, provider(1), 2);
+    agent.flush().await;
+    assert_eq!(counter(&chain, oldest).await.count, 12);
+}
+
 // ---------------------------------------------------------------------------
 // The settlement period
 

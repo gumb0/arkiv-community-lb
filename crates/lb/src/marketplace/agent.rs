@@ -23,7 +23,9 @@ use crate::{
             KIND_AGREEMENT, KIND_COUNTER, KIND_LB_LISTING, KIND_OFFER, LbListing, Offer, Record,
             Stored,
         },
-        writer::{Batch, Create, Expiry, Extend, Identity, Operation, Patch, WriteError, send},
+        writer::{
+            Batch, Create, Delete, Expiry, Extend, Identity, Operation, Patch, WriteError, send,
+        },
     },
     config,
     marketplace::admission::Agreements,
@@ -71,6 +73,17 @@ pub struct OpenCounter {
 struct Live {
     agreement: Stored<Agreement>,
     counter: Option<OpenCounter>,
+}
+
+/// What the counter reconcile read: the record that counts for each
+/// live agreement, and the ones that count for nobody.
+#[derive(Default)]
+struct Counters {
+    /// By agreement key, the open record the LB counts into.
+    open: HashMap<EntityKey, Stored<CounterRecord>>,
+    /// An agreement's younger open records: only the oldest counts,
+    /// and the flush deletes these.
+    duplicates: Vec<EntityKey>,
 }
 
 /// Why a reconcile did not happen. At startup either is a reason not
@@ -393,11 +406,8 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     /// leaves: a record for an agreement without one, a younger
     /// duplicate, a record whose agreement is gone.
     ///
-    /// Returns each live agreement's open record, for the flush.
-    async fn reconcile_counters(
-        &self,
-        head: u64,
-    ) -> Result<HashMap<EntityKey, Stored<CounterRecord>>, ReconcileError> {
+    /// Returns what it read, for the flush to write against.
+    async fn reconcile_counters(&self, head: u64) -> Result<Counters, ReconcileError> {
         let query = Query::kind(KIND_COUNTER)
             .creator(self.identity.address)
             .attr_str("state", "open")
@@ -418,35 +428,35 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             .query(&query)
             .await
             .map_err(ReconcileError::Chain)?;
-        // One record per agreement, the oldest: which one counts is
-        // decided here, so what reads this has a single record. The
-        // younger one is not logged here, since this runs every poll
-        // and the flush says so when it deletes it.
-        let mut by_agreement: HashMap<EntityKey, Stored<CounterRecord>> = HashMap::new();
+        let mut records = Vec::new();
         for entity in &page.entities {
-            let stored = match Stored::<CounterRecord>::decode(entity) {
-                Ok(stored) => stored,
+            match Stored::<CounterRecord>::decode(entity) {
+                Ok(stored) => records.push(stored),
                 Err(error) => {
                     tracing::warn!(key = %entity.key, %error, "a counter record does not decode: skipped");
-                    continue;
                 }
-            };
+            }
+        }
+        // Oldest first, so an agreement's first record is the one it
+        // counts into and any other is a younger duplicate. Which is
+        // which is decided here, so what reads this has one record per
+        // agreement. The duplicate is not logged here, since this runs
+        // every poll and the flush says so when it deletes it.
+        records.sort_by_key(creation);
+        let mut counters = Counters::default();
+        let mut by_agreement: HashMap<EntityKey, Stored<CounterRecord>> = HashMap::new();
+        for stored in records {
             match by_agreement.entry(stored.record.agreement) {
                 Entry::Vacant(slot) => {
                     slot.insert(stored);
                 }
-                Entry::Occupied(mut slot) => {
-                    if creation(&stored) < creation(slot.get()) {
-                        slot.insert(stored);
-                    }
-                }
+                Entry::Occupied(_) => counters.duplicates.push(stored.key),
             }
         }
         let mut known = self
             .agreements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut open = HashMap::new();
         for (key, live) in known.iter_mut() {
             let Some(stored) = by_agreement.remove(key) else {
                 // Only a record memory held and the chain no longer has
@@ -469,9 +479,9 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 entry.seed_served(stored.record.count);
             }
             live.counter = Some(open_counter(&stored));
-            open.insert(*key, stored);
+            counters.open.insert(*key, stored);
         }
-        Ok(open)
+        Ok(counters)
     }
 
     /// The offers against this LB's listing, and the acceptances they
@@ -803,6 +813,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
 struct Landed {
     patched: Vec<EntityKey>,
     created: usize,
+    deleted: usize,
 }
 
 /// A record whose settlement period is over, as the closing write
@@ -828,15 +839,15 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         // A batch is one transaction, and a key that has gone since the
         // last poll fails every other count in it, so the records are
         // read again here, right before they are written.
-        let open = match self.reconcile_counters(head).await {
-            Ok(open) => open,
+        let counters = match self.reconcile_counters(head).await {
+            Ok(counters) => counters,
             Err(error) => {
                 tracing::warn!(%error, "the open counter records could not be read: this flush is skipped");
                 return;
             }
         };
 
-        let (counts, closing) = self.counts_batch(&open, head);
+        let (counts, closing) = self.counts_batch(&counters, head);
         let landed = self.send_flush(counts).await;
         // A successor is only right once its predecessor is closed:
         // sent together, a close that did not land would leave the
@@ -849,20 +860,26 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             patched = landed.patched.len() - closed,
             closed,
             opened = landed.created + followed.created,
+            deleted = landed.deleted,
             "flush"
         );
     }
 
     /// The first batch: what every open counter record is owed, and
     /// the closes it asks for, which the second batch follows.
-    fn counts_batch(
-        &self,
-        open: &HashMap<EntityKey, Stored<CounterRecord>>,
-        head: u64,
-    ) -> (Batch, Vec<Closing>) {
+    fn counts_batch(&self, counters: &Counters, head: u64) -> (Batch, Vec<Closing>) {
         let period = blocks(self.config.settlement_period);
         let mut batch = Batch::new();
         let mut closing = Vec::new();
+        // An agreement counts into one record, so a second open one is
+        // deleted. It carries nothing: a count is only ever written
+        // into the record this LB counts into, which is the oldest.
+        for duplicate in &counters.duplicates {
+            tracing::info!(counter = %duplicate, "a second open counter record for one agreement: deleted");
+            batch.push(Operation::Delete(Delete {
+                entity_key: *duplicate,
+            }));
+        }
         let known = self
             .agreements
             .lock()
@@ -881,7 +898,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 continue;
             };
             let served = entry.served.load(std::sync::atomic::Ordering::Relaxed);
-            match open.get(key) {
+            match counters.open.get(key) {
                 // A period is over once the head has passed the
                 // record's opening by one. A record that counted
                 // nothing is not closed: it waits for a count.
@@ -979,6 +996,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 Ok(result) => {
                     landed.patched.extend(result.patched_entities);
                     landed.created += result.created_entities.len();
+                    landed.deleted += result.deleted_entities.len();
                 }
                 Err(error) => {
                     tracing::error!(

@@ -227,6 +227,12 @@ and `closed_block`, and creates the next record at zero. When the next
 record did not follow the close, the next daily write creates it. A
 closed record is never changed again.
 
+Should an agreement have two open records, which a create whose answer
+was lost can leave behind, the older by creation block is the one the
+LB counts into, and the next daily write deletes the younger. Nothing
+is lost with it: a count is only ever written into the record the LB
+counts into.
+
 A record with no count is not closed; it stays open until it has one.
 When an agreement ends, its open record is closed with the count it
 holds, or deleted if it never counted. So there is no closed record

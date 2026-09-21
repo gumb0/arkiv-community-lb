@@ -26,7 +26,7 @@ use crate::{
     },
     config,
     marketplace::admission::Agreements,
-    pool::{Pool, Provider, marketplace_id},
+    pool::{Pool, Provider, Source, marketplace_id},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -170,10 +170,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             .collect()
     }
 
-    /// The task: a discovery poll every discovery interval and a refresh
-    /// every refresh interval, until shutdown. Each interval's first
-    /// tick is skipped: the start already reconciled, and the listing
-    /// was just written.
+    /// The task: a discovery poll every discovery interval, a refresh
+    /// every refresh interval, and an extend the moment a provider turns
+    /// eligible, until shutdown. Each interval's first tick is skipped:
+    /// the start already reconciled, and the listing was just written.
     pub async fn run(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
         let interval = |period| {
             let mut ticks = tokio::time::interval(period);
@@ -188,6 +188,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             tokio::select! {
                 _ = discovery_polls.tick() => self.discovery_poll().await,
                 _ = refreshes.tick() => self.refresh().await,
+                _ = self.pool.admitted_probe_passed() => self.extend_admitted().await,
                 _ = shutdown.changed() => return,
             }
         }
@@ -214,6 +215,50 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         };
         if let Some(head) = head {
             self.discover_offers(head).await;
+        }
+    }
+
+    /// The agreements of the providers whose admission just reached
+    /// its first flip to eligible, extended now. A record lives for the
+    /// accept window until its provider's probes pass, and the hourly
+    /// refresh is not aligned to that: left to it, a provider eligible
+    /// late in its window would expire first. A static provider's flip
+    /// names no agreement.
+    pub async fn extend_admitted(&self) {
+        let mut batch = Batch::new();
+        for provider in self.pool.snapshot().iter() {
+            if !provider.mark_extended() {
+                continue;
+            }
+            let Source::Marketplace {
+                address,
+                agreement_id,
+                ..
+            } = &provider.source
+            else {
+                continue;
+            };
+            tracing::info!(
+                agreement = %agreement_id,
+                provider = %address,
+                "provider eligible: its agreement record is extended"
+            );
+            batch.push(Operation::Extend(Extend {
+                entity_key: *agreement_id,
+                expires: Expiry::Seconds(self.config.agreement_life.as_secs()),
+            }));
+        }
+        if batch.is_empty() {
+            return;
+        }
+        for sent in send(&self.writer, batch).await {
+            if let Err(error) = sent.result {
+                tracing::error!(
+                    %error,
+                    extends = sent.batch.operations().len(),
+                    "an extend at eligibility did not land: the next refresh extends it"
+                );
+            }
         }
     }
 

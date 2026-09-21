@@ -160,7 +160,7 @@ impl Monitor {
         futures::stream::iter(providers.iter())
             .for_each_concurrent(CONCURRENT_PROBES, |provider| async move {
                 let due = *provider.next_probe() <= now;
-                if due && self.chain_cleared(provider, chain_round).await {
+                if due && self.chain_cleared(provider, chain_round, now).await {
                     let answered = self.probe(provider, reference_height).await;
                     if !answered {
                         self.reschedule_unanswered(provider, now);
@@ -182,28 +182,40 @@ impl Monitor {
 
     /// Whether this provider may be probed this round: confirmed on the
     /// right chain, re-verifying first on a chain round, or at once
-    /// when the provider asked for it, as a newcomer does. With no
-    /// `chain_id` configured, everyone is cleared.
-    async fn chain_cleared(&self, provider: &Provider, chain_round: bool) -> bool {
+    /// while its admission owes the check. With no `chain_id`
+    /// configured, everyone is cleared.
+    async fn chain_cleared(
+        &self,
+        provider: &Provider,
+        chain_round: bool,
+        now: std::time::Instant,
+    ) -> bool {
         let Some(expected) = self.config.chain_id else {
             return true;
         };
-        // The request is taken either way, so a chain round does not
-        // leave it behind for a second check next sweep.
-        let asked = provider.take_chain_check_due();
-        if chain_round || asked {
-            self.verify_chain(provider, expected).await;
+        let owed = provider.chain_check_owed();
+        if chain_round || owed {
+            let passed = self.verify_chain(provider, expected).await;
+            // An owed check that did not pass is retried like an
+            // unanswered probe: not every sweep, not only at the next
+            // chain round.
+            if owed && !passed {
+                provider.record_unanswered_probe();
+                self.reschedule_unanswered(provider, now);
+            }
         }
         provider.chain_verified.load(Ordering::Relaxed)
     }
 
-    /// One `eth_chainId` round trip, updating `chain_verified`. The
-    /// wrong chain quarantines on the spot: misconfiguration is a
-    /// certainty, not a failure streak.
-    async fn verify_chain(&self, provider: &Provider, expected: u64) {
+    /// One `eth_chainId` round trip, updating `chain_verified`; returns
+    /// whether it passed. The wrong chain quarantines on the spot:
+    /// misconfiguration is a certainty, not a failure streak.
+    async fn verify_chain(&self, provider: &Provider, expected: u64) -> bool {
         match self.query_chain_id(&provider.id, &provider.url).await {
             Some(actual) if actual == expected => {
                 provider.chain_verified.store(true, Ordering::Relaxed);
+                provider.mark_chain_checked();
+                true
             }
             Some(actual) => {
                 tracing::warn!(
@@ -214,14 +226,16 @@ impl Monitor {
                 );
                 provider.chain_verified.store(false, Ordering::Relaxed);
                 provider.quarantine(HealthSignal::Chain);
+                false
             }
             None => {
                 // A verified provider keeps its verdict, so only the
                 // unverified one has a consequence to report: it sits
-                // out until the next chain round.
+                // out until a check passes.
                 if !provider.chain_verified.load(Ordering::Relaxed) {
                     tracing::info!(provider = %provider.id, "chain check unanswered");
                 }
+                false
             }
         }
     }
@@ -249,7 +263,11 @@ impl Monitor {
                 tracing::debug!(provider = %provider.id, height, reference, "behind the reference");
                 provider.record_health(false, self.config.flip_after, HealthSignal::Lag);
             }
-            _ => provider.record_health(true, self.config.flip_after, HealthSignal::Probe),
+            _ => {
+                if provider.record_health(true, self.config.flip_after, HealthSignal::Probe) {
+                    self.pool.announce_probe_passed(provider);
+                }
+            }
         }
         true
     }

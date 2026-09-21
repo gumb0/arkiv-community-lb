@@ -55,15 +55,14 @@ pub struct Provider {
     /// Confirmed to be on the same chain as the reference. False until
     /// the first passing check; a mismatch clears it and quarantines.
     pub chain_verified: AtomicBool,
-    /// Asks the Monitor for a chain check at its next sweep, ahead of
-    /// the chain round. Set for a provider that just joined the pool,
-    /// and again when its tunnel is admitted: without it a newcomer
-    /// waits up to a chain-check interval before its first probe.
-    chain_check_due: AtomicBool,
+    /// Where the provider stands in its admission, an
+    /// [`AdmissionPhase`]: what the Monitor and the agent still owe a
+    /// provider whose tunnel was just admitted.
+    admission: AtomicU8,
     /// When the next probe is due. Failing probes past the quarantine
     /// point push this out. A `Mutex` because `Instant` has no atomic;
-    /// the Monitor touches it, briefly, and `schedule_probe_now` once
-    /// per admitted tunnel.
+    /// the Monitor touches it, briefly, and `mark_admitted` once per
+    /// admitted tunnel.
     next_probe: Mutex<Instant>,
     /// Consecutive unanswered probes, the backoff input. Kept apart
     /// from the health streak so traffic failures cannot deepen the
@@ -79,6 +78,47 @@ pub struct Provider {
     /// Round-trip time of the last block-height probe. `u64::MAX`
     /// means this provider has not been probed yet.
     last_probe_ms: AtomicU64,
+}
+
+/// What a provider whose tunnel was just admitted is still owed. A
+/// newcomer's record lives only for the accept window until its
+/// agreement is extended, and the hourly refresh is not aligned to
+/// that; and its first probe would wait for a chain round. So the
+/// admission asks for both, once: the chain check at the Monitor's
+/// next sweep, then an extend at the first flip to eligible. Later
+/// flips ask for nothing, so a node that comes and goes cannot make
+/// the LB write. Each phase names the last step that passed, and the
+/// phase is the whole record: the agent finds the extends due by
+/// walking the pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum AdmissionPhase {
+    /// Nothing owed: a static provider, or a marketplace provider
+    /// whose tunnel has not been admitted. Chain rounds only.
+    Idle = 0,
+    /// Its tunnel was admitted. The chain check is owed, from the next
+    /// sweep on until one passes.
+    Admitted = 1,
+    /// The chain check passed. The first flip to eligible is next.
+    ChainChecked = 2,
+    /// Probes passed and it flipped to eligible. The agent extends its
+    /// agreement at its next wake-up.
+    ProbePassed = 3,
+    /// The agreement is extended. Nothing owed, and a reconnect of the
+    /// tunnel owes nothing again.
+    Extended = 4,
+}
+
+impl AdmissionPhase {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Idle,
+            1 => Self::Admitted,
+            2 => Self::ChainChecked,
+            3 => Self::ProbePassed,
+            _ => Self::Extended,
+        }
+    }
 }
 
 /// A marketplace provider's id in the pool: its address, lowercase.
@@ -129,7 +169,7 @@ impl Provider {
             health_streak: AtomicI64::new(0),
             height: AtomicU64::new(u64::MAX),
             chain_verified: AtomicBool::new(false),
-            chain_check_due: AtomicBool::new(true),
+            admission: AtomicU8::new(AdmissionPhase::Idle as u8),
             next_probe: Mutex::new(Instant::now()),
             unanswered_probe_streak: AtomicU32::new(0),
             served: AtomicU64::new(0),
@@ -146,20 +186,66 @@ impl Provider {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Makes the next probe due at once. A marketplace provider enters
-    /// the pool before its tunnel exists, so its probes fail and back
-    /// off; when the tunnel is admitted, waiting out that backoff would
-    /// keep a working node out of rotation for minutes.
-    pub fn schedule_probe_now(&self) {
+    /// The tunnel was admitted: the next probe is due at once, and an
+    /// admission not yet extended starts over. A marketplace provider
+    /// enters the pool before its tunnel exists, so its probes fail and
+    /// back off; waiting that out would keep a working node out of
+    /// rotation for minutes. An extended admission stays extended: a
+    /// reconnect is cheap for the provider, and must not be a write
+    /// for the LB.
+    pub fn mark_admitted(&self) {
         *self.next_probe() = Instant::now();
-        // The probe is gated by the chain check; ask for that too.
-        self.chain_check_due.store(true, Ordering::Relaxed);
+        let _ = self
+            .admission
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |phase| {
+                (AdmissionPhase::from_u8(phase) != AdmissionPhase::Extended)
+                    .then_some(AdmissionPhase::Admitted as u8)
+            });
     }
 
-    /// Whether a chain check was asked for since the last one, clearing
-    /// the request. The Monitor's to call.
-    pub fn take_chain_check_due(&self) -> bool {
-        self.chain_check_due.swap(false, Ordering::Relaxed)
+    /// Whether the admission owes a chain check. The Monitor's to read.
+    pub fn chain_check_owed(&self) -> bool {
+        AdmissionPhase::from_u8(self.admission.load(Ordering::Relaxed)) == AdmissionPhase::Admitted
+    }
+
+    /// The chain check passed. The Monitor's to call.
+    pub fn mark_chain_checked(&self) {
+        let _ = self.admission.compare_exchange(
+            AdmissionPhase::Admitted as u8,
+            AdmissionPhase::ChainChecked as u8,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
+    /// The probes passed and the provider flipped to eligible. Returns
+    /// whether the admission still owed an extend for that. The pool's
+    /// to call, when the flip is announced. With no chain id
+    /// configured no check ever passes, so `Admitted` counts too.
+    fn mark_probe_passed(&self) -> bool {
+        self.admission
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |phase| {
+                matches!(
+                    AdmissionPhase::from_u8(phase),
+                    AdmissionPhase::Admitted | AdmissionPhase::ChainChecked
+                )
+                .then_some(AdmissionPhase::ProbePassed as u8)
+            })
+            .is_ok()
+    }
+
+    /// The agreement is being extended. Returns whether the admission
+    /// was waiting for that, so nothing is extended twice. The agent's
+    /// to call.
+    pub fn mark_extended(&self) -> bool {
+        self.admission
+            .compare_exchange(
+                AdmissionPhase::ProbePassed as u8,
+                AdmissionPhase::Extended as u8,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_ok()
     }
 
     /// One more probe gone unanswered.
@@ -243,8 +329,10 @@ impl Provider {
     /// Records one health signal and flips eligibility once `flip_after`
     /// results in a row agree. A provider that alternates between
     /// success and failure does not flap in and out.
-    /// Every flip logs one event naming its source.
-    pub fn record_health(&self, success: bool, flip_after: u32, source: HealthSignal) {
+    /// Every flip logs one event naming its source. Returns whether
+    /// this call flipped the provider to eligible, for the Monitor to
+    /// announce to the pool.
+    pub fn record_health(&self, success: bool, flip_after: u32, source: HealthSignal) -> bool {
         self.record_health_source(source);
 
         let step = |streak: i64| {
@@ -268,9 +356,12 @@ impl Provider {
         // Using outdated `streak` for eligibility decision is harmless,
         // because no single result can flip state (flip_after >= 2).
         if streak >= flip {
-            self.set_eligible_and_log(true, source);
+            self.set_eligible_and_log(true, source)
         } else if streak <= -flip {
             self.set_eligible_and_log(false, source);
+            false
+        } else {
+            false
         }
     }
 
@@ -284,10 +375,12 @@ impl Provider {
     }
 
     /// Sets eligibility and logs the flip when the value actually
-    /// changed. `swap` makes check-and-set one atomic step, so two
-    /// racing callers cannot both log the same flip.
-    fn set_eligible_and_log(&self, value: bool, source: HealthSignal) {
-        if self.eligible.swap(value, Ordering::Relaxed) != value {
+    /// changed, returning whether it did. `swap` makes check-and-set
+    /// one atomic step, so two racing callers cannot both log the same
+    /// flip.
+    fn set_eligible_and_log(&self, value: bool, source: HealthSignal) -> bool {
+        let flipped = self.eligible.swap(value, Ordering::Relaxed) != value;
+        if flipped {
             tracing::info!(
                 provider = %self.id,
                 eligible = value,
@@ -295,6 +388,7 @@ impl Provider {
                 "health flip"
             );
         }
+        flipped
     }
 }
 
@@ -344,6 +438,10 @@ type Members = Vec<Arc<Provider>>;
 pub struct Pool {
     members: ArcSwap<Members>,
     cursor: AtomicUsize,
+    /// Poked when an admission's probes pass. `notify_one` stores a
+    /// permit when nobody is waiting, so a flip while the agent is away
+    /// in a write is still picked up at its next wait.
+    admitted_probe_passed: tokio::sync::Notify,
 }
 
 impl Pool {
@@ -355,7 +453,23 @@ impl Pool {
         Ok(Self {
             members: ArcSwap::from_pointee(members),
             cursor: AtomicUsize::new(0),
+            admitted_probe_passed: tokio::sync::Notify::new(),
         })
+    }
+
+    /// Resolves once an admission's probes passed since the last wait;
+    /// the agent then walks the members for the ones owed an extend.
+    pub async fn admitted_probe_passed(&self) {
+        self.admitted_probe_passed.notified().await;
+    }
+
+    /// A member's probes passed and it flipped to eligible. If its
+    /// admission was waiting for that, the agent is woken, so the
+    /// agreement is extended at once.
+    pub fn announce_probe_passed(&self, provider: &Provider) {
+        if provider.mark_probe_passed() {
+            self.admitted_probe_passed.notify_one();
+        }
     }
 
     /// The membership at this moment. Later changes do not show in it.
@@ -610,6 +724,34 @@ mod tests {
         assert!(!provider.eligible());
         provider.record_health(true, 3, HealthSignal::Probe);
         assert!(provider.eligible());
+    }
+
+    #[test]
+    fn an_admission_owes_its_steps_once_and_only_after_the_tunnel() {
+        let pool = pool(&["a"]);
+        let provider = &pool.snapshot()[0];
+        assert!(!provider.chain_check_owed(), "born idle");
+        assert!(!provider.mark_probe_passed(), "a flip owes nothing");
+
+        provider.mark_admitted();
+        assert!(provider.chain_check_owed());
+        provider.mark_chain_checked();
+        assert!(!provider.chain_check_owed(), "passed once");
+
+        // Reconnected before its probes ever passed: checked again.
+        provider.mark_admitted();
+        assert!(provider.chain_check_owed());
+        provider.mark_chain_checked();
+        assert!(provider.mark_probe_passed());
+        assert!(!provider.mark_probe_passed(), "once");
+        assert!(provider.mark_extended());
+        assert!(!provider.mark_extended(), "once");
+
+        // Reconnected after the extend: nothing owed any more.
+        provider.mark_admitted();
+        assert!(!provider.chain_check_owed());
+        assert!(!provider.mark_probe_passed());
+        assert!(!provider.mark_extended());
     }
 
     #[test]

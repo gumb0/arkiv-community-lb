@@ -180,7 +180,7 @@ async fn admission(
                     .iter()
                     .find(|provider| provider.id == marketplace_id(stored.record.provider))
             {
-                provider.schedule_probe_now();
+                provider.mark_admitted();
             }
             Json(json!({ "unchange": true })).into_response()
         }

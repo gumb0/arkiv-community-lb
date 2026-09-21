@@ -145,6 +145,9 @@ record's expiry to three days from then. Nothing else decides who stays.
   not healthy, so its record expires three days after its last refresh.
 - A provider that was unhealthy for a moment misses one refresh and is
   refreshed the next hour.
+- A provider that turns healthy is extended at that moment, not at
+  the next hourly refresh: its record lived only for the accept window
+  until then, and the hourly timer is not aligned to it.
 - If the LB itself is down, nothing is refreshed, and every record
   survives up to three days. A restart of the LB never costs a provider
   its agreement.

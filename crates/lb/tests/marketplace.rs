@@ -1006,6 +1006,130 @@ async fn an_idle_lb_keeps_its_listing_alive() {
     );
 }
 
+/// Two passing probes, recorded the way the Monitor records them: a
+/// flip to eligible is announced to the pool.
+fn probes_pass(pool: &Pool, entry: &lb::pool::Provider) {
+    for _ in 0..2 {
+        if entry.record_health(true, 2, lb::pool::HealthSignal::Probe) {
+            pool.announce_probe_passed(entry);
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_admitted_providers_first_flip_to_eligible_extends_its_agreement_once() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = marketplace();
+    let newcomer = seed_agreement(&chain, provider(1), 20000, config.accept_window.as_secs());
+    let ghost = seed_agreement(&chain, provider(2), 20001, config.accept_window.as_secs());
+    let pool = Arc::new(
+        Pool::new(&[lb::config::Provider {
+            id: "static-1".to_owned(),
+            url: "http://127.0.0.1:18545".to_owned(),
+        }])
+        .expect("pool"),
+    );
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    let window_end = expires_at(&chain, newcomer);
+    chain.advance(10);
+    let writes_before = chain.transactions().len();
+
+    // The newcomer's tunnel connects, then the probes pass, the way
+    // the Monitor records them: the flip is what announces the
+    // provider. A static provider's flip owes nothing.
+    for member in pool.snapshot().iter() {
+        if member.id == format!("{:#x}", provider(1)) {
+            member.mark_admitted();
+        }
+        if member.id != format!("{:#x}", provider(2)) {
+            probes_pass(&pool, member);
+        }
+    }
+    agent.extend_admitted().await;
+    assert_eq!(
+        expires_at(&chain, newcomer),
+        chain.head() + config.agreement_life.as_secs() / 2,
+        "extended the moment it turned eligible"
+    );
+    assert_eq!(expires_at(&chain, ghost), window_end, "still in its window");
+    assert_eq!(chain.transactions().len() - writes_before, 1, "one batch");
+
+    // Nothing new turned eligible: nothing to extend.
+    agent.extend_admitted().await;
+    assert_eq!(chain.transactions().len() - writes_before, 1);
+
+    // A node that comes and goes: out, in again, and no extend for it.
+    // The admission owed one, and it is paid.
+    let entry = pool
+        .snapshot()
+        .iter()
+        .find(|p| p.id == format!("{:#x}", provider(1)))
+        .expect("in the pool")
+        .clone();
+    for _ in 0..2 {
+        entry.record_health(false, 2, lb::pool::HealthSignal::Probe);
+    }
+    probes_pass(&pool, &entry);
+    assert!(entry.eligible(), "back in");
+    agent.extend_admitted().await;
+    assert_eq!(
+        chain.transactions().len() - writes_before,
+        1,
+        "no write for a flap"
+    );
+
+    // Its tunnel reconnected: still nothing, the admission was paid.
+    entry.mark_admitted();
+    for _ in 0..2 {
+        entry.record_health(false, 2, lb::pool::HealthSignal::Probe);
+    }
+    probes_pass(&pool, &entry);
+    agent.extend_admitted().await;
+    assert_eq!(
+        chain.transactions().len() - writes_before,
+        1,
+        "no write for a reconnect"
+    );
+
+    // The ghost's tunnel connects at last, late in its window: its
+    // admission was never paid, so its first flip extends.
+    let ghost_entry = pool
+        .snapshot()
+        .iter()
+        .find(|p| p.id == format!("{:#x}", provider(2)))
+        .expect("in the pool")
+        .clone();
+    ghost_entry.mark_admitted();
+    probes_pass(&pool, &ghost_entry);
+    agent.extend_admitted().await;
+    assert_eq!(
+        expires_at(&chain, ghost),
+        chain.head() + config.agreement_life.as_secs() / 2
+    );
+    assert_eq!(chain.transactions().len() - writes_before, 2);
+}
+
+#[tokio::test]
+async fn the_running_agent_extends_a_provider_when_its_probes_pass() {
+    let chain = FakeChain::new(LB, 1337);
+    let config = service_config();
+    let key = seed_agreement(&chain, provider(1), 20000, 7200);
+    let service = lb::service::start_with(config, Some((chain.clone(), chain.clone())))
+        .await
+        .expect("starts");
+    let before = expires_at(&chain, key);
+    chain.advance(10);
+
+    let entry = service.pool.snapshot()[0].clone();
+    entry.mark_admitted();
+    probes_pass(&service.pool, &entry);
+    wait_for("extended at eligibility", || {
+        expires_at(&chain, key) > before
+    })
+    .await;
+    service.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_quarantined_provider_misses_a_cycle_and_is_refreshed_next() {
     let chain = FakeChain::new(LB, CHAIN_ID);

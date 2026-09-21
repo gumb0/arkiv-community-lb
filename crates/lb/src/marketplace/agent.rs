@@ -7,7 +7,7 @@
 //! agreement records alive.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::Entry},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -20,7 +20,7 @@ use crate::{
         reader::{PAGE_LIMIT, Query, ReadError},
         records::{
             Address, Agreement, CounterRecord, CounterState, EntityKey, KIND_AGREEMENT,
-            KIND_LB_LISTING, KIND_OFFER, LbListing, Offer, Record, Stored,
+            KIND_COUNTER, KIND_LB_LISTING, KIND_OFFER, LbListing, Offer, Record, Stored,
         },
         writer::{Batch, Create, Expiry, Extend, Identity, Operation, Patch, WriteError, send},
     },
@@ -43,6 +43,32 @@ pub enum StartError {
     TooManyAgreements { count: u64 },
     #[error("the listing could not be written")]
     Listing(#[source] WriteError),
+    #[error(
+        "{count} open counter records under this LB's key, more than the {PAGE_LIMIT} one page \
+         holds: one per live agreement is expected"
+    )]
+    TooManyCounters { count: u64 },
+}
+
+/// One agreement's open counter record, as the chain last showed it.
+/// Not its count: that changes with every request the provider
+/// serves, and the flush reads the record again before it writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenCounter {
+    /// The counter record's own key: the entity the flush patches.
+    pub key: EntityKey,
+    /// The block the period counts from, which the close writes back.
+    pub opened_block: u64,
+}
+
+/// What the agent knows about one live agreement: its record, and the
+/// open counter record that counts for it. `counter` is `None` while
+/// the agreement has none, after a write that did not land: the flush
+/// opens one.
+#[derive(Debug, Clone)]
+struct Live {
+    agreement: Stored<Agreement>,
+    counter: Option<OpenCounter>,
 }
 
 /// Why a reconcile did not happen. At startup either is a reason not
@@ -51,8 +77,8 @@ pub enum StartError {
 enum ReconcileError {
     #[error("the chain could not be read")]
     Chain(#[source] ReadError),
-    #[error("{count} agreement records, more than one page holds")]
-    TooMany { count: u64 },
+    #[error("{count} {kind} records, more than one page holds")]
+    TooMany { kind: &'static str, count: u64 },
 }
 
 pub struct Agent<R, W> {
@@ -62,8 +88,9 @@ pub struct Agent<R, W> {
     pool: Arc<Pool>,
     identity: Identity,
     listing_key: EntityKey,
-    /// The live agreement records, by key: the slot state.
-    agreements: Mutex<HashMap<EntityKey, Stored<Agreement>>>,
+    /// The live agreements, by key: the slot state, and the counter
+    /// record each one counts into.
+    agreements: Mutex<HashMap<EntityKey, Live>>,
 }
 
 impl<R: ChainReader, W: ChainWriter> Agreements for Agent<R, W> {
@@ -107,14 +134,22 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             listing_key: EntityKey::ZERO,
             agreements: Mutex::new(HashMap::new()),
         };
-        // The reconcile only reads and can refuse the start; the listing
-        // writes. This order keeps a refused start from writing anything.
-        agent
+        // The two reconciles only read and can refuse the start; the
+        // listing writes. This order keeps a refused start from writing
+        // anything. A start is a poll with nothing remembered yet.
+        let head = agent
             .reconcile_agreements()
             .await
             .map_err(|error| match error {
                 ReconcileError::Chain(error) => StartError::Chain(error),
-                ReconcileError::TooMany { count } => StartError::TooManyAgreements { count },
+                ReconcileError::TooMany { count, .. } => StartError::TooManyAgreements { count },
+            })?;
+        agent
+            .reconcile_counters(head)
+            .await
+            .map_err(|error| match error {
+                ReconcileError::Chain(error) => StartError::Chain(error),
+                ReconcileError::TooMany { count, .. } => StartError::TooManyCounters { count },
             })?;
         let live = agent.agreements().len();
         if live > agent.config.max_providers as usize {
@@ -157,7 +192,17 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&key)
-            .cloned()
+            .map(|live| live.agreement.clone())
+    }
+
+    /// Each live agreement's open counter record, by agreement key.
+    pub fn open_counters(&self) -> HashMap<EntityKey, Option<OpenCounter>> {
+        self.agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(key, live)| (*key, live.counter.clone()))
+            .collect()
     }
 
     /// The live agreements as the agent knows them, in no particular order.
@@ -166,7 +211,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
-            .cloned()
+            .map(|live| live.agreement.clone())
             .collect()
     }
 
@@ -193,14 +238,15 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         }
     }
 
-    /// One discovery poll: the reconcile, then the offers. A poll that
-    /// cannot read the chain, or finds more records than a page, changes
-    /// nothing and says so; the offers are still read, so a full page of
-    /// agreements does not stop acceptance, only the cap does.
+    /// One discovery poll: the two reconciles, then the offers. A poll
+    /// that cannot read the chain, or finds more records than a page,
+    /// changes nothing and says so; the offers are still read, so a
+    /// full page of agreements does not stop acceptance, only the cap
+    /// does.
     pub async fn discovery_poll(&self) {
         let head = match self.reconcile_agreements().await {
             Ok(head) => Some(head),
-            Err(ReconcileError::TooMany { count }) => {
+            Err(ReconcileError::TooMany { count, .. }) => {
                 tracing::error!(
                     count,
                     "more agreement records than one page holds: this poll's reconcile is skipped"
@@ -213,6 +259,9 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             }
         };
         if let Some(head) = head {
+            if let Err(error) = self.reconcile_counters(head).await {
+                tracing::warn!(%error, "the open counter records are left as memory has them");
+            }
             self.discover_offers(head).await;
         }
     }
@@ -239,7 +288,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             .await
             .map_err(ReconcileError::Chain)?;
         if count > PAGE_LIMIT {
-            return Err(ReconcileError::TooMany { count });
+            return Err(ReconcileError::TooMany {
+                kind: "agreement",
+                count,
+            });
         }
         let page = self
             .reader
@@ -271,12 +323,13 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             .copied()
             .collect();
         for key in gone {
-            let Some(agreement) = known.remove(&key) else {
+            let Some(live) = known.remove(&key) else {
                 continue;
             };
-            self.pool.remove(&marketplace_id(agreement.record.provider));
+            self.pool
+                .remove(&marketplace_id(live.agreement.record.provider));
             tracing::info!(
-                provider = %agreement.record.provider,
+                provider = %live.agreement.record.provider,
                 agreement = %key,
                 "agreement over: its record is gone from the chain"
             );
@@ -284,17 +337,17 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         let mut adopted = 0;
         for stored in live {
             let key = stored.key;
-            if let Some(agreement) = known.get_mut(&key) {
+            if let Some(live) = known.get_mut(&key) {
                 // The refresh moved the expiry, and its own check leans
                 // on this being current; the creation block was an
                 // estimate at acceptance.
-                agreement.created_at = stored.created_at;
-                agreement.expires_at = stored.expires_at;
+                live.agreement.created_at = stored.created_at;
+                live.agreement.expires_at = stored.expires_at;
                 continue;
             }
             if known
                 .values()
-                .any(|other| other.record.provider == stored.record.provider)
+                .any(|other| other.agreement.record.provider == stored.record.provider)
             {
                 tracing::warn!(
                     provider = %stored.record.provider,
@@ -309,11 +362,90 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 stored.record.remote_port,
             ));
             tracing::info!(provider = %stored.record.provider, agreement = %key, "agreement adopted");
-            known.insert(key, stored);
+            known.insert(
+                key,
+                Live {
+                    agreement: stored,
+                    counter: None,
+                },
+            );
             adopted += 1;
         }
         tracing::debug!(live = known.len(), adopted, "reconciled with the chain");
         Ok(head)
+    }
+
+    /// Memory against the chain again, for the counter records: every
+    /// open record of this LB, one page, matched to the agreements
+    /// memory holds. The same read at start and at every poll, so an
+    /// agreement adopted at a poll finds its record the same way a
+    /// restart does. What the chain does not have is not remembered,
+    /// and the flush opens, closes or deletes what this leaves: a
+    /// record for an agreement without one, a younger duplicate, a
+    /// record whose agreement is gone.
+    async fn reconcile_counters(&self, head: u64) -> Result<(), ReconcileError> {
+        let query = Query::kind(KIND_COUNTER)
+            .creator(self.identity.address)
+            .attr_str("state", "open")
+            .expires_after(head);
+        let count = self
+            .reader
+            .count(&query)
+            .await
+            .map_err(ReconcileError::Chain)?;
+        if count > PAGE_LIMIT {
+            return Err(ReconcileError::TooMany {
+                kind: "open counter",
+                count,
+            });
+        }
+        let page = self
+            .reader
+            .query(&query)
+            .await
+            .map_err(ReconcileError::Chain)?;
+        // One record per agreement, the oldest: which one counts is
+        // decided here, so what reads this has a single record. The
+        // younger one is not logged here, since this runs every poll
+        // and the flush says so when it deletes it.
+        let mut by_agreement: HashMap<EntityKey, Stored<CounterRecord>> = HashMap::new();
+        for entity in &page.entities {
+            let stored = match Stored::<CounterRecord>::decode(entity) {
+                Ok(stored) => stored,
+                Err(error) => {
+                    tracing::warn!(key = %entity.key, %error, "a counter record does not decode: skipped");
+                    continue;
+                }
+            };
+            match by_agreement.entry(stored.record.agreement) {
+                Entry::Vacant(slot) => {
+                    slot.insert(stored);
+                }
+                Entry::Occupied(mut slot) => {
+                    if creation(&stored) < creation(slot.get()) {
+                        slot.insert(stored);
+                    }
+                }
+            }
+        }
+        let mut known = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (key, live) in known.iter_mut() {
+            let Some(stored) = by_agreement.remove(key) else {
+                // Only a record memory held and the chain no longer has
+                // is worth a line: an agreement that never had one is
+                // waiting for the flush, which says so when it opens it.
+                if live.counter.is_some() {
+                    tracing::warn!(agreement = %key, "the open counter record is gone from the chain: the next flush opens one");
+                }
+                live.counter = None;
+                continue;
+            };
+            live.counter = Some(open_counter(&stored));
+        }
+        Ok(())
     }
 
     /// The offers against this LB's listing, and the acceptances they
@@ -364,9 +496,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let free = (self.config.max_providers as usize).saturating_sub(known.len());
-            let providers: HashSet<Address> = known.values().map(|a| a.record.provider).collect();
-            let offers: HashSet<EntityKey> = known.values().map(|a| a.record.offer).collect();
-            let ports: HashSet<u16> = known.values().map(|a| a.record.remote_port).collect();
+            let records = || known.values().map(|live| &live.agreement.record);
+            let providers: HashSet<Address> = records().map(|record| record.provider).collect();
+            let offers: HashSet<EntityKey> = records().map(|record| record.offer).collect();
+            let ports: HashSet<u16> = records().map(|record| record.remote_port).collect();
             (free, providers, offers, ports)
         };
         let mut accepted_providers = taken_providers;
@@ -480,7 +613,13 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         self.agreements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(created.entity_key, stored);
+            .insert(
+                created.entity_key,
+                Live {
+                    agreement: stored,
+                    counter: None,
+                },
+            );
         tracing::info!(
             provider = %offer.creator,
             agreement = %created.entity_key,
@@ -497,7 +636,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             opened_block: head,
             closed_block: None,
         };
-        match self
+        let open = match self
             .writer
             .create(&Create::new(
                 counter.encode(),
@@ -507,6 +646,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         {
             Ok(created) => {
                 tracing::info!(agreement = %agreement_key, counter = %created.entity_key, "counter record opened");
+                Some(OpenCounter {
+                    key: created.entity_key,
+                    opened_block: head,
+                })
             }
             Err(error) => {
                 tracing::warn!(
@@ -514,7 +657,16 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                     %error,
                     "the counter record did not follow the agreement: the next flush opens one"
                 );
+                None
             }
+        };
+        if let Some(live) = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&agreement_key)
+        {
+            live.counter = open;
         }
         true
     }
@@ -573,7 +725,8 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 .agreements
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for (key, agreement) in known.iter() {
+            for (key, live) in known.iter() {
+                let agreement = &live.agreement;
                 if !eligible.contains(&marketplace_id(agreement.record.provider)) {
                     skipped += 1;
                     continue;
@@ -635,6 +788,19 @@ async fn port_is_bound(port: u16) -> bool {
         tokio::time::timeout(Duration::from_millis(200), connect).await,
         Ok(Ok(_))
     )
+}
+
+fn open_counter(stored: &Stored<CounterRecord>) -> OpenCounter {
+    OpenCounter {
+        key: stored.key,
+        opened_block: stored.record.opened_block,
+    }
+}
+
+/// When a record was written, for ordering: the creation block, and
+/// the key between two records written in the same one.
+fn creation(stored: &Stored<CounterRecord>) -> (u64, EntityKey) {
+    (stored.created_at, stored.key)
 }
 
 /// A lifetime in blocks, the way the sidecar converts it.

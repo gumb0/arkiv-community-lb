@@ -10,16 +10,16 @@ use common::fake_chain::{FakeChain, Transaction};
 use lb::chain::reader::Query;
 use lb::{
     chain::{
-        ChainReader,
+        ChainReader, ChainWriter,
         reader::PAGE_LIMIT,
         records::{
             Agreement, CounterRecord, CounterState, Hardware, KIND_COUNTER, KIND_LB_LISTING,
             LbListing, Offer, Record, Specs, Stored, Wei,
         },
-        writer::Expiry,
+        writer::{Delete, Expiry},
     },
     config::Marketplace,
-    marketplace::agent::{Agent, StartError},
+    marketplace::agent::{Agent, OpenCounter, StartError},
     pool::{Pool, Source},
 };
 
@@ -106,6 +106,26 @@ fn offer_for(agent: &FakeAgent, chain: &FakeChain) -> Offer {
 
 fn post(chain: &FakeChain, provider: Address, offer: &Offer, life: u64) -> alloy_primitives::B256 {
     chain.write_as(provider, offer.encode(), Expiry::Seconds(life))
+}
+
+/// An open counter record the LB wrote before it restarted.
+fn seed_counter(
+    chain: &FakeChain,
+    agreement: alloy_primitives::B256,
+    provider: Address,
+    count: u64,
+    opened_block: u64,
+) -> alloy_primitives::B256 {
+    let record = CounterRecord {
+        agreement,
+        provider,
+        state: CounterState::Open,
+        count,
+        wei_per_call: RATE,
+        opened_block,
+        closed_block: None,
+    };
+    chain.write_as(LB, record.encode(), Expiry::Seconds(180 * DAY))
 }
 
 async fn counter_records(chain: &FakeChain) -> Vec<Stored<CounterRecord>> {
@@ -514,6 +534,14 @@ async fn an_offer_becomes_an_agreement_and_a_counter_record() {
         chain.head() + config.counter_record_life.as_secs() / 2
     );
     assert_eq!(
+        agent.open_counters()[&agreement.key],
+        Some(OpenCounter {
+            key: counter.key,
+            opened_block: chain.head(),
+        }),
+        "the agent knows the record it opened"
+    );
+    assert_eq!(
         chain.transactions().len() - writes_before,
         2,
         "the agreement, then its counter record"
@@ -856,6 +884,8 @@ async fn an_agreement_stands_when_its_counter_record_does_not_follow() {
         counter_records(&chain).await.is_empty(),
         "the counter record did not"
     );
+    let key = agent.agreements()[0].key;
+    assert_eq!(agent.open_counters()[&key], None, "known to need one");
 
     chain.heal();
     agent.discovery_poll().await;
@@ -879,6 +909,177 @@ async fn a_failed_acceptance_is_retried_at_the_next_poll() {
     agent.discovery_poll().await;
     assert_eq!(agent.agreements().len(), 1);
     assert_eq!(counter_records(&chain).await.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// The counting state, before any flush
+
+#[tokio::test]
+async fn an_open_counter_record_reloads_at_start() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3600);
+    chain.advance(5);
+    let counter = seed_counter(&chain, agreement, provider(1), 48213, 900);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    assert_eq!(
+        agent.open_counters()[&agreement],
+        Some(OpenCounter {
+            key: counter,
+            opened_block: 900,
+        })
+    );
+}
+
+#[tokio::test]
+async fn an_agreement_without_an_open_record_is_known_to_need_one() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3600);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    assert_eq!(agent.open_counters()[&agreement], None);
+}
+
+#[tokio::test]
+async fn of_two_open_records_for_one_agreement_the_oldest_counts() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3600);
+    let first = seed_counter(&chain, agreement, provider(1), 10, 1);
+    chain.advance(3);
+    seed_counter(&chain, agreement, provider(1), 0, 4);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    let open = agent.open_counters()[&agreement]
+        .clone()
+        .expect("one counts");
+    assert_eq!(open.key, first);
+}
+
+#[tokio::test]
+async fn an_open_record_of_a_gone_agreement_is_not_counted() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    seed_counter(
+        &chain,
+        alloy_primitives::B256::repeat_byte(0x9c),
+        provider(1),
+        5,
+        1,
+    );
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    assert!(agent.open_counters().is_empty());
+}
+
+#[tokio::test]
+async fn an_agreement_adopted_at_a_poll_learns_its_open_record() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3600);
+    let counter = seed_counter(&chain, agreement, provider(1), 7, 1);
+
+    agent.discovery_poll().await;
+    let open = agent.open_counters()[&agreement]
+        .clone()
+        .expect("learned at the poll");
+    assert_eq!(open.key, counter);
+
+    // Gone from the chain: gone from the agent's records too.
+    chain.advance(3600 / 2);
+    agent.discovery_poll().await;
+    assert!(agent.open_counters().is_empty());
+}
+
+#[tokio::test]
+async fn a_counter_record_deleted_from_the_chain_is_forgotten() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3600);
+    let key = seed_counter(&chain, agreement, provider(1), 5, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    assert_eq!(
+        agent.open_counters()[&agreement]
+            .clone()
+            .expect("known")
+            .key,
+        key
+    );
+
+    chain
+        .delete(&Delete { entity_key: key })
+        .await
+        .expect("deleted");
+    agent.discovery_poll().await;
+    assert_eq!(
+        agent.open_counters()[&agreement],
+        None,
+        "the next flush opens a fresh one"
+    );
+}
+
+#[tokio::test]
+async fn a_counter_record_that_does_not_decode_is_skipped() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3600);
+    let mut broken = CounterRecord {
+        agreement,
+        provider: provider(1),
+        state: CounterState::Open,
+        count: 5,
+        wei_per_call: RATE,
+        opened_block: 1,
+        closed_block: None,
+    }
+    .encode();
+    broken.payload = b"not json".to_vec();
+    chain.write_as(LB, broken, Expiry::Seconds(180 * DAY));
+    chain.advance(1);
+    let good = seed_counter(&chain, agreement, provider(1), 9, 2);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+
+    // The broken one is older, so only skipping it leaves the good one.
+    assert_eq!(
+        agent.open_counters()[&agreement]
+            .clone()
+            .expect("the one that decodes")
+            .key,
+        good
+    );
+}
+
+#[tokio::test]
+async fn a_poll_over_a_page_of_open_records_leaves_memory_as_it_is() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3600);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    assert_eq!(agent.open_counters()[&agreement], None, "none at start");
+
+    // More records than a page: the count is read, the page is not, so
+    // the agreement's record stays unknown and nothing is counted in.
+    for _ in 0..=PAGE_LIMIT {
+        seed_counter(&chain, agreement, provider(1), 7, 1);
+    }
+    agent.discovery_poll().await;
+    assert_eq!(agent.open_counters()[&agreement], None);
+}
+
+#[tokio::test]
+async fn refuses_to_start_when_the_open_records_do_not_fit_one_page() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3600);
+    for _ in 0..=PAGE_LIMIT {
+        seed_counter(&chain, agreement, provider(1), 0, 1);
+    }
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let error = start(&chain, &marketplace(), &pool)
+        .await
+        .expect_err("refuses");
+    assert!(
+        matches!(error, StartError::TooManyCounters { .. }),
+        "{error}"
+    );
 }
 
 // ---------------------------------------------------------------------------

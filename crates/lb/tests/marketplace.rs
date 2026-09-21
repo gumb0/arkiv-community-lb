@@ -1172,6 +1172,187 @@ async fn refuses_to_start_when_the_open_records_do_not_fit_one_page() {
 }
 
 // ---------------------------------------------------------------------------
+// The flush
+
+/// The chain's counter record, decoded.
+async fn counter(chain: &FakeChain, key: alloy_primitives::B256) -> CounterRecord {
+    Stored::<CounterRecord>::decode(&chain.entity(key).expect("stored").as_arkiv_entity())
+        .expect("decodes")
+        .record
+}
+
+/// Requests answered by this provider, the way the Proxy counts them.
+fn serve(pool: &Pool, address: Address, requests: u64) {
+    let member = pool.get(&format!("{address:#x}")).expect("in the pool");
+    for _ in 0..requests {
+        member.record_served();
+    }
+}
+
+#[tokio::test]
+async fn a_flush_writes_what_the_provider_served() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    serve(&pool, provider(1), 5);
+    let writes_before = chain.transactions().len();
+
+    agent.flush().await;
+    let record = counter(&chain, key).await;
+    assert_eq!(
+        record.count, 15,
+        "the record's own count and the five since"
+    );
+    assert_eq!(record.state, CounterState::Open);
+    assert_eq!(record.opened_block, 1, "the opening block stays");
+    assert_eq!(
+        chain.transactions().len() - writes_before,
+        1,
+        "one patch, in one batch"
+    );
+
+    // The record already says what the entry counted: nothing written.
+    agent.flush().await;
+    assert_eq!(chain.transactions().len() - writes_before, 1);
+
+    serve(&pool, provider(1), 2);
+    agent.flush().await;
+    assert_eq!(counter(&chain, key).await.count, 17);
+}
+
+#[tokio::test]
+async fn an_agreement_without_a_record_gets_a_fresh_one_at_zero() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let config = marketplace();
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    serve(&pool, provider(1), 4);
+    chain.advance(7);
+
+    agent.flush().await;
+    let records = counter_records(&chain).await;
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.record.agreement, agreement);
+    assert_eq!(record.record.provider, provider(1));
+    assert_eq!(
+        record.record.count, 0,
+        "opened at zero: the count follows by patch"
+    );
+    assert_eq!(record.record.state, CounterState::Open);
+    assert_eq!(record.record.opened_block, chain.head());
+    assert_eq!(record.record.wei_per_call, RATE);
+    assert_eq!(
+        record.expires_at,
+        chain.head() + config.counter_record_life.as_secs() / 2
+    );
+
+    // The record is remembered at the next read, and the next flush
+    // writes the count into it. What was served before it existed is
+    // still on the entry, so nothing is lost by opening at zero.
+    serve(&pool, provider(1), 1);
+    agent.flush().await;
+    assert_eq!(counter_records(&chain).await.len(), 1, "no second record");
+    assert_eq!(counter(&chain, record.key).await.count, 5);
+}
+
+#[tokio::test]
+async fn a_record_this_flush_opened_is_not_counted_into_the_entry_again() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    serve(&pool, provider(1), 6);
+
+    // The create lands and its answer is lost, so the LB does not know
+    // the key. The record it left behind carries nothing to count.
+    chain.unresolved_next();
+    agent.flush().await;
+    assert_eq!(counter_records(&chain).await.len(), 1, "it landed");
+    agent.discovery_poll().await;
+    assert_eq!(
+        pool.snapshot()[0].served.load(Ordering::Relaxed),
+        6,
+        "read back, and nothing added to the entry"
+    );
+
+    agent.flush().await;
+    assert_eq!(counter_records(&chain).await[0].record.count, 6);
+}
+
+#[tokio::test]
+async fn a_flush_that_cannot_read_the_chain_writes_nothing() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    serve(&pool, provider(1), 3);
+    let writes_before = chain.transactions().len();
+
+    chain.fail_reference("connection refused");
+    agent.flush().await;
+    assert_eq!(chain.transactions().len(), writes_before);
+
+    chain.heal();
+    agent.flush().await;
+    assert_eq!(
+        counter(&chain, key).await.count,
+        13,
+        "written the next time"
+    );
+}
+
+#[tokio::test]
+async fn a_flush_that_did_not_land_is_made_again_at_the_next_one() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    serve(&pool, provider(1), 3);
+
+    chain.fail_sidecar("gas required exceeds allowance");
+    agent.flush().await;
+    assert_eq!(counter(&chain, key).await.count, 10, "nothing written");
+
+    chain.heal();
+    serve(&pool, provider(1), 2);
+    agent.flush().await;
+    assert_eq!(
+        counter(&chain, key).await.count,
+        15,
+        "the count of the moment, not the one the failed write carried"
+    );
+}
+
+#[tokio::test]
+async fn the_agent_flushes_on_its_interval() {
+    let chain = FakeChain::new(LB, 1337);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 0, 1);
+    let mut config = service_config();
+    config.marketplace.as_mut().expect("present").flush_interval = Duration::from_millis(20);
+    let service = lb::service::start_with(config, Some((chain.clone(), chain.clone())))
+        .await
+        .expect("starts");
+    serve(&service.pool, provider(1), 1);
+
+    wait_for("the count reaches the chain", || {
+        chain.entity(key).is_some_and(|entity| {
+            Stored::<CounterRecord>::decode(&entity.as_arkiv_entity())
+                .map(|stored| stored.record.count == 1)
+                .unwrap_or(false)
+        })
+    })
+    .await;
+    service.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
 // The refresh
 
 /// When the entity expires, as the chain has it.

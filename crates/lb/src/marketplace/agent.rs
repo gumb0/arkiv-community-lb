@@ -228,12 +228,15 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         };
         let mut discovery_polls = interval(self.config.discovery_interval);
         let mut refreshes = interval(self.config.refresh_interval);
+        let mut flushes = interval(self.config.flush_interval);
         discovery_polls.tick().await;
         refreshes.tick().await;
+        flushes.tick().await;
         loop {
             tokio::select! {
                 _ = discovery_polls.tick() => self.discovery_poll().await,
                 _ = refreshes.tick() => self.refresh().await,
+                _ = flushes.tick() => self.flush().await,
                 _ = shutdown.changed() => return,
             }
         }
@@ -260,6 +263,9 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             }
         };
         if let Some(head) = head {
+            // What the reconcile read is for the flush, which reads it
+            // again right before it writes. Here only its work on
+            // memory matters.
             if let Err(error) = self.reconcile_counters(head).await {
                 tracing::warn!(%error, "the open counter records are left as memory has them");
             }
@@ -378,13 +384,19 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
 
     /// Memory against the chain again, for the counter records: every
     /// open record of this LB, one page, matched to the agreements
-    /// memory holds. The same read at start and at every poll, so an
-    /// agreement adopted at a poll finds its record the same way a
-    /// restart does. What the chain does not have is not remembered,
-    /// and the flush opens, closes or deletes what this leaves: a
-    /// record for an agreement without one, a younger duplicate, a
-    /// record whose agreement is gone.
-    async fn reconcile_counters(&self, head: u64) -> Result<(), ReconcileError> {
+    /// memory holds. The same read at start, at every poll and before
+    /// every flush, so an agreement adopted at a poll finds its record
+    /// the same way a restart does, and a flush writes against what
+    /// the chain has just shown. What the chain does not have is not
+    /// remembered, and the flush opens, closes or deletes what this
+    /// leaves: a record for an agreement without one, a younger
+    /// duplicate, a record whose agreement is gone.
+    ///
+    /// Returns each live agreement's open record, for the flush.
+    async fn reconcile_counters(
+        &self,
+        head: u64,
+    ) -> Result<HashMap<EntityKey, Stored<CounterRecord>>, ReconcileError> {
         let query = Query::kind(KIND_COUNTER)
             .creator(self.identity.address)
             .attr_str("state", "open")
@@ -433,6 +445,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             .agreements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut open = HashMap::new();
         for (key, live) in known.iter_mut() {
             let Some(stored) = by_agreement.remove(key) else {
                 // Only a record memory held and the chain no longer has
@@ -455,8 +468,9 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 entry.seed_served(stored.record.count);
             }
             live.counter = Some(open_counter(&stored));
+            open.insert(*key, stored);
         }
-        Ok(())
+        Ok(open)
     }
 
     /// The offers against this LB's listing, and the acceptances they
@@ -779,6 +793,141 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             ineligible = skipped,
             "refresh"
         );
+    }
+}
+
+/// What one flush's batch landed: the records the node reports
+/// patched, and how many it created.
+#[derive(Default)]
+struct Landed {
+    patched: Vec<EntityKey>,
+    created: usize,
+}
+
+impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
+    /// One flush: what each provider served, into its agreement's
+    /// counter record.
+    pub async fn flush(&self) {
+        let head = match self.reader.block_number().await {
+            Ok(head) => head,
+            Err(error) => {
+                tracing::warn!(%error, "the head could not be read: this flush is skipped");
+                return;
+            }
+        };
+        // A batch is one transaction, and a key that has gone since the
+        // last poll fails every other count in it, so the records are
+        // read again here, right before they are written.
+        let open = match self.reconcile_counters(head).await {
+            Ok(open) => open,
+            Err(error) => {
+                tracing::warn!(%error, "the open counter records could not be read: this flush is skipped");
+                return;
+            }
+        };
+
+        let counts = self.counts_batch(&open, head);
+        let landed = self.send_flush(counts).await;
+
+        tracing::info!(
+            patched = landed.patched.len(),
+            opened = landed.created,
+            "flush"
+        );
+    }
+
+    /// The batch one flush writes: what every open counter record is
+    /// owed.
+    fn counts_batch(&self, open: &HashMap<EntityKey, Stored<CounterRecord>>, head: u64) -> Batch {
+        let mut batch = Batch::new();
+        let known = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (key, live) in known.iter() {
+            let record = &live.agreement.record;
+            // The pool entry is the count. Without it there is no count
+            // to write, and zero is not an absence here: it would patch
+            // whatever the record holds down to zero.
+            let Some(entry) = self.pool.get(&marketplace_id(record.provider)) else {
+                tracing::error!(
+                    agreement = %key,
+                    provider = %record.provider,
+                    "an agreement whose provider is not in the pool: nothing is written for it"
+                );
+                continue;
+            };
+            let served = entry.served.load(std::sync::atomic::Ordering::Relaxed);
+            match open.get(key) {
+                // The chain already says what the entry counted.
+                Some(stored) if stored.record.count == served => {}
+                // The record is a copy of the entry's count, not a
+                // running total, so the write can be repeated freely.
+                Some(stored) => batch.push(Operation::Patch(count_patch(stored, served))),
+                // A fresh record opens at zero and its count follows at
+                // the next flush. Opening it with a count would be
+                // unsafe: a create whose answer is lost leaves a record
+                // this LB does not know it has, and the next read would
+                // count what it carries into the entry a second time.
+                None => {
+                    let counter = CounterRecord {
+                        agreement: *key,
+                        provider: record.provider,
+                        state: CounterState::Open,
+                        count: 0,
+                        wei_per_call: record.wei_per_call,
+                        opened_block: head,
+                        closed_block: None,
+                    };
+                    tracing::info!(agreement = %key, "a counter record is opened at the flush: the next one writes its count");
+                    batch.push(Operation::Create(Create::new(
+                        counter.encode(),
+                        Expiry::Seconds(self.config.counter_record_life.as_secs()),
+                    )));
+                }
+            }
+        }
+        batch
+    }
+
+    /// Sends one of the flush's batches and gathers what landed. Every
+    /// operation in a batch stands on its own, so a part that fails
+    /// leaves the rest.
+    async fn send_flush(&self, batch: Batch) -> Landed {
+        let mut landed = Landed::default();
+        if batch.is_empty() {
+            return landed;
+        }
+        for sent in send(&self.writer, batch).await {
+            match sent.result {
+                Ok(result) => {
+                    landed.patched.extend(result.patched_entities);
+                    landed.created += result.created_entities.len();
+                }
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        operations = sent.batch.operations().len(),
+                        "a flush batch did not land: its counts are written at the next flush"
+                    );
+                }
+            }
+        }
+        landed
+    }
+}
+
+/// The record as it stands with a new count: a patch writes the whole
+/// payload, so it is built from the record the chain just showed.
+fn count_patch(stored: &Stored<CounterRecord>, count: u64) -> Patch {
+    let record = CounterRecord {
+        count,
+        ..stored.record.clone()
+    };
+    Patch {
+        entity_key: stored.key,
+        set: None,
+        payload: Some(record.encode().payload),
     }
 }
 

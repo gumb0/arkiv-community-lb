@@ -78,6 +78,16 @@ struct Live {
     counter: Option<OpenCounter>,
 }
 
+/// Which flush this is: the one on the timer, or the one a deliberate
+/// stop makes. A stop writes the counts and nothing else, since what
+/// opens, closes or deletes a record can wait for the next scheduled
+/// flush and the stop should take one write.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Flush {
+    Scheduled,
+    Stop,
+}
+
 /// An agreement that has ended, as memory last had it: the record it
 /// counted into, and what its provider served. Enough for the last
 /// write, so what ends it needs to know nothing about records.
@@ -267,7 +277,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 _ = discovery_polls.tick() => self.discovery_poll().await,
                 _ = refreshes.tick() => self.refresh().await,
                 _ = flushes.tick() => self.flush().await,
-                _ = shutdown.changed() => return,
+                _ = shutdown.changed() => {
+                    self.shutdown_flush().await;
+                    return;
+                }
             }
         }
     }
@@ -930,6 +943,20 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     /// One flush: what each provider served, into its agreement's
     /// counter record.
     pub async fn flush(&self) {
+        self.flush_with(Flush::Scheduled).await;
+    }
+
+    /// The flush a deliberate stop makes, before the task returns: the
+    /// counts alone, so a restart loses none of them and the stop
+    /// waits for one write. The wait is for the chain's receipt, up to
+    /// a few minutes; the stop grace in the compose file covers it.
+    pub async fn shutdown_flush(&self) {
+        tracing::info!("stopping: the counts go to the chain first, which can take a few minutes");
+        self.flush_with(Flush::Stop).await;
+        tracing::info!("stopping: the counts are written");
+    }
+
+    async fn flush_with(&self, flush: Flush) {
         let head = match self.reader.block_number().await {
             Ok(head) => head,
             Err(error) => {
@@ -948,7 +975,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             }
         };
 
-        let (counts, closing) = self.counts_batch(&counters, head);
+        let (counts, closing) = self.counts_batch(&counters, head, flush);
         let landed = self.send_flush(counts).await;
         // A successor is only right once its predecessor is closed:
         // sent together, a close that did not land would leave the
@@ -968,35 +995,41 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
 
     /// The first batch: what every open counter record is owed, and
     /// the closes it asks for, which the second batch follows.
-    fn counts_batch(&self, counters: &Counters, head: u64) -> (Batch, Vec<Closing>) {
+    fn counts_batch(&self, counters: &Counters, head: u64, flush: Flush) -> (Batch, Vec<Closing>) {
         let period = blocks(self.config.settlement_period);
+        let scheduled = flush == Flush::Scheduled;
         let mut batch = Batch::new();
         let mut closing = Vec::new();
-        // An agreement counts into one record, so a second open one is
-        // deleted. It carries nothing: a count is only ever written
-        // into the record this LB counts into, which is the oldest.
-        for duplicate in &counters.duplicates {
-            tracing::info!(counter = %duplicate, "a second open counter record for one agreement: deleted");
-            batch.push(Operation::Delete(Delete {
-                entity_key: *duplicate,
-            }));
-        }
-        // A record nobody counts for any more: its agreement ended and
-        // the write that should have closed it did not land, or it
-        // predates this start. Closed with the count it holds, which is
-        // what its last flush wrote, or deleted when it never counted.
-        for stray in &counters.strays {
-            if stray.record.count == 0 {
-                tracing::info!(agreement = %stray.record.agreement, counter = %stray.key, "a counter record of an agreement that is gone: deleted, it never counted");
+        // Find the two kinds of record no live agreement counts into.
+        // Only done for scheduled flushes, a stop leaves them for the next flush.
+        if scheduled {
+            // An agreement counts into one record, so a second open one
+            // is deleted. It carries nothing: a count is only ever
+            // written into the record this LB counts into, the oldest.
+            for duplicate in &counters.duplicates {
+                tracing::info!(counter = %duplicate, "a second open counter record for one agreement: deleted");
                 batch.push(Operation::Delete(Delete {
-                    entity_key: stray.key,
+                    entity_key: *duplicate,
                 }));
-            } else {
-                tracing::info!(agreement = %stray.record.agreement, counter = %stray.key, count = stray.record.count, "a counter record of an agreement that is gone: closed");
-                batch.push(Operation::Patch(patch_record(
-                    stray.key,
-                    &closed(&stray.record, stray.record.count, head),
-                )));
+            }
+            // A record nobody counts for any more: its agreement ended
+            // and the write that should have closed it did not land, or
+            // it predates this start. Closed with the count it holds,
+            // which is what its last flush wrote, or deleted when it
+            // never counted.
+            for stray in &counters.strays {
+                if stray.record.count == 0 {
+                    tracing::info!(agreement = %stray.record.agreement, counter = %stray.key, "a counter record of an agreement that is gone: deleted, it never counted");
+                    batch.push(Operation::Delete(Delete {
+                        entity_key: stray.key,
+                    }));
+                } else {
+                    tracing::info!(agreement = %stray.record.agreement, counter = %stray.key, count = stray.record.count, "a counter record of an agreement that is gone: closed");
+                    batch.push(Operation::Patch(patch_record(
+                        stray.key,
+                        &closed(&stray.record, stray.record.count, head),
+                    )));
+                }
             }
         }
         let known = self
@@ -1021,7 +1054,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 // A period is over once the head has passed the
                 // record's opening by one. A record that counted
                 // nothing is not closed: it waits for a count.
-                Some(stored) if served > 0 && head >= stored.record.opened_block + period => {
+                // Skipped for the shutdown (not scheduled) flush.
+                Some(stored)
+                    if scheduled && served > 0 && head >= stored.record.opened_block + period =>
+                {
                     tracing::info!(agreement = %key, counter = %stored.key, count = served, "the settlement period is over: the counter record is closed");
                     batch.push(Operation::Patch(patch_record(
                         stored.key,
@@ -1043,6 +1079,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                         &counted(stored, served),
                     )));
                 }
+                // At a stop there is nowhere to write this count, and
+                // opening a record would not carry it: what this
+                // agreement served since the last write is lost.
+                None if flush == Flush::Stop => {}
                 // A fresh record opens at zero and its count follows at
                 // the next flush. Opening it with a count would be
                 // unsafe: a create whose answer is lost leaves a record

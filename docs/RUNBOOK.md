@@ -102,7 +102,11 @@ in `/nodes`.
   `http://127.0.0.1:9545/node/{id}` is forwarded to that one provider,
   eligibility ignored.
 - `config.toml` changes: `docker compose restart lb` — the file is
-  mounted in and read at startup; no rebuild.
+  mounted in and read at startup; no rebuild. With the marketplace on,
+  a stop or a restart writes the counts to the chain first and waits
+  for the receipt, which can take a few minutes. Let it finish rather
+  than killing the container, or the counts since the last daily write
+  are lost.
 - `.env` changes (`RUST_LOG`, the reference endpoint):
   `docker compose up -d` — a restart is not enough, the values enter
   the container when it is created. No rebuild either.

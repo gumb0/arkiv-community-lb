@@ -1619,6 +1619,67 @@ async fn a_successor_that_did_not_land_is_opened_at_the_next_flush() {
     assert_eq!(counter(&chain, key).await.count, 13, "the closed stands");
 }
 
+#[tokio::test]
+async fn a_deliberate_stop_writes_the_counts_and_nothing_else() {
+    let chain = FakeChain::new(LB, 1337);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    // A second record for that agreement, which a scheduled flush
+    // would delete.
+    chain.advance(1);
+    let duplicate = seed_counter(&chain, agreement, provider(1), 0, 2);
+    // An agreement with no record, which a scheduled flush would open
+    // one for, and a record nobody counts for, which it would close.
+    let bare = seed_agreement(&chain, provider(2), 20001, 3 * DAY);
+    let stray = seed_counter(
+        &chain,
+        alloy_primitives::B256::repeat_byte(0x9c),
+        provider(3),
+        5,
+        1,
+    );
+    let mut config = service_config();
+    // A period long over: a scheduled flush would close the record.
+    let marketplace = config.marketplace.as_mut().expect("present");
+    marketplace.settlement_period = Duration::from_secs(20);
+    marketplace.flush_interval = Duration::from_secs(3600);
+    chain.advance(100);
+    let service = lb::service::start_with(config, Some((chain.clone(), chain.clone())))
+        .await
+        .expect("starts");
+    serve(&service.pool, provider(1), 3);
+    serve(&service.pool, provider(2), 4);
+    let writes_before = chain.transactions().len();
+
+    service.shutdown().await;
+    let record = counter(&chain, key).await;
+    assert_eq!(record.count, 13, "written at the stop");
+    assert_eq!(record.state, CounterState::Open, "no close at a stop");
+    assert_eq!(
+        counter(&chain, stray).await.state,
+        CounterState::Open,
+        "the stray waits for a scheduled flush"
+    );
+    assert_eq!(
+        counter(&chain, duplicate).await.count,
+        0,
+        "the duplicate waits for one too"
+    );
+    assert!(
+        counter_records(&chain)
+            .await
+            .iter()
+            .all(|record| record.record.agreement != bare),
+        "no record is opened for the one without: its four requests are lost"
+    );
+    assert_eq!(counter_records(&chain).await.len(), 3, "nothing opened");
+    assert_eq!(
+        chain.transactions().len() - writes_before,
+        1,
+        "one write, and the stop is over"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The agreement's end
 

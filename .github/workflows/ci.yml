@@ -35,6 +35,20 @@ jobs:
       - run: npm test
         working-directory: writer
 
+  # The settle CLI: types, then the tests, which need no chain.
+  settle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: npm, cache-dependency-path: settle/package-lock.json }
+      - run: npm ci
+        working-directory: settle
+      - run: npm run typecheck
+        working-directory: settle
+      - run: npm test
+        working-directory: settle
+
   # The two probes that follow our own code, then the Rust chain path's
   # live smoke, against a local dev node. The rest of the probes measure
   # the pinned SDK and node image, so they run when a pin moves, not on

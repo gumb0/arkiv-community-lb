@@ -1,0 +1,20 @@
+{
+  "name": "arkiv-settle",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Pays each closed counter record the LB wrote: GLM on the payout chain, one receipt per record on Arkiv.",
+  "scripts": {
+    "settle": "node --env-file-if-exists=../.env src/cli.ts",
+    "test": "node --test \"tests/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@arkiv-network/sdk": "0.8.0-dev.3",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

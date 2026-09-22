@@ -65,6 +65,9 @@ pub struct OpenCounter {
     pub opened_block: u64,
 }
 
+/// The live agreements, by agreement key.
+type KnownAgreements = HashMap<EntityKey, Live>;
+
 /// What the agent knows about one live agreement: its record, and the
 /// open counter record that counts for it. `counter` is `None` while
 /// the agreement has none, after a write that did not land: the flush
@@ -105,7 +108,7 @@ pub struct Agent<R, W> {
     listing_key: EntityKey,
     /// The live agreements, by key: the slot state, and the counter
     /// record each one counts into.
-    agreements: Mutex<HashMap<EntityKey, Live>>,
+    agreements: Mutex<KnownAgreements>,
 }
 
 impl<R: ChainReader, W: ChainWriter> Agreements for Agent<R, W> {
@@ -300,6 +303,22 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             .block_number()
             .await
             .map_err(ReconcileError::Chain)?;
+        let live = self.read_agreements(head).await?;
+        let live_keys: HashSet<EntityKey> = live.iter().map(|stored| stored.key).collect();
+
+        let mut known = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.end_agreements(&mut known, &live_keys);
+        let adopted = self.adopt_agreements(&mut known, live);
+        tracing::debug!(live = known.len(), adopted, "reconciled with the chain");
+        Ok(head)
+    }
+
+    /// This LB's live agreement records, oldest first. Count then page:
+    /// a full page says nothing about what lies beyond it.
+    async fn read_agreements(&self, head: u64) -> Result<Vec<Stored<Agreement>>, ReconcileError> {
         let query = Query::kind(KIND_AGREEMENT)
             .creator(self.identity.address)
             .expires_after(head);
@@ -328,44 +347,51 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 }
             }
         }
-        // Oldest first, so when two records name the same provider the
-        // older one is the one kept. By creation block: a page's own
-        // order promises nothing, and an expiry moves with every refresh.
+        // By creation block: a page's own order promises nothing, and
+        // an expiry moves with every refresh. Oldest first, so when two
+        // records name the same provider the older one is kept.
         live.sort_by_key(|stored| (stored.created_at, stored.key));
-        let live_keys: HashSet<EntityKey> = live.iter().map(|stored| stored.key).collect();
+        Ok(live)
+    }
 
-        let mut known = self
-            .agreements
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    /// The agreements memory has and the chain does not: their slots
+    /// and ports are free, and their providers leave the pool.
+    fn end_agreements(&self, known: &mut KnownAgreements, live: &HashSet<EntityKey>) {
         let gone: Vec<EntityKey> = known
             .keys()
-            .filter(|key| !live_keys.contains(*key))
+            .filter(|key| !live.contains(*key))
             .copied()
             .collect();
         for key in gone {
-            let Some(live) = known.remove(&key) else {
+            let Some(over) = known.remove(&key) else {
                 continue;
             };
-            self.pool
-                .remove(&marketplace_id(live.agreement.record.provider));
+            let record = &over.agreement.record;
+            self.pool.remove(&marketplace_id(record.provider));
             tracing::info!(
-                provider = %live.agreement.record.provider,
+                provider = %record.provider,
                 agreement = %key,
                 "agreement over: its record is gone from the chain"
             );
         }
+    }
+
+    /// The agreements the chain has and memory does not: their
+    /// providers join the pool. Returns how many, for the log.
+    fn adopt_agreements(&self, known: &mut KnownAgreements, live: Vec<Stored<Agreement>>) -> usize {
         let mut adopted = 0;
         for stored in live {
             let key = stored.key;
-            if let Some(live) = known.get_mut(&key) {
+            if let Some(held) = known.get_mut(&key) {
                 // The refresh moved the expiry, and its own check leans
                 // on this being current; the creation block was an
                 // estimate at acceptance.
-                live.agreement.created_at = stored.created_at;
-                live.agreement.expires_at = stored.expires_at;
+                held.agreement.created_at = stored.created_at;
+                held.agreement.expires_at = stored.expires_at;
                 continue;
             }
+            // One agreement per provider: the oldest record won, and a
+            // second one is left to expire.
             if known
                 .values()
                 .any(|other| other.agreement.record.provider == stored.record.provider)
@@ -392,8 +418,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             );
             adopted += 1;
         }
-        tracing::debug!(live = known.len(), adopted, "reconciled with the chain");
-        Ok(head)
+        adopted
     }
 
     /// Memory against the chain again, for the counter records: every

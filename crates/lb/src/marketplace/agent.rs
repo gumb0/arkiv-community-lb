@@ -802,7 +802,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             extended = landed,
             of = extends,
             ineligible = skipped,
-            "refresh"
+            "refresh: the listing and each eligible provider's record"
         );
     }
 }

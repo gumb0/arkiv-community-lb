@@ -233,6 +233,11 @@ LB counts into, and the next daily write deletes the younger. Nothing
 is lost with it: a count is only ever written into the record the LB
 counts into.
 
+An open record whose agreement the LB no longer has is closed at the
+next daily write with the count it holds, or deleted when it never
+counted. That is a record whose closing write did not land, or one
+found at a start.
+
 A record with no count is not closed; it stays open until it has one.
 When an agreement ends, its open record is closed with everything its
 provider served, the requests since the last daily write included, or

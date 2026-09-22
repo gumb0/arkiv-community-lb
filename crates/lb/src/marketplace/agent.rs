@@ -96,6 +96,10 @@ struct Counters {
     /// An agreement's younger open records: only the oldest counts,
     /// and the flush deletes these.
     duplicates: Vec<EntityKey>,
+    /// Open records of agreements this LB does not have: a final write
+    /// that did not land, or a record from before this start. The
+    /// flush closes them.
+    strays: Vec<Stored<CounterRecord>>,
 }
 
 /// Why a reconcile did not happen. At startup either is a reason not
@@ -577,6 +581,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             live.counter = Some(open_counter(&stored));
             counters.open.insert(*key, stored);
         }
+        counters.strays = by_agreement.into_values().collect();
         Ok(counters)
     }
 
@@ -975,6 +980,24 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             batch.push(Operation::Delete(Delete {
                 entity_key: *duplicate,
             }));
+        }
+        // A record nobody counts for any more: its agreement ended and
+        // the write that should have closed it did not land, or it
+        // predates this start. Closed with the count it holds, which is
+        // what its last flush wrote, or deleted when it never counted.
+        for stray in &counters.strays {
+            if stray.record.count == 0 {
+                tracing::info!(agreement = %stray.record.agreement, counter = %stray.key, "a counter record of an agreement that is gone: deleted, it never counted");
+                batch.push(Operation::Delete(Delete {
+                    entity_key: stray.key,
+                }));
+            } else {
+                tracing::info!(agreement = %stray.record.agreement, counter = %stray.key, count = stray.record.count, "a counter record of an agreement that is gone: closed");
+                batch.push(Operation::Patch(patch_record(
+                    stray.key,
+                    &closed(&stray.record, stray.record.count, head),
+                )));
+            }
         }
         let known = self
             .agreements

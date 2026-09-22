@@ -1726,6 +1726,61 @@ async fn a_final_write_that_did_not_land_leaves_the_record_open() {
     assert!(pool.snapshot().is_empty(), "and its entry is gone with it");
 }
 
+#[tokio::test]
+async fn a_record_whose_agreement_is_gone_is_closed_at_the_flush() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    // Records of agreements this LB no longer has: a final write that
+    // did not land, or records found at a start.
+    let counted = seed_counter(
+        &chain,
+        alloy_primitives::B256::repeat_byte(0x9c),
+        provider(1),
+        5,
+        1,
+    );
+    let empty = seed_counter(
+        &chain,
+        alloy_primitives::B256::repeat_byte(0x9d),
+        provider(2),
+        0,
+        1,
+    );
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    chain.advance(3);
+
+    agent.flush().await;
+    let closed = counter(&chain, counted).await;
+    assert_eq!(closed.state, CounterState::Closed);
+    assert_eq!(closed.count, 5, "the count it holds is all there is");
+    assert_eq!(closed.closed_block, Some(chain.head()));
+    assert!(chain.entity(empty).is_none(), "deleted: it never counted");
+}
+
+#[tokio::test]
+async fn a_final_write_that_did_not_land_is_closed_at_the_next_flush() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 60);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    serve(&pool, provider(1), 2);
+    chain.advance(31);
+
+    chain.fail_sidecar("gas required exceeds allowance");
+    agent.discovery_poll().await;
+    assert_eq!(counter(&chain, key).await.state, CounterState::Open);
+
+    chain.heal();
+    agent.flush().await;
+    let closed = counter(&chain, key).await;
+    assert_eq!(closed.state, CounterState::Closed);
+    assert_eq!(
+        closed.count, 10,
+        "what the last flush wrote: the two since went with the entry"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The refresh
 

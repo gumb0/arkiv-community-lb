@@ -1707,6 +1707,36 @@ async fn only_the_agreement_that_ended_is_written_for() {
 }
 
 #[tokio::test]
+async fn two_agreements_that_end_at_once_are_written_for_in_one_batch() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let counted = seed_agreement(&chain, provider(1), 20000, 60);
+    let counted_key = seed_counter(&chain, counted, provider(1), 10, 1);
+    let empty = seed_agreement(&chain, provider(2), 20001, 60);
+    let empty_key = seed_counter(&chain, empty, provider(2), 0, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    serve(&pool, provider(1), 2);
+    chain.advance(31);
+    let writes_before = chain.transactions().len();
+
+    agent.discovery_poll().await;
+    let closed = counter(&chain, counted_key).await;
+    assert_eq!(closed.state, CounterState::Closed);
+    assert_eq!(closed.count, 12);
+    assert!(
+        chain.entity(empty_key).is_none(),
+        "the empty one is deleted"
+    );
+    assert_eq!(
+        chain.transactions().len() - writes_before,
+        1,
+        "a close and a delete, in one batch"
+    );
+    assert!(agent.agreements().is_empty());
+    assert!(pool.snapshot().is_empty());
+}
+
+#[tokio::test]
 async fn a_final_write_that_did_not_land_leaves_the_record_open() {
     let chain = FakeChain::new(LB, CHAIN_ID);
     let agreement = seed_agreement(&chain, provider(1), 20000, 60);
@@ -1750,11 +1780,37 @@ async fn a_record_whose_agreement_is_gone_is_closed_at_the_flush() {
     chain.advance(3);
 
     agent.flush().await;
+    let closed_at = chain.head();
     let closed = counter(&chain, counted).await;
     assert_eq!(closed.state, CounterState::Closed);
     assert_eq!(closed.count, 5, "the count it holds is all there is");
     assert_eq!(closed.closed_block, Some(chain.head()));
     assert!(chain.entity(empty).is_none(), "deleted: it never counted");
+
+    // A closed record is not an open one, so no later flush finds it.
+    let writes_before = chain.transactions().len();
+    chain.advance(3);
+    agent.flush().await;
+    assert_eq!(chain.transactions().len(), writes_before, "nothing more");
+    assert_eq!(counter(&chain, counted).await.closed_block, Some(closed_at));
+}
+
+#[tokio::test]
+async fn a_gone_agreement_with_two_open_records_keeps_the_oldest_closed() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = alloy_primitives::B256::repeat_byte(0x9c);
+    let oldest = seed_counter(&chain, agreement, provider(1), 7, 1);
+    chain.advance(3);
+    let younger = seed_counter(&chain, agreement, provider(1), 0, 4);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+
+    agent.flush().await;
+    assert!(chain.entity(younger).is_none(), "the younger is deleted");
+    let closed = counter(&chain, oldest).await;
+    assert_eq!(closed.state, CounterState::Closed);
+    assert_eq!(closed.count, 7, "the count the oldest holds");
+    assert_eq!(counter_records(&chain).await.len(), 1);
 }
 
 #[tokio::test]

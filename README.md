@@ -29,9 +29,12 @@ not operator-chosen.
   `[marketplace]` section configured, the LB writes its listing on
   Arkiv, discovers provider offers against it, accepts them into
   agreements with a tunnel port each, keeps the agreements of the
-  providers that are healthy alive with an hourly refresh, and admits
-  each provider's tunnel by a signature over its agreement id. The flow
-  is [docs/MARKETPLACE.md](docs/MARKETPLACE.md); the records every
+  providers that are healthy alive with an hourly refresh, admits each
+  provider's tunnel by a signature over its agreement id, and writes
+  the requests each provider served into its counter record on Arkiv,
+  once a day by default, closing one record per settlement period,
+  which is what settle pays. The flow is
+  [docs/MARKETPLACE.md](docs/MARKETPLACE.md); the records every
   codebase encodes against are [docs/ENTITIES.md](docs/ENTITIES.md).
   Tested in-process over a fake chain.
 - **The host stack** (`compose.yaml`, `Dockerfile`, `tunnel/`): the LB
@@ -48,8 +51,6 @@ not operator-chosen.
 
 ## Still to come
 
-- The counter flush: the requests each provider served, written into
-  its counter record on Arkiv once a day, closed per settlement period.
 - A settle CLI: pays each closed counter record from on-chain records in GLM
   on the payout chain.
 

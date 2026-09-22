@@ -67,8 +67,9 @@ first-class concern, not an add-on.
   receives no traffic). An oversized response costs no health tick: the
   breach may be the query's own fault. Provider state is atomics on the
   pool entry, mutated only through its methods (`record_health`,
-  `record_served`, `quarantine`) — never raw from other modules — and every
-  eligibility flip logs exactly one event naming its source. Scheduling
+  `record_served`, `seed_served`, `subtract_served`, `quarantine`) —
+  never raw from other modules — and every eligibility flip logs
+  exactly one event naming its source. Scheduling
   state (cadences, backoff clocks, the unanswered-probe streak behind
   the backoff) is written only by the Monitor, with one exception: an
   admitted tunnel makes the provider's next probe due at once
@@ -87,7 +88,19 @@ first-class concern, not an add-on.
   refresh extends the listing and the records of the providers that are
   eligible at that moment, and nothing else decides who stays. The
   tunnel server's admission callback is a route on the admin listener
-  that reads the agent's agreements (`docs/TUNNELING.md`).
+  that reads the agent's agreements (`docs/TUNNELING.md`). The counts
+  reach the chain at the flush, on its own interval. A counter record
+  is a copy of its provider entry's count for the current settlement
+  period, never a running total: the entry is seeded from the record
+  when the agent learns it, records are opened at zero, and counts
+  move only by patch — a create whose answer is lost is a record the
+  LB does not know it has, and the next read would count what it
+  carries into the entry a second time. The flush reads the open
+  records back before it writes, since a batch is one transaction and
+  one key that has gone fails every count in it. A record whose
+  period is over is closed, and a second batch opens its successor,
+  which is only right once the close has landed. A deliberate stop
+  writes the counts alone, before the agent's task returns.
 - Providers behind NAT reach the LB through **frp tunnels**; a tunneled
   provider is a plain `http://127.0.0.1:<port>` URL to the Proxy. The choice,
   the admission design, and the measurements are in `docs/TUNNELING.md` — not

@@ -1082,7 +1082,11 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 // At a stop there is nowhere to write this count, and
                 // opening a record would not carry it: what this
                 // agreement served since the last write is lost.
-                None if flush == Flush::Stop => {}
+                None if flush == Flush::Stop => {
+                    if served > 0 {
+                        tracing::warn!(agreement = %key, provider = %record.provider, count = served, "stopping: this agreement has no counter record, and what it served is lost");
+                    }
+                }
                 // A fresh record opens at zero and its count follows at
                 // the next flush. Opening it with a count would be
                 // unsafe: a create whose answer is lost leaves a record

@@ -167,7 +167,8 @@ limitation.
 
 The LB notices an agreement's end at its next discovery poll, when it
 reads its own records back and finds the record gone: it closes the
-agreement's counter record with the count it holds, and frees the slot
+agreement's counter record with everything the provider served,
+including the requests since the last daily write, and frees the slot
 and the port. That is up to five minutes after the record expired. The
 delay changes nothing for the provider: a record only expires after
 its provider has been out of rotation for three days, so no request

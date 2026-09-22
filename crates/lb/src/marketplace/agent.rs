@@ -78,6 +78,15 @@ struct Live {
     counter: Option<OpenCounter>,
 }
 
+/// An agreement that has ended, as memory last had it: the record it
+/// counted into, and what its provider served. Enough for the last
+/// write, so what ends it needs to know nothing about records.
+struct Ended {
+    agreement: Stored<Agreement>,
+    counter: OpenCounter,
+    served: u64,
+}
+
 /// What the counter reconcile read: the record that counts for each
 /// live agreement, and the ones that count for nobody.
 #[derive(Default)]
@@ -306,13 +315,17 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         let live = self.read_agreements(head).await?;
         let live_keys: HashSet<EntityKey> = live.iter().map(|stored| stored.key).collect();
 
-        let mut known = self
-            .agreements
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.end_agreements(&mut known, &live_keys);
-        let adopted = self.adopt_agreements(&mut known, live);
-        tracing::debug!(live = known.len(), adopted, "reconciled with the chain");
+        let ended = {
+            let mut known = self
+                .agreements
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ended = self.end_agreements(&mut known, &live_keys);
+            let adopted = self.adopt_agreements(&mut known, live);
+            tracing::debug!(live = known.len(), adopted, "reconciled with the chain");
+            ended
+        };
+        self.close_ended(ended, head).await;
         Ok(head)
     }
 
@@ -355,8 +368,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     }
 
     /// The agreements memory has and the chain does not: their slots
-    /// and ports are free, and their providers leave the pool.
-    fn end_agreements(&self, known: &mut KnownAgreements, live: &HashSet<EntityKey>) {
+    /// and ports are free and their providers leave the pool. Returns
+    /// the ones whose counting is owed a last write.
+    fn end_agreements(&self, known: &mut KnownAgreements, live: &HashSet<EntityKey>) -> Vec<Ended> {
+        let mut ended = Vec::new();
         let gone: Vec<EntityKey> = known
             .keys()
             .filter(|key| !live.contains(*key))
@@ -366,13 +381,69 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             let Some(over) = known.remove(&key) else {
                 continue;
             };
-            let record = &over.agreement.record;
-            self.pool.remove(&marketplace_id(record.provider));
+            let entry = self
+                .pool
+                .remove(&marketplace_id(over.agreement.record.provider));
             tracing::info!(
-                provider = %record.provider,
+                provider = %over.agreement.record.provider,
                 agreement = %key,
                 "agreement over: its record is gone from the chain"
             );
+            // Nothing counts for it any more, and what the entry holds
+            // is the whole period, the requests since the last flush
+            // included. Without either there is nothing to write.
+            let (Some(counter), Some(entry)) = (over.counter, entry) else {
+                continue;
+            };
+            ended.push(Ended {
+                agreement: over.agreement,
+                counter,
+                served: entry.served.load(std::sync::atomic::Ordering::Relaxed),
+            });
+        }
+        ended
+    }
+
+    /// The last write the agreements that ended are owed: each counter
+    /// record closed with what its provider served, or deleted when it
+    /// served nothing, since a closed record at zero would be a receipt
+    /// for nothing. One batch of independent operations; one that does
+    /// not land leaves the record open with the count the last flush
+    /// wrote, and the flush closes it as a stray.
+    async fn close_ended(&self, ended: Vec<Ended>, head: u64) {
+        let mut batch = Batch::new();
+        for end in ended {
+            let record = &end.agreement.record;
+            let key = end.agreement.key;
+            if end.served == 0 {
+                tracing::info!(agreement = %key, counter = %end.counter.key, "the counter record is deleted at the agreement's end: it never counted");
+                batch.push(Operation::Delete(Delete {
+                    entity_key: end.counter.key,
+                }));
+                continue;
+            }
+            tracing::info!(agreement = %key, counter = %end.counter.key, count = end.served, "the counter record is closed at the agreement's end");
+            // Built closed, from what memory holds: there is no record
+            // read from the chain here to close.
+            let counter = CounterRecord {
+                agreement: key,
+                provider: record.provider,
+                state: CounterState::Closed,
+                count: end.served,
+                wei_per_call: record.wei_per_call,
+                opened_block: end.counter.opened_block,
+                closed_block: Some(head),
+            };
+            batch.push(Operation::Patch(patch_record(end.counter.key, &counter)));
+        }
+        for sent in send(&self.writer, batch).await {
+            if let Err(error) = sent.result {
+                tracing::error!(
+                    %error,
+                    operations = sent.batch.operations().len(),
+                    "a final counter write did not land: the next flush closes the record"
+                );
+            }
         }
     }
 
@@ -929,7 +1000,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 // nothing is not closed: it waits for a count.
                 Some(stored) if served > 0 && head >= stored.record.opened_block + period => {
                     tracing::info!(agreement = %key, counter = %stored.key, count = served, "the settlement period is over: the counter record is closed");
-                    batch.push(Operation::Patch(close_patch(stored, served, head)));
+                    batch.push(Operation::Patch(patch_record(
+                        stored.key,
+                        &closed(&stored.record, served, head),
+                    )));
                     closing.push(Closing {
                         agreement: *key,
                         counter: stored.key,
@@ -940,7 +1014,12 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 Some(stored) if stored.record.count == served => {}
                 // The record is a copy of the entry's count, not a
                 // running total, so the write can be repeated freely.
-                Some(stored) => batch.push(Operation::Patch(count_patch(stored, served))),
+                Some(stored) => {
+                    batch.push(Operation::Patch(patch_record(
+                        stored.key,
+                        &counted(stored, served),
+                    )));
+                }
                 // A fresh record opens at zero and its count follows at
                 // the next flush. Opening it with a count would be
                 // unsafe: a create whose answer is lost leaves a record
@@ -1036,33 +1115,33 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     }
 }
 
-/// The record as it stands with a new count: a patch writes the whole
-/// payload, so it is built from the record the chain just showed.
-fn count_patch(stored: &Stored<CounterRecord>, count: u64) -> Patch {
-    let record = CounterRecord {
-        count,
-        ..stored.record.clone()
-    };
+/// A counter record as it should stand. A patch writes the whole
+/// payload, and a record being closed also takes the state attribute,
+/// which is what settle reads records by.
+fn patch_record(key: EntityKey, record: &CounterRecord) -> Patch {
     Patch {
-        entity_key: stored.key,
-        set: None,
+        entity_key: key,
+        set: matches!(record.state, CounterState::Closed)
+            .then(|| Attributes::default().with("state", AttributeValue::Str("closed".to_owned()))),
         payload: Some(record.encode().payload),
     }
 }
 
-/// The last write a record takes: its final count, the block it was
-/// closed at, and the state attribute settle reads it by.
-fn close_patch(stored: &Stored<CounterRecord>, count: u64, head: u64) -> Patch {
-    let record = CounterRecord {
+/// The same record with a new count.
+fn counted(stored: &Stored<CounterRecord>, count: u64) -> CounterRecord {
+    CounterRecord {
+        count,
+        ..stored.record.clone()
+    }
+}
+
+/// The same record with its final count and the block it closed at.
+fn closed(record: &CounterRecord, count: u64, head: u64) -> CounterRecord {
+    CounterRecord {
         count,
         state: CounterState::Closed,
         closed_block: Some(head),
-        ..stored.record.clone()
-    };
-    Patch {
-        entity_key: stored.key,
-        set: Some(Attributes::default().with("state", AttributeValue::Str("closed".to_owned()))),
-        payload: Some(record.encode().payload),
+        ..record.clone()
     }
 }
 

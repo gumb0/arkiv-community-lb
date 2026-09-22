@@ -234,8 +234,9 @@ is lost with it: a count is only ever written into the record the LB
 counts into.
 
 A record with no count is not closed; it stays open until it has one.
-When an agreement ends, its open record is closed with the count it
-holds, or deleted if it never counted. So there is no closed record
+When an agreement ends, its open record is closed with everything its
+provider served, the requests since the last daily write included, or
+deleted if it never counted. So there is no closed record
 with a zero count, and no zero receipt.
 
 Lifetime: 180 days from creation, never extended. A record is never

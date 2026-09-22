@@ -1620,6 +1620,113 @@ async fn a_successor_that_did_not_land_is_opened_at_the_next_flush() {
 }
 
 // ---------------------------------------------------------------------------
+// The agreement's end
+
+#[tokio::test]
+async fn an_agreement_that_ends_closes_its_record_with_what_it_served() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 60);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    serve(&pool, provider(1), 2);
+    chain.advance(31);
+
+    agent.discovery_poll().await;
+    let closed = counter(&chain, key).await;
+    assert_eq!(closed.state, CounterState::Closed);
+    assert_eq!(
+        closed.count, 12,
+        "the record's count and the two since the last flush"
+    );
+    assert_eq!(closed.closed_block, Some(chain.head()));
+    assert_eq!(closed.opened_block, 1, "the period it covers");
+    assert_eq!(closed.provider, provider(1));
+    assert_eq!(closed.wei_per_call, RATE);
+    assert!(agent.agreements().is_empty());
+    assert!(pool.snapshot().is_empty());
+}
+
+#[tokio::test]
+async fn an_agreement_that_ends_without_a_count_deletes_its_record() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 60);
+    let key = seed_counter(&chain, agreement, provider(1), 0, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    chain.advance(31);
+
+    agent.discovery_poll().await;
+    assert!(
+        chain.entity(key).is_none(),
+        "deleted: a closed record at zero would be a receipt for nothing"
+    );
+    assert!(counter_records(&chain).await.is_empty());
+}
+
+/// Whatever the entry counted goes with it. That loses nothing in
+/// practice: a provider that served anything was eligible, so its
+/// agreement record was extended every hour and expires three days
+/// after it stops being eligible, and every flush in those three days
+/// opens a record for an agreement without one. A provider that never
+/// became eligible never served.
+#[tokio::test]
+async fn an_agreement_that_ends_without_a_record_writes_nothing() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    seed_agreement(&chain, provider(1), 20000, 60);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    serve(&pool, provider(1), 2);
+    chain.advance(31);
+    let writes_before = chain.transactions().len();
+
+    agent.discovery_poll().await;
+    assert_eq!(chain.transactions().len(), writes_before);
+    assert!(agent.agreements().is_empty());
+}
+
+#[tokio::test]
+async fn only_the_agreement_that_ended_is_written_for() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let ending = seed_agreement(&chain, provider(1), 20000, 60);
+    let ending_key = seed_counter(&chain, ending, provider(1), 10, 1);
+    let staying = seed_agreement(&chain, provider(2), 20001, 3 * DAY);
+    let staying_key = seed_counter(&chain, staying, provider(2), 5, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    serve(&pool, provider(1), 1);
+    serve(&pool, provider(2), 3);
+    chain.advance(31);
+
+    agent.discovery_poll().await;
+    assert_eq!(counter(&chain, ending_key).await.count, 11);
+    let staying_record = counter(&chain, staying_key).await;
+    assert_eq!(staying_record.state, CounterState::Open);
+    assert_eq!(staying_record.count, 5, "its count waits for the flush");
+    assert_eq!(served_by(&pool, provider(2)), 8, "and stays on its entry");
+}
+
+#[tokio::test]
+async fn a_final_write_that_did_not_land_leaves_the_record_open() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 60);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    serve(&pool, provider(1), 2);
+    chain.advance(31);
+
+    chain.fail_sidecar("gas required exceeds allowance");
+    agent.discovery_poll().await;
+    assert_eq!(counter(&chain, key).await.state, CounterState::Open);
+    assert!(
+        agent.agreements().is_empty(),
+        "the agreement is over either way"
+    );
+    assert!(pool.snapshot().is_empty(), "and its entry is gone with it");
+}
+
+// ---------------------------------------------------------------------------
 // The refresh
 
 /// When the entity expires, as the chain has it.

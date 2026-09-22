@@ -1452,6 +1452,49 @@ async fn a_period_over_closes_the_record_and_opens_its_successor() {
 }
 
 #[tokio::test]
+async fn a_patched_record_still_closes_at_the_end_of_its_own_period() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = short_periods();
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    // The period runs from block 1 and lasts ten blocks.
+    let key = seed_counter(&chain, agreement, provider(1), 0, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    serve(&pool, provider(1), 3);
+    chain.advance(5);
+
+    // A count is written mid-period. The block the period runs from is
+    // the record's, not this write's: taken from the head here, the
+    // period would be pushed out at every flush and a provider that
+    // keeps serving would never be paid.
+    agent.flush().await;
+    let patched = counter(&chain, key).await;
+    assert_eq!(patched.count, 3);
+    assert_eq!(patched.state, CounterState::Open);
+    assert_eq!(patched.opened_block, 1, "the period still runs from 1");
+
+    // Nothing more is served, so the entry and the record agree. The
+    // period is over all the same, and a record with a count closes.
+    chain.advance(6);
+    let head = chain.head();
+    assert!(head >= 11, "past the period's end");
+    agent.flush().await;
+    let closed = counter(&chain, key).await;
+    assert_eq!(closed.state, CounterState::Closed, "an idle period closes");
+    assert_eq!(closed.count, 3, "with the count it already carried");
+    assert_eq!(closed.opened_block, 1);
+    assert_eq!(closed.closed_block, Some(head));
+    let records = counter_records(&chain).await;
+    let successor = records
+        .iter()
+        .find(|record| record.key != key)
+        .expect("the successor");
+    assert_eq!(successor.record.count, 0);
+    assert_eq!(successor.record.opened_block, head);
+    assert_eq!(pool.snapshot()[0].served.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
 async fn a_record_with_no_count_stays_open_past_its_period() {
     let chain = FakeChain::new(LB, CHAIN_ID);
     let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);

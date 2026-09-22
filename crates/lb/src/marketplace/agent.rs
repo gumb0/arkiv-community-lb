@@ -24,7 +24,8 @@ use crate::{
             Stored,
         },
         writer::{
-            Batch, Create, Delete, Expiry, Extend, Identity, Operation, Patch, WriteError, send,
+            Batch, BatchResult, Create, Delete, Expiry, Extend, Identity, Operation, Patch,
+            WriteError, send,
         },
     },
     config,
@@ -1165,6 +1166,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         for sent in send(&self.writer, batch).await {
             match sent.result {
                 Ok(result) => {
+                    warn_unnamed_patches(&sent.batch, &result);
                     landed.patched.extend(result.patched_entities);
                     landed.created += result.created_entities.len();
                     landed.deleted += result.deleted_entities.len();
@@ -1179,6 +1181,27 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             }
         }
         landed
+    }
+}
+
+/// Whether a period's close landed is decided by the keys the answer
+/// names. A batch is one transaction, so every patch in it applied,
+/// and an answer naming fewer is the node or the sidecar changing
+/// shape under us. Said out loud, because what follows from it is
+/// silent: a close taken for lost leaves its count on the provider's
+/// entry, and the period is written and paid a second time.
+fn warn_unnamed_patches(batch: &Batch, result: &BatchResult) {
+    let patches = batch
+        .operations()
+        .iter()
+        .filter(|operation| matches!(operation, Operation::Patch(_)))
+        .count();
+    if result.patched_entities.len() != patches {
+        tracing::warn!(
+            named = result.patched_entities.len(),
+            patches,
+            "the answer to a flush batch does not name every record it patched: a settlement period closed in it may be counted again"
+        );
     }
 }
 

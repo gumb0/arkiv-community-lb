@@ -3,7 +3,16 @@
 import { deepStrictEqual as deepEqual, strictEqual as equal } from "node:assert/strict"
 import { describe, it } from "node:test"
 import { amountOf, ledger } from "../src/ledger.ts"
-import { LB, SETTLE, closedCounter, fakeChain, key, provider, receipt } from "./chain.ts"
+import {
+  LB,
+  SETTLE,
+  closedCounter,
+  fakeChain,
+  key,
+  openCounter,
+  provider,
+  receipt,
+} from "./chain.ts"
 
 const GLM = 10n ** 18n
 
@@ -66,6 +75,45 @@ describe("the ledger", () => {
     const plan = await ledger(chain, LB, SETTLE)
     equal(plan.paid, 0)
     equal(plan.owed[0]?.records.length, 1)
+  })
+
+  it("leaves a record that is still counting alone", async () => {
+    // Only a closed record is payable: an open one is still being
+    // written to, and paying it would pay the same requests again
+    // when it closes.
+    const chain = fakeChain([
+      closedCounter({ key: key(1), provider: provider(1), count: 10 }),
+      openCounter({ key: key(2), provider: provider(1), count: 7 }),
+    ])
+
+    const plan = await ledger(chain, LB, SETTLE)
+    deepEqual(
+      plan.owed[0]?.records.map((record) => record.key),
+      [key(1)],
+    )
+  })
+
+  it("leaves a record written at a newer schema version alone", async () => {
+    const chain = fakeChain([
+      closedCounter({ key: key(1), provider: provider(1), count: 10, version: 2 }),
+    ])
+
+    const plan = await ledger(chain, LB, SETTLE)
+    deepEqual(plan.owed, [])
+  })
+
+  it("matches a receipt to its record whatever the case", async () => {
+    // Addresses come back checksummed, and nothing promises the case
+    // of a key either.
+    const mixed = "0xAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAbAb" as const
+    const chain = fakeChain([
+      closedCounter({ key: key(1), provider: mixed, count: 10 }),
+      receipt({ key: key(0x11), counter: key(1).toUpperCase() as typeof mixed, provider: mixed }),
+    ])
+
+    const plan = await ledger(chain, LB, SETTLE)
+    equal(plan.paid, 1)
+    deepEqual(plan.owed, [])
   })
 
   it("leaves another LB's records alone", async () => {

@@ -41,13 +41,15 @@ export function closedCounter(options: {
   openedBlock?: number
   closedBlock?: number
   creator?: Hex
+  /** A record written at a schema version this code does not read. */
+  version?: number
 }): Entity {
   return entity(
     options.key,
     options.creator ?? LB,
     {
       kind: { type: "str", value: KIND.counter },
-      v: { type: "i32", value: 1 },
+      v: { type: "i32", value: options.version ?? 1 },
       agreement: { type: "key", value: options.agreement ?? key(0xaa) },
       provider: { type: "addr", value: options.provider },
       state: { type: "str", value: "closed" },
@@ -59,6 +61,21 @@ export function closedCounter(options: {
       closed_block: options.closedBlock ?? 200,
     },
   )
+}
+
+/** A record still counting: open, with no closing block. */
+export function openCounter(options: { key: Hex; provider: Hex; count: number }): Entity {
+  const record = closedCounter(options)
+  const attributes = record.attributes as Record<string, { type: string; value: unknown }>
+  attributes.state = { type: "str", value: "open" }
+  record.payload = stringToBytes(
+    JSON.stringify({
+      count: options.count,
+      wei_per_call: (10n ** 15n).toString(),
+      opened_block: 100,
+    }),
+  )
+  return record
 }
 
 /** A receipt, as a run leaves it behind. */
@@ -89,9 +106,12 @@ export function receipt(options: {
 }
 
 /**
- * Answers a query with the rows whose kind, creator and provider it
- * names. Every query a test asks is recorded, so a test can hold the
- * ledger to one read per provider.
+ * Answers a query with the rows that match every condition it names,
+ * so a condition left out of a query shows up as rows that should not
+ * have been answered with. Conditions are `name = type(value)`, the
+ * shape the record module builds, and `$creator` is the row's writer.
+ * Every query asked is recorded, so a test can hold the ledger to one
+ * read per provider.
  */
 export function fakeChain(rows: Entity[]): Reader & { asked: string[] } {
   const asked: string[] = []
@@ -100,15 +120,21 @@ export function fakeChain(rows: Entity[]): Reader & { asked: string[] } {
     asked,
     query: async (text: string) => {
       asked.push(text)
-      return rows.filter((row) => {
-        const attributes = row.attributes as Record<string, { value: unknown }>
-        const kind = attributes.kind?.value as string
-        if (!text.includes(`str('${kind}')`)) return false
-        const creator = (row.creator as string).toLowerCase()
-        if (!text.includes(creator)) return false
-        const provider = (attributes.provider?.value as string).toLowerCase()
-        return !text.includes("provider = addr(") || text.includes(`provider = addr(${provider})`)
-      })
+      const conditions = text.split(" AND ")
+      return rows.filter((row) => conditions.every((condition) => matches(row, condition)))
     },
   }
+}
+
+/**
+ * One condition of a query against one row. A condition is
+ * `name = type(value)`, the shape the record module builds, and
+ * `$creator` is the row's writer rather than an attribute of it.
+ */
+function matches(row: Entity, condition: string): boolean {
+  const [name = "", wrapped = ""] = condition.trim().split(" = ")
+  const value = wrapped.slice(wrapped.indexOf("(") + 1, -1).replaceAll("'", "")
+  const attributes = row.attributes as Record<string, { value: unknown } | undefined>
+  const held = name === "$creator" ? row.creator : attributes[name]?.value
+  return String(held).toLowerCase() === value.toLowerCase()
 }

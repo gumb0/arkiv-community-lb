@@ -21,21 +21,34 @@ export async function connectReader(rpcUrl: string, apiKey?: string): Promise<Re
   const chainId = await client.getChainId()
   return {
     chainId,
-    query: async (text) => {
-      const entities: Entity[] = []
-      let cursor: string | undefined
-      // Settle reads what has piled up since its last run, which is
-      // not bounded by the provider cap the LB's own reads rely on.
-      do {
-        const page = await client.query(text, {
+    query: (text) =>
+      everyPage((cursor) =>
+        client.query(text, {
           limit: PAGE,
           cursor,
           select: { key: true, creator: true, payload: true, attributes: true },
-        })
-        entities.push(...page.entities)
-        cursor = page.cursor
-      } while (cursor !== undefined)
-      return entities
-    },
+        }),
+      ),
   }
+}
+
+/** One page of a query: what it holds, and where the next one starts. */
+export type Page = { entities: Entity[]; cursor: string | undefined }
+
+/**
+ * Every page of a query, from the first to the one that names no
+ * next. Settle reads what has piled up since its last run, which is
+ * not bounded by the provider cap the LB's own reads rely on.
+ */
+export async function everyPage(
+  read: (cursor: string | undefined) => Promise<Page>,
+): Promise<Entity[]> {
+  const entities: Entity[] = []
+  let cursor: string | undefined
+  do {
+    const page = await read(cursor)
+    entities.push(...page.entities)
+    cursor = page.cursor
+  } while (cursor !== undefined)
+  return entities
 }

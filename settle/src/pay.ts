@@ -27,6 +27,23 @@ export type Paid = {
   records: number
 }
 
+export type Run = {
+  plan: Ledger
+  /** The chain the transfers are made on, named in every receipt. */
+  chainId: number
+  transfer: Transfer
+  write: WriteReceipts
+  log: (line: string) => void
+  /**
+   * What stands in the way, from the balances a run read. Anything
+   * here and it sends nothing: a run short of Arkiv gas would make
+   * every transfer and write no receipt at all, which is the worst
+   * state this can reach, and the payout chain's own refusals would
+   * come too late to prevent it.
+   */
+  blockedBy: readonly string[]
+}
+
 /**
  * Pays what the ledger says. A provider is paid once, for every record
  * of theirs the ledger holds, and the receipts carry that transfer's
@@ -34,16 +51,13 @@ export type Paid = {
  * on to the next: what did not happen costs nothing, and the next run
  * finds the same records unpaid.
  */
-export async function pay(
-  plan: Ledger,
-  chainId: number,
-  transfer: Transfer,
-  write: WriteReceipts,
-  log: (line: string) => void,
-): Promise<Paid[]> {
+export async function pay(run: Run): Promise<Paid[]> {
+  if (run.blockedBy.length > 0) {
+    throw new Error(`refusing to pay: ${run.blockedBy.join("; ")}`)
+  }
   const paid: Paid[] = []
-  for (const owed of plan.owed) {
-    const receipt = await payOne(owed, chainId, transfer, write, log)
+  for (const owed of run.plan.owed) {
+    const receipt = await payOne(owed, run.chainId, run.transfer, run.write, run.log)
     if (receipt !== undefined) paid.push(receipt)
   }
   return paid

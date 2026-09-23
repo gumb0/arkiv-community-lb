@@ -122,6 +122,70 @@ in `/nodes`.
   unless-stopped` bring the stack back on boot; there is no systemd
   unit to manage.
 
+## Paying the providers
+
+Settlement is a separate command, `settle/`, and it is not part of the
+stack on this box. Its whole input and output is chain state: the
+LB's closed counter records on Arkiv, the transfers on the payout
+chain, and the receipts it writes back. It never talks to the LB, and
+the LB never waits for it.
+
+**Where it runs.** Anywhere with an endpoint for both chains. Off this
+box by preference, an operator's machine included, because the key
+that pays exists in the process environment for the length of a run,
+and this box faces the internet. Same-box is allowed; then give the
+key per invocation rather than leaving it in a file here.
+
+**What it needs.** The same `.env` at the repository root that the
+stack uses, with the settle block filled in: whose records to pay, and
+the payout chain's endpoint, chain id and GLM contract. Every field is
+documented in `.env.example`. The key is not among them — it is given
+per invocation, below.
+
+**How a run goes.** Rehearse first, always. It reads and prints, signs
+nothing and writes nothing:
+
+```
+cd settle && npm ci
+npm run settle
+```
+
+It prints, per provider, what it would pay and for which records,
+then the balances it would pay from, and finally any reason it could
+not pay: GLM short of what is owed, no gas on the payout chain where
+the transfers are made, or no gas on Arkiv where the receipts are
+written. Read the ledger, then pay:
+
+```
+SETTLE_PRIVATE_KEY=0x... npm run settle -- --pay
+```
+
+A run pays every closed record that has no receipt yet, so what it
+pays is decided by the chain and not by a flag, and running it twice
+pays nobody twice. A weekly cron and a command run by hand are the
+same run.
+
+**When a transfer fails**, nothing is lost: the run says so, moves to
+the next provider, and the next run finds those records unpaid.
+
+**When a run says `PAID BUT NOT RECEIPTED`**, a person has to decide,
+because the tool cannot repair it. The money has certainly moved: a
+run waits for a transfer to be mined before it writes any receipt, so
+that line means the transfer landed and the receipts did not. Settle
+reads a record as unpaid until one of its own receipts names it, so
+the next run would pay those records a second time.
+
+Keep the output of that run. It lists every record the transfer
+covered, above the line, and names the transaction. Confirm the
+transaction and its amount on the payout chain, then choose one:
+
+- **Pay again.** Let the next run proceed. It is the only choice that
+  needs no work, and it costs the provider's records twice over.
+- **Stop settle until the receipts exist.** Nothing must run, cron
+  included, while those records have no receipt. Writing them is a
+  manual job today: one receipt per record, under the settle key,
+  naming that transaction (`ENTITIES.md` has the shape).
+
 ## Troubleshooting
 
 Symptom, then where to look.

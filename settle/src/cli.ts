@@ -2,6 +2,7 @@
 // unless told to pay, and a rehearsal needs no key at all.
 
 import { formatEther, getAddress, type Hex } from "viem"
+import { parseArgs, USAGE } from "./args.ts"
 import { connectReader, connectWriter } from "./chain.ts"
 import { settleAddress } from "./identity.ts"
 import { ledger } from "./ledger.ts"
@@ -22,9 +23,13 @@ function optional(name: string): string | undefined {
 }
 
 async function main(): Promise<void> {
-  const paying = process.argv.includes("--pay")
+  const run = parseArgs(process.argv.slice(2))
+  if (run.help) {
+    console.log(USAGE)
+    return
+  }
   const key = optional("SETTLE_PRIVATE_KEY") as Hex | undefined
-  if (paying && key === undefined) {
+  if (run.paying && key === undefined) {
     throw new Error("--pay needs SETTLE_PRIVATE_KEY")
   }
 
@@ -66,23 +71,25 @@ async function main(): Promise<void> {
   console.log(
     `Paying from ${settle}: ${formatEther(glmWei)} GLM on chain ${payout.chain.id}, ${formatEther(payoutGasWei)} for gas there and ${formatEther(arkivGasWei)} on Arkiv for the receipts`,
   )
-  const found = problems({ owedWei: plan.totalOwedWei, glmWei, payoutGasWei, arkivGasWei })
-  for (const problem of found) {
+  const blockedBy = problems({ owedWei: plan.totalOwedWei, glmWei, payoutGasWei, arkivGasWei })
+  for (const problem of blockedBy) {
     console.log(`Cannot pay: ${problem}`)
   }
 
-  if (!paying) {
+  if (!run.paying) {
     console.log("Rehearsal: nothing was signed and nothing was written.")
     return
   }
-  if (found.length > 0) {
-    throw new Error("refusing to pay: see above")
-  }
 
   const writer = await connectWriter(arkivUrl, arkivKey, key as Hex)
-  const paid = await pay(plan, payout.chain.id, payout.transfer, writer.write, (line) =>
-    console.log(line),
-  )
+  const paid = await pay({
+    plan,
+    chainId: payout.chain.id,
+    transfer: payout.transfer,
+    write: writer.write,
+    log: (line) => console.log(line),
+    blockedBy,
+  })
   const total = paid.reduce((sum, entry) => sum + entry.amountWei, 0n)
   console.log(
     `Paid ${formatEther(total)} GLM to ${paid.length} of ${plan.owed.length} provider${plan.owed.length === 1 ? "" : "s"}`,

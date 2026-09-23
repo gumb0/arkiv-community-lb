@@ -1,6 +1,6 @@
 // A run: the transfer, then the receipts that record it. Run: npm test
 
-import { deepStrictEqual as deepEqual, strictEqual as equal } from "node:assert/strict"
+import { deepStrictEqual as deepEqual, strictEqual as equal, rejects } from "node:assert/strict"
 import { describe, it } from "node:test"
 import { bytesToString, type Hex } from "viem"
 import { ledger, type Ledger } from "../src/ledger.ts"
@@ -22,31 +22,39 @@ const TX = `0x${"ab".repeat(32)}` as Hex
 
 /**
  * A run over fakes: what it sent, what it wrote and what it said.
- * `fail` refuses a transfer to one provider, `failWrites` refuses
- * every receipt write.
+ * `failFor` refuses the transfer to one provider, `failWrites`
+ * refuses every receipt write.
  */
-function run(options: { fail?: (to: Hex) => boolean; failWrites?: boolean } = {}) {
+function run(options: { failFor?: Hex; failWrites?: boolean } = {}) {
   const sent: { to: Hex; amountWei: bigint }[] = []
-  const written: ReceiptRecord[] = []
-  const lines: string[] = []
-  const transfer = async (to: Hex, amountWei: bigint) => {
-    if (options.fail?.(to) === true) throw new Error("insufficient funds")
-    sent.push({ to, amountWei })
-    return TX
-  }
   const writes: ReceiptRecord[][] = []
-  const write = async (records: ReceiptRecord[]) => {
-    if (options.failWrites === true) throw new Error("the sidecar is down")
-    writes.push(records)
-    written.push(...records)
-  }
-  const log = (line: string) => lines.push(line)
+  const lines: string[] = []
   return {
     sent,
-    written,
     writes,
     lines,
-    pay: (plan: Ledger) => pay(plan, CHAIN, transfer, write, log),
+    /** Every receipt written, across however many batches. */
+    get written(): ReceiptRecord[] {
+      return writes.flat()
+    },
+    pay: (plan: Ledger, blockedBy: readonly string[] = []) =>
+      pay({
+        plan,
+        chainId: CHAIN,
+        blockedBy,
+        transfer: async (to, amountWei) => {
+          if (to.toLowerCase() === options.failFor?.toLowerCase()) {
+            throw new Error("insufficient funds")
+          }
+          sent.push({ to, amountWei })
+          return TX
+        },
+        write: async (records) => {
+          if (options.failWrites === true) throw new Error("the sidecar is down")
+          writes.push(records)
+        },
+        log: (line) => lines.push(line),
+      }),
   }
 }
 
@@ -155,13 +163,28 @@ describe("a run", () => {
     )
   })
 
+  it("sends nothing at all when something stands in the way", async () => {
+    // Short of Arkiv gas, a run would make every transfer and write
+    // no receipt: every provider paid with nothing to say so.
+    const chain = fakeChain([closedCounter({ key: key(1), provider: provider(1), count: 10 })])
+    const plan = await ledger(chain, LB, SETTLE)
+    const it = run()
+
+    await rejects(
+      () => it.pay(plan, ["no gas on Arkiv, where the receipts are written"]),
+      /refusing to pay: no gas on Arkiv/,
+    )
+    equal(it.sent.length, 0)
+    equal(it.written.length, 0)
+  })
+
   it("goes on to the next provider when a transfer fails", async () => {
     const chain = fakeChain([
       closedCounter({ key: key(1), provider: provider(1), count: 10 }),
       closedCounter({ key: key(2), provider: provider(2), count: 20 }),
     ])
     const plan = await ledger(chain, LB, SETTLE)
-    const it = run({ fail: (to) => to === provider(1).toLowerCase() })
+    const it = run({ failFor: provider(1) })
 
     const paid = await it.pay(plan)
 

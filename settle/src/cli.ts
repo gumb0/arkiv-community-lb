@@ -94,7 +94,11 @@ async function main(): Promise<void> {
   console.log(
     `Paid ${formatEther(total)} GLM to ${paid.length} of ${plan.owed.length} provider${plan.owed.length === 1 ? "" : "s"}`,
   )
-  if (paid.length < plan.owed.length) {
+  const unreceipted = paid.filter((entry) => !entry.receipted).length
+  if (unreceipted > 0) {
+    console.log(`${unreceipted} of them have records with no receipt, named above`)
+  }
+  if (paid.length < plan.owed.length || unreceipted > 0) {
     process.exitCode = 1
   }
 }

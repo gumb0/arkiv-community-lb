@@ -225,7 +225,8 @@ describe("a run", () => {
 
     const paid = await it.pay(plan)
 
-    deepEqual(paid, [])
+    equal(paid.length, 1, "the one whose transfer landed")
+    equal(paid[0]?.receipted, false)
     equal(it.sent.length, 1, "only the first provider was paid")
     equal(
       it.lines.some((line) => line.includes("stopping here: 2 providers were not paid at all")),
@@ -312,8 +313,9 @@ describe("a run", () => {
 
     const paid = await it.pay(plan)
 
-    deepEqual(paid, [], "not reported as paid")
-    equal(it.sent.length, 1, "though the transfer went")
+    equal(it.sent.length, 1, "the transfer went")
+    equal(paid.length, 1, "and the money it moved is counted")
+    equal(paid[0]?.receipted, false, "with nothing on the chain to say so")
     equal(
       it.lines.some((line) => line.includes("PAID BUT NOT RECEIPTED")),
       true,

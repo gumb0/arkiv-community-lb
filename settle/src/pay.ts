@@ -26,6 +26,8 @@ export type Paid = {
   tx: Hex
   amountWei: bigint
   records: number
+  /** False when the transfer landed and some of its receipts did not. */
+  receipted: boolean
 }
 
 export type Run = {
@@ -60,9 +62,12 @@ export async function pay(run: Run): Promise<Paid[]> {
   for (const owed of run.plan.owed) {
     left -= 1
     const outcome = await payOne(owed, run.chainId, run.transfer, run.write, run.log)
+    // A transfer that landed is money gone, whatever became of its
+    // receipts, so it counts in what the run paid. That number is
+    // what an operator reconciles against the payout chain.
     if (outcome.done === "paid") {
       paid.push(outcome.paid)
-      continue
+      if (outcome.paid.receipted) continue
     }
     // Anything else ends the run. What stops one provider being paid
     // stops the next: no gas on either chain, an endpoint gone, a
@@ -78,7 +83,11 @@ export async function pay(run: Run): Promise<Paid[]> {
   return paid
 }
 
-/** What became of one provider. Anything but paid ends the run. */
+/**
+ * What became of one provider: a transfer that landed, or nothing
+ * certain at all. Failed means the transfer failed or was lost sight
+ * of, so no money is known to have moved.
+ */
 type Outcome = { done: "paid"; paid: Paid } | { done: "failed" }
 
 async function payOne(
@@ -136,7 +145,6 @@ async function payOne(
       `${owed.provider}: PAID BUT NOT RECEIPTED. ${missing} record${missing === 1 ? "" : "s"} of transfer ${tx} have no receipt: ${message(refused)}`,
     )
     log(`${owed.provider}: do not run again before checking the transfer against the chain`)
-    return { done: "failed" }
   }
   return {
     done: "paid",
@@ -145,6 +153,7 @@ async function payOne(
       tx,
       amountWei: owed.amountWei,
       records: owed.records.length,
+      receipted: missing === 0,
     },
   }
 }

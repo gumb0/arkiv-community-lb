@@ -5,6 +5,7 @@
 import { formatEther, getAddress, type Hex } from "viem"
 import { connectReader } from "./chain.ts"
 import { ledger } from "./ledger.ts"
+import { connectPayout, problems } from "./payout.ts"
 
 function required(name: string): string {
   const value = process.env[name]
@@ -21,6 +22,12 @@ async function main(): Promise<void> {
   // receipts by this address too, so a run with the wrong one would
   // pay records that are already paid.
   const settle = getAddress(required("SETTLE_ADDRESS")) as Hex
+
+  const payout = await connectPayout({
+    rpcUrl: required("PAYOUT_RPC_URL"),
+    chainId: Number(required("PAYOUT_CHAIN_ID")),
+    token: getAddress(required("GLM_TOKEN_ADDRESS")) as Hex,
+  })
 
   const plan = await ledger(reader, lb, settle)
   console.log(`Chain ${reader.chainId}, the LB's records under ${lb}`)
@@ -39,6 +46,22 @@ async function main(): Promise<void> {
       ? `Nothing to pay; ${plan.paid} closed record${plan.paid === 1 ? " is" : "s are"} already paid`
       : `Would pay ${formatEther(plan.totalOwedWei)} GLM to ${plan.owed.length} provider${plan.owed.length === 1 ? "" : "s"}; ${plan.paid} already paid`,
   )
+  const [glmWei, payoutGasWei, arkivGasWei] = await Promise.all([
+    payout.glm(settle),
+    payout.gas(settle),
+    reader.balance(settle),
+  ])
+  console.log(
+    `Paying from ${settle}: ${formatEther(glmWei)} GLM on chain ${payout.chain.id}, ${formatEther(payoutGasWei)} for gas there and ${formatEther(arkivGasWei)} on Arkiv for the receipts`,
+  )
+  for (const problem of problems({
+    owedWei: plan.totalOwedWei,
+    glmWei,
+    payoutGasWei,
+    arkivGasWei,
+  })) {
+    console.log(`Cannot pay: ${problem}`)
+  }
   console.log("Rehearsal: nothing was signed and nothing was written.")
 }
 

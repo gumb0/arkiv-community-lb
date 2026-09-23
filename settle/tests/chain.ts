@@ -118,6 +118,7 @@ export function fakeChain(rows: Entity[]): Reader & { asked: string[] } {
   return {
     chainId: 7738577,
     asked,
+    balance: async () => 10n ** 18n,
     query: async (text: string) => {
       asked.push(text)
       const conditions = text.split(" AND ")

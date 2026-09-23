@@ -2,12 +2,14 @@
 // small surface, so the ledger is tested over a fake.
 
 import { createPublicClient, type Entity } from "@arkiv-network/sdk"
-import { http } from "viem"
+import { http, type Hex } from "viem"
 
 export type Reader = {
   chainId: number
   /** Every entity the query matches, following the node's pages. */
   query(text: string): Promise<Entity[]>
+  /** What an address holds on Arkiv, which is what a write costs. */
+  balance(address: Hex): Promise<bigint>
 }
 
 /** The node's page maximum. Asking for more is an error. */
@@ -21,6 +23,7 @@ export async function connectReader(rpcUrl: string, apiKey?: string): Promise<Re
   const chainId = await client.getChainId()
   return {
     chainId,
+    balance: (address) => client.getBalance({ address }),
     query: (text) =>
       everyPage((cursor) =>
         client.query(text, {

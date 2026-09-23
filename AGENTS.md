@@ -43,8 +43,11 @@ first-class concern, not an add-on.
   decisions and no schemas; its wire format and error contract are in
   `docs/CHAIN_WRITER.md`. Chain reads are plain JSON-RPC from Rust — no SDK
   on any read path. One deliberate exception: the **settle CLI is fully
-  TypeScript** — a short auditable script that imports the writer module and
-  uses viem for Polygon transfers.
+  TypeScript** (`settle/`) — a short auditable script in a package of its
+  own, writing its receipts with the SDK and sending the payout chain's
+  transfers with viem. It does not import the writer module: an import
+  across packages pulls in a second copy of the SDK, whose branded types
+  then do not match, and settle must not need the LB's stack to be up.
 - **No shared TS package** with the provider scripts in `arkiv-community-node`:
   the entity schemas are a documented contract (`docs/ENTITIES.md`), and
   drift is caught by the test rig's round-trip scenarios — not by a shared
@@ -153,4 +156,7 @@ first-class concern, not an add-on.
   live network with a funded key — the smokes and the one-off experiments.
   Both directories are typechecked. **`tests/` is reserved for suites CI can
   run unattended**: a probe spends gas, needs a key, and fails when the chain
-  stalls, so it never belongs in a CI job or in `npm test`.
+  stalls, so it never belongs in a CI job or in `npm test`. The settle
+  package is the second TS package and keeps the same rule: its tests run
+  over fakes, need no key and no chain, and CI runs them in a job of their
+  own.

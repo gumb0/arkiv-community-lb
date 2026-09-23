@@ -37,6 +37,14 @@ not operator-chosen.
   [docs/MARKETPLACE.md](docs/MARKETPLACE.md); the records every
   codebase encodes against are [docs/ENTITIES.md](docs/ENTITIES.md).
   Tested in-process over a fake chain.
+- **The settle CLI** (`settle/`): pays the providers. It reads the
+  closed counter records and the receipts of earlier runs from Arkiv,
+  sends one GLM transfer per provider on the payout chain, and writes
+  one permanent receipt per record it paid, which is what keeps a
+  record from being paid twice. A run rehearses unless told to pay,
+  and rehearsing needs no key at all. It talks to no part of the load
+  balancer, so it runs anywhere with access to both chains. How to run
+  it is in [docs/RUNBOOK.md](docs/RUNBOOK.md).
 - **The host stack** (`compose.yaml`, `Dockerfile`, `tunnel/`): the LB
   and the tunnel server for NAT'd providers, deployed together —
   operations in [docs/RUNBOOK.md](docs/RUNBOOK.md), the tunnel decision
@@ -48,11 +56,6 @@ not operator-chosen.
   standalone load generator pointable at any endpoint. Runs locally
   and as an on-demand CI workflow. The testing approach across the
   repository is [docs/TESTING.md](docs/TESTING.md).
-
-## Still to come
-
-- A settle CLI: pays each closed counter record from on-chain records in GLM
-  on the payout chain.
 
 The node-operator side lives in the companion repo,
 [arkiv-community-node](https://github.com/gumb0/arkiv-community-node).
@@ -86,6 +89,11 @@ Deliberate for the first version, not oversights:
   their whole retry budget on it and fail, even though a healthy
   provider was available. It takes heavily concurrent traffic to hit,
   and quarantine closes the window after a few failures.
+- A settlement run that pays a provider and then cannot write that
+  provider's receipts leaves records that still look unpaid, and there
+  is no way to write those receipts afterwards. The run says so, names
+  the transfer it made and stops; what an operator can do from there
+  is in [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## License
 

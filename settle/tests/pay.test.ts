@@ -5,6 +5,7 @@ import { describe, it } from "node:test"
 import { bytesToString, type Hex } from "viem"
 import { ledger, type Ledger } from "../src/ledger.ts"
 import { pay } from "../src/pay.ts"
+import { Unresolved } from "../src/sent.ts"
 import type { ReceiptRecord } from "../src/records.ts"
 import {
   LB,
@@ -25,7 +26,15 @@ const TX = `0x${"ab".repeat(32)}` as Hex
  * `failFor` refuses the transfer to one provider, `failWrites`
  * refuses every receipt write.
  */
-function run(options: { failFor?: Hex; failWrites?: boolean; refuseBatch?: number } = {}) {
+function run(
+  options: {
+    failFor?: Hex
+    failWrites?: boolean
+    refuseBatch?: number
+    /** The transfer is sent and never seen to land. */
+    unresolved?: boolean
+  } = {},
+) {
   const sent: { to: Hex; amountWei: bigint }[] = []
   const writes: ReceiptRecord[][] = []
   let attempts = 0
@@ -48,6 +57,7 @@ function run(options: { failFor?: Hex; failWrites?: boolean; refuseBatch?: numbe
             throw new Error("insufficient funds")
           }
           sent.push({ to, amountWei })
+          if (options.unresolved === true) throw new Unresolved(TX, new Error("timed out"))
           return TX
         },
         write: async (records) => {
@@ -217,6 +227,34 @@ describe("a run", () => {
     equal(
       it.lines.some((line) => line.includes("the transfer failed, and nothing was written")),
       true,
+    )
+  })
+
+  it("says a transfer it lost sight of may have paid", async () => {
+    // Viem gives up waiting after a few minutes of a chain that is
+    // merely slow, and the transaction can be mined after that. A run
+    // that called this a failure would send it again.
+    const chain = fakeChain([closedCounter({ key: key(1), provider: provider(1), count: 10 })])
+    const plan = await ledger(chain, LB, SETTLE)
+    const it = run({ unresolved: true })
+
+    const paid = await it.pay(plan)
+
+    deepEqual(paid, [], "not reported as paid")
+    equal(it.written.length, 0, "and no receipt for a transfer nobody saw land")
+    equal(
+      it.lines.some((line) => line.includes("MAY HAVE PAID") && line.includes(TX)),
+      true,
+      it.lines.join("\n"),
+    )
+    equal(
+      it.lines.some((line) => line.includes("do not run again before checking")),
+      true,
+    )
+    equal(
+      it.lines.some((line) => line.includes("the transfer failed")),
+      false,
+      "never called a failure",
     )
   })
 

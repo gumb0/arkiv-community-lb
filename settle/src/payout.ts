@@ -13,6 +13,7 @@ import {
   type Hex,
 } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
+import { Unresolved } from "./sent.ts"
 
 export type PayoutConfig = {
   rpcUrl: string
@@ -68,9 +69,19 @@ export async function connectPayout(config: PayoutConfig): Promise<Payout> {
         account,
         chain,
       })
-      const receipt = await client.waitForTransactionReceipt({ hash })
+      // From here the transaction is on the wire. Waiting can fail for
+      // reasons that say nothing about it: the endpoint can go away,
+      // and viem gives up after a few minutes of a chain that is
+      // merely slow. Either way it may still be mined, so the failure
+      // carries the hash rather than reading as "nothing was sent".
+      let receipt
+      try {
+        receipt = await client.waitForTransactionReceipt({ hash })
+      } catch (error) {
+        throw new Unresolved(hash, error)
+      }
       if (receipt.status !== "success") {
-        throw new Error(`the transfer ${hash} reverted`)
+        throw new Error(`the transfer ${hash} reverted, and nothing moved`)
       }
       return hash
     },

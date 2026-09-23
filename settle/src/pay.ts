@@ -6,6 +6,7 @@
 import { formatEther, type Hex } from "viem"
 import type { Ledger, Owed } from "./ledger.ts"
 import { receiptFor, type ReceiptRecord } from "./records.ts"
+import { Unresolved } from "./sent.ts"
 
 /** Sends GLM and answers with the transaction that carried it. */
 export type Transfer = (to: Hex, amountWei: bigint) => Promise<Hex>
@@ -74,7 +75,19 @@ async function payOne(
   try {
     tx = await transfer(owed.provider, owed.amountWei)
   } catch (error) {
-    log(`${owed.provider}: the transfer failed, and nothing was written: ${message(error)}`)
+    // A transfer that never left costs nothing: the records stay
+    // unpaid and the next run finds them. One that left and was not
+    // seen to land is the other thing entirely — it may be mined
+    // minutes later, and a run that called it a failure would send it
+    // again.
+    if (error instanceof Unresolved) {
+      log(
+        `${owed.provider}: MAY HAVE PAID. ${error.message}. Its ${owed.records.length} record${owed.records.length === 1 ? " has" : "s have"} no receipt`,
+      )
+      log(`${owed.provider}: do not run again before checking that transfer against the chain`)
+    } else {
+      log(`${owed.provider}: the transfer failed, and nothing was written: ${message(error)}`)
+    }
     return undefined
   }
   log(

@@ -211,7 +211,47 @@ describe("a run", () => {
     )
   })
 
-  it("goes on to the next provider when a transfer fails", async () => {
+  it("stops when a provider was paid and its receipts were not written", async () => {
+    // What makes a receipt write fail is the same for the provider
+    // after this one: no gas on Arkiv, the endpoint gone. Going on
+    // would pay each of them and record none of it.
+    const chain = fakeChain([
+      closedCounter({ key: key(1), provider: provider(1), count: 10 }),
+      closedCounter({ key: key(2), provider: provider(2), count: 20 }),
+      closedCounter({ key: key(3), provider: provider(3), count: 30 }),
+    ])
+    const plan = await ledger(chain, LB, SETTLE)
+    const it = run({ failWrites: true })
+
+    const paid = await it.pay(plan)
+
+    deepEqual(paid, [])
+    equal(it.sent.length, 1, "only the first provider was paid")
+    equal(
+      it.lines.some((line) => line.includes("stopping here: 2 providers were not paid at all")),
+      true,
+      it.lines.join("\n"),
+    )
+  })
+
+  it("stops when it lost sight of a transfer", async () => {
+    const chain = fakeChain([
+      closedCounter({ key: key(1), provider: provider(1), count: 10 }),
+      closedCounter({ key: key(2), provider: provider(2), count: 20 }),
+    ])
+    const plan = await ledger(chain, LB, SETTLE)
+    const it = run({ unresolved: true })
+
+    await it.pay(plan)
+
+    equal(it.sent.length, 1, "the second provider is left alone")
+  })
+
+  it("stops when a transfer fails, and sends nothing after it", async () => {
+    // Nothing that stops one transfer is about that provider: no gas,
+    // an endpoint gone, a fee estimate that failed. Trying the next
+    // one repeats it at best, and at worst sends a transfer into the
+    // same conditions and loses sight of it.
     const chain = fakeChain([
       closedCounter({ key: key(1), provider: provider(1), count: 10 }),
       closedCounter({ key: key(2), provider: provider(2), count: 20 }),
@@ -221,12 +261,17 @@ describe("a run", () => {
 
     const paid = await it.pay(plan)
 
-    equal(paid.length, 1, "the other provider is paid")
-    equal(paid[0]?.provider, provider(2).toLowerCase())
-    equal(it.written.length, 1, "and only its record is receipted")
+    deepEqual(paid, [])
+    equal(it.sent.length, 0, "nothing left the wallet")
+    equal(it.written.length, 0)
     equal(
       it.lines.some((line) => line.includes("the transfer failed, and nothing was written")),
       true,
+    )
+    equal(
+      it.lines.some((line) => line.includes("stopping here: 1 provider was not paid at all")),
+      true,
+      it.lines.join("\n"),
     )
   })
 

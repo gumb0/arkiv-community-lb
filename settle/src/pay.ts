@@ -48,21 +48,38 @@ export type Run = {
 /**
  * Pays what the ledger says. A provider is paid once, for every record
  * of theirs the ledger holds, and the receipts carry that transfer's
- * hash. A provider whose transfer fails is reported and the run goes
- * on to the next: what did not happen costs nothing, and the next run
- * finds the same records unpaid.
+ * hash. The first provider that is not paid ends the run, and the
+ * records of everyone after them wait for the next one.
  */
 export async function pay(run: Run): Promise<Paid[]> {
   if (run.blockedBy.length > 0) {
     throw new Error(`refusing to pay: ${run.blockedBy.join("; ")}`)
   }
   const paid: Paid[] = []
+  let left = run.plan.owed.length
   for (const owed of run.plan.owed) {
-    const receipt = await payOne(owed, run.chainId, run.transfer, run.write, run.log)
-    if (receipt !== undefined) paid.push(receipt)
+    left -= 1
+    const outcome = await payOne(owed, run.chainId, run.transfer, run.write, run.log)
+    if (outcome.done === "paid") {
+      paid.push(outcome.paid)
+      continue
+    }
+    // Anything else ends the run. What stops one provider being paid
+    // stops the next: no gas on either chain, an endpoint gone, a
+    // chain too slow to watch. Trying the rest would at best repeat
+    // the failure and at worst send more transfers into the same
+    // conditions, and losing sight of one of those is the state
+    // nothing here can resolve.
+    if (left > 0) {
+      run.log(`stopping here: ${left} provider${left === 1 ? " was" : "s were"} not paid at all`)
+    }
+    break
   }
   return paid
 }
+
+/** What became of one provider. Anything but paid ends the run. */
+type Outcome = { done: "paid"; paid: Paid } | { done: "failed" }
 
 async function payOne(
   owed: Owed,
@@ -70,7 +87,7 @@ async function payOne(
   transfer: Transfer,
   write: WriteReceipts,
   log: (line: string) => void,
-): Promise<Paid | undefined> {
+): Promise<Outcome> {
   let tx: Hex
   try {
     tx = await transfer(owed.provider, owed.amountWei)
@@ -88,7 +105,7 @@ async function payOne(
     } else {
       log(`${owed.provider}: the transfer failed, and nothing was written: ${message(error)}`)
     }
-    return undefined
+    return { done: "failed" }
   }
   log(
     `${owed.provider}: paid ${formatEther(owed.amountWei)} GLM for ${owed.records.length} record${owed.records.length === 1 ? "" : "s"}, ${tx}`,
@@ -119,13 +136,16 @@ async function payOne(
       `${owed.provider}: PAID BUT NOT RECEIPTED. ${missing} record${missing === 1 ? "" : "s"} of transfer ${tx} have no receipt: ${message(refused)}`,
     )
     log(`${owed.provider}: do not run again before checking the transfer against the chain`)
-    return undefined
+    return { done: "failed" }
   }
   return {
-    provider: owed.provider,
-    tx,
-    amountWei: owed.amountWei,
-    records: owed.records.length,
+    done: "paid",
+    paid: {
+      provider: owed.provider,
+      tx,
+      amountWei: owed.amountWei,
+      records: owed.records.length,
+    },
   }
 }
 

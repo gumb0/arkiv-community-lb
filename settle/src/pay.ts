@@ -81,20 +81,32 @@ async function payOne(
     `${owed.provider}: paid ${formatEther(owed.amountWei)} GLM for ${owed.records.length} record${owed.records.length === 1 ? "" : "s"}, ${tx}`,
   )
 
+  // Every batch is tried, whatever the one before it did: they hold
+  // different records, so one that lands is a record the next run
+  // will not pay a second time, and a batch the node refuses for its
+  // own reasons says nothing about the next.
   const receipts = owed.records.map((record) => receiptFor(record, { chainId, tx }))
+  let missing = 0
+  let refused: unknown
   for (let at = 0; at < receipts.length; at += RECEIPTS_PER_BATCH) {
     const batch = receipts.slice(at, at + RECEIPTS_PER_BATCH)
     try {
       await write(batch)
     } catch (error) {
-      // The money is gone and these records still look unpaid, so the
-      // next run would pay them again. Said as loudly as a line can.
-      log(
-        `${owed.provider}: PAID BUT NOT RECEIPTED. ${batch.length} record${batch.length === 1 ? "" : "s"} of transfer ${tx} have no receipt: ${message(error)}`,
-      )
-      log(`${owed.provider}: do not run again before checking the transfer against the chain`)
-      return undefined
+      missing += batch.length
+      refused = error
     }
+  }
+  if (missing > 0) {
+    // The money is gone and these records still look unpaid, so the
+    // next run would pay them again. Said as loudly as a line can, and
+    // counting the records that have no receipt, which is what an
+    // operator reconciles against the chain by hand.
+    log(
+      `${owed.provider}: PAID BUT NOT RECEIPTED. ${missing} record${missing === 1 ? "" : "s"} of transfer ${tx} have no receipt: ${message(refused)}`,
+    )
+    log(`${owed.provider}: do not run again before checking the transfer against the chain`)
+    return undefined
   }
   return {
     provider: owed.provider,

@@ -25,9 +25,10 @@ const TX = `0x${"ab".repeat(32)}` as Hex
  * `failFor` refuses the transfer to one provider, `failWrites`
  * refuses every receipt write.
  */
-function run(options: { failFor?: Hex; failWrites?: boolean } = {}) {
+function run(options: { failFor?: Hex; failWrites?: boolean; refuseBatch?: number } = {}) {
   const sent: { to: Hex; amountWei: bigint }[] = []
   const writes: ReceiptRecord[][] = []
+  let attempts = 0
   const lines: string[] = []
   return {
     sent,
@@ -50,7 +51,9 @@ function run(options: { failFor?: Hex; failWrites?: boolean } = {}) {
           return TX
         },
         write: async (records) => {
+          attempts += 1
           if (options.failWrites === true) throw new Error("the sidecar is down")
+          if (attempts === options.refuseBatch) throw new Error("the node refused this one")
           writes.push(records)
         },
         log: (line) => lines.push(line),
@@ -176,6 +179,26 @@ describe("a run", () => {
     )
     equal(it.sent.length, 0)
     equal(it.written.length, 0)
+  })
+
+  it("tries every batch and counts the records left without a receipt", async () => {
+    // A batch that fails says nothing about the next: the ones after
+    // it still land, and each one that does is a record the next run
+    // will not pay twice.
+    const rows = Array.from({ length: 120 }, (_, at) =>
+      closedCounter({ key: key(at + 1), provider: provider(1), count: 1 }),
+    )
+    const it = run({ refuseBatch: 2 })
+
+    await it.pay(await ledger(fakeChain(rows), LB, SETTLE))
+
+    equal(it.writes.length, 2, "the first and the third landed")
+    equal(it.written.length, 70, "50 and 20")
+    equal(
+      it.lines.some((line) => line.includes("PAID BUT NOT RECEIPTED. 50 records")),
+      true,
+      it.lines.join("\n"),
+    )
   })
 
   it("goes on to the next provider when a transfer fails", async () => {

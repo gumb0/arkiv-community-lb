@@ -1,10 +1,11 @@
-// settle: pays each closed counter record the LB wrote. This is the
-// rehearsal alone for now — it reads, computes and prints what it
-// would pay. Nothing is signed and nothing is written.
+// settle: pays each closed counter record the LB wrote. It rehearses
+// unless told to pay, and a rehearsal needs no key at all.
 
 import { formatEther, getAddress, type Hex } from "viem"
-import { connectReader } from "./chain.ts"
+import { connectReader, connectWriter } from "./chain.ts"
+import { settleAddress } from "./identity.ts"
 import { ledger } from "./ledger.ts"
+import { pay } from "./pay.ts"
 import { connectPayout, problems } from "./payout.ts"
 
 function required(name: string): string {
@@ -15,19 +16,29 @@ function required(name: string): string {
   return value
 }
 
-async function main(): Promise<void> {
-  const reader = await connectReader(required("ARKIV_RPC_URL"), process.env.ARKIV_API_KEY)
-  const lb = getAddress(required("LB_ADDRESS")) as Hex
-  // Whose receipts count as paid. The providers' tooling reads
-  // receipts by this address too, so a run with the wrong one would
-  // pay records that are already paid.
-  const settle = getAddress(required("SETTLE_ADDRESS")) as Hex
+function optional(name: string): string | undefined {
+  const value = process.env[name]
+  return value === undefined || value === "" ? undefined : value
+}
 
+async function main(): Promise<void> {
+  const paying = process.argv.includes("--pay")
+  const key = optional("SETTLE_PRIVATE_KEY") as Hex | undefined
+  if (paying && key === undefined) {
+    throw new Error("--pay needs SETTLE_PRIVATE_KEY")
+  }
+
+  const arkivUrl = required("ARKIV_RPC_URL")
+  const arkivKey = optional("ARKIV_API_KEY")
+  const reader = await connectReader(arkivUrl, arkivKey)
+  const lb = getAddress(required("LB_ADDRESS")) as Hex
   const payout = await connectPayout({
     rpcUrl: required("PAYOUT_RPC_URL"),
     chainId: Number(required("PAYOUT_CHAIN_ID")),
     token: getAddress(required("GLM_TOKEN_ADDRESS")) as Hex,
+    privateKey: key,
   })
+  const settle = settleAddress(payout.address, optional("SETTLE_ADDRESS"))
 
   const plan = await ledger(reader, lb, settle)
   console.log(`Chain ${reader.chainId}, the LB's records under ${lb}`)
@@ -46,6 +57,7 @@ async function main(): Promise<void> {
       ? `Nothing to pay; ${plan.paid} closed record${plan.paid === 1 ? " is" : "s are"} already paid`
       : `Would pay ${formatEther(plan.totalOwedWei)} GLM to ${plan.owed.length} provider${plan.owed.length === 1 ? "" : "s"}; ${plan.paid} already paid`,
   )
+
   const [glmWei, payoutGasWei, arkivGasWei] = await Promise.all([
     payout.glm(settle),
     payout.gas(settle),
@@ -54,15 +66,30 @@ async function main(): Promise<void> {
   console.log(
     `Paying from ${settle}: ${formatEther(glmWei)} GLM on chain ${payout.chain.id}, ${formatEther(payoutGasWei)} for gas there and ${formatEther(arkivGasWei)} on Arkiv for the receipts`,
   )
-  for (const problem of problems({
-    owedWei: plan.totalOwedWei,
-    glmWei,
-    payoutGasWei,
-    arkivGasWei,
-  })) {
+  const found = problems({ owedWei: plan.totalOwedWei, glmWei, payoutGasWei, arkivGasWei })
+  for (const problem of found) {
     console.log(`Cannot pay: ${problem}`)
   }
-  console.log("Rehearsal: nothing was signed and nothing was written.")
+
+  if (!paying) {
+    console.log("Rehearsal: nothing was signed and nothing was written.")
+    return
+  }
+  if (found.length > 0) {
+    throw new Error("refusing to pay: see above")
+  }
+
+  const writer = await connectWriter(arkivUrl, arkivKey, key as Hex)
+  const paid = await pay(plan, payout.chain.id, payout.transfer, writer.write, (line) =>
+    console.log(line),
+  )
+  const total = paid.reduce((sum, entry) => sum + entry.amountWei, 0n)
+  console.log(
+    `Paid ${formatEther(total)} GLM to ${paid.length} of ${plan.owed.length} provider${plan.owed.length === 1 ? "" : "s"}`,
+  )
+  if (paid.length < plan.owed.length) {
+    process.exitCode = 1
+  }
 }
 
 main().catch((error: unknown) => {

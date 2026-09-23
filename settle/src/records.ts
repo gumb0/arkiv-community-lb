@@ -1,7 +1,15 @@
 // The records settle reads and writes: the LB's counter records, and
 // its own receipts. The one place a record's shape is spelled here.
 
-import type { Entity } from "@arkiv-network/sdk"
+import {
+  addr,
+  i32,
+  jsonToPayload,
+  key as keyAttribute,
+  str,
+  type AttributeInputs,
+  type Entity,
+} from "@arkiv-network/sdk"
 import { bytesToString, type Hex } from "viem"
 
 const SCHEMA_VERSION = 1
@@ -87,5 +95,39 @@ export function decodeReceipt(entity: Entity): Receipt {
     provider: attribute(entity, "provider", "addr") as Hex,
     amountWei: BigInt(payload.amount_wei as string),
     payout: { chainId: payout.chain_id, tx: payout.tx },
+  }
+}
+
+// --- writing ---------------------------------------------------------------
+
+/** A receipt as settle writes it: attributes, payload, permanent. */
+export type ReceiptRecord = {
+  attributes: AttributeInputs
+  payload: Uint8Array
+  contentType: "application/json"
+}
+
+/**
+ * The receipt for one counter record, paid in full by one transfer.
+ * The count and the rate are copied rather than pointed at: the
+ * receipt is permanent and the counter record is not, so it has to
+ * carry what it was paid for.
+ */
+export function receiptFor(record: Counter, payout: { chainId: number; tx: Hex }): ReceiptRecord {
+  return {
+    attributes: {
+      kind: str(KIND.receipt),
+      v: i32(SCHEMA_VERSION),
+      counter: keyAttribute(record.key),
+      provider: addr(record.provider),
+    },
+    payload: jsonToPayload({
+      agreement: record.agreement,
+      count: Number(record.count),
+      wei_per_call: record.weiPerCall.toString(),
+      amount_wei: (record.count * record.weiPerCall).toString(),
+      payout: { chain_id: payout.chainId, tx: payout.tx },
+    }),
+    contentType: "application/json",
   }
 }

@@ -2,7 +2,11 @@
 
 import { deepStrictEqual as deepEqual, strictEqual as equal, throws } from "node:assert/strict"
 import { describe, it } from "node:test"
+import { settleAddress } from "../src/identity.ts"
 import { assertChain, problems } from "../src/payout.ts"
+
+const KEY_ADDRESS = "0x411E31d7eBbfd636Af234954db5f598Cd80a878C" as const
+const OTHER_ADDRESS = "0x411E31d7eBbfd636Af234954db5f598Cd80a8780" as const
 
 const GLM = 10n ** 18n
 
@@ -48,5 +52,25 @@ describe("the chain the endpoint answers for", () => {
 
   it("refuses any other, naming both", () => {
     throws(() => assertChain(1, 560048), /chain 1.*says 560048/)
+  })
+})
+
+describe("whose receipts say a record is paid", () => {
+  it("takes the key's address when a run has one", () => {
+    equal(settleAddress(KEY_ADDRESS, undefined), KEY_ADDRESS)
+  })
+
+  it("takes the configured one for a rehearsal with no key", () => {
+    equal(settleAddress(undefined, KEY_ADDRESS.toLowerCase()), KEY_ADDRESS)
+  })
+
+  it("refuses a key and a configured address that disagree", () => {
+    // One of the two is a mistake, and picking either would rehearse
+    // one ledger and pay another.
+    throws(() => settleAddress(KEY_ADDRESS, OTHER_ADDRESS), /the key is .* SETTLE_ADDRESS says/)
+  })
+
+  it("refuses to run with neither", () => {
+    throws(() => settleAddress(undefined, undefined), /nothing says whose receipts/)
   })
 })

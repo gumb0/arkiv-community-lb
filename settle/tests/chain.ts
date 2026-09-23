@@ -4,7 +4,7 @@
 import type { Entity } from "@arkiv-network/sdk"
 import { stringToBytes, type Hex } from "viem"
 import type { Reader } from "../src/chain.ts"
-import { KIND } from "../src/records.ts"
+import { KIND, type ReceiptRecord } from "../src/records.ts"
 
 export const LB = "0x1111111111111111111111111111111111111111" as Hex
 export const SETTLE = "0x2222222222222222222222222222222222222222" as Hex
@@ -76,6 +76,21 @@ export function openCounter(options: { key: Hex; provider: Hex; count: number })
     }),
   )
   return record
+}
+
+/**
+ * A receipt a run wrote, as a row the chain would answer with. The
+ * attributes are the SDK's own value objects, which is the shape a
+ * row carries, so what settle writes can be read back by what settle
+ * reads.
+ */
+export function written(record: ReceiptRecord, entityKey: Hex, creator: Hex = SETTLE): Entity {
+  return {
+    key: entityKey,
+    creator,
+    attributes: record.attributes,
+    payload: record.payload,
+  } as unknown as Entity
 }
 
 /** A receipt, as a run leaves it behind. */

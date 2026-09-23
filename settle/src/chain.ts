@@ -1,8 +1,15 @@
 // Arkiv as settle sees it: queries only, every page of them. Behind a
 // small surface, so the ledger is tested over a fake.
 
-import { createPublicClient, type Entity } from "@arkiv-network/sdk"
-import { http, type Hex } from "viem"
+import {
+  createPublicClient,
+  createWalletClient,
+  ExpirationTime,
+  type Entity,
+} from "@arkiv-network/sdk"
+import { defineChain, http, type Hex } from "viem"
+import { privateKeyToAccount } from "viem/accounts"
+import type { ReceiptRecord } from "./records.ts"
 
 export type Reader = {
   chainId: number
@@ -54,4 +61,55 @@ export async function everyPage(
     cursor = page.cursor
   } while (cursor !== undefined)
   return entities
+}
+
+/**
+ * The receipts a run writes, signed with settle's own key. Written
+ * with the SDK directly rather than through the LB's writer sidecar:
+ * settle is an audit tool, and it never depends on the LB's stack
+ * being up.
+ */
+export type ReceiptWriter = {
+  address: Hex
+  /** One transaction, so a batch lands whole or not at all. */
+  write(records: ReceiptRecord[]): Promise<void>
+}
+
+export async function connectWriter(
+  rpcUrl: string,
+  apiKey: string | undefined,
+  privateKey: Hex,
+): Promise<ReceiptWriter> {
+  const transport = http(rpcUrl, {
+    fetchOptions: apiKey ? { headers: { authorization: `Bearer ${apiKey}` } } : undefined,
+  })
+  const chainId = await createPublicClient({ transport }).getChainId()
+  const account = privateKeyToAccount(privateKey)
+  const wallet = createWalletClient({
+    chain: defineChain({
+      id: chainId,
+      name: `arkiv-${chainId}`,
+      nativeCurrency: { name: "Golem", symbol: "GLM", decimals: 18 },
+      rpcUrls: { default: { http: [rpcUrl] } },
+    }),
+    transport,
+    account,
+    pollingInterval: 1000,
+  })
+  return {
+    address: account.address,
+    write: async (records) => {
+      await wallet.executeBatch({
+        creates: records.map((record) => ({
+          payload: record.payload,
+          contentType: record.contentType,
+          attributes: record.attributes,
+          // A receipt outlives the record it paid for, and not even
+          // its writer can change it.
+          expires: ExpirationTime.permanent(),
+          flags: { readonly: true },
+        })),
+      })
+    },
+  }
 }

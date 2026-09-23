@@ -4,6 +4,7 @@
 
 import {
   createPublicClient,
+  createWalletClient,
   defineChain,
   erc20Abi,
   formatEther,
@@ -11,6 +12,7 @@ import {
   type Chain,
   type Hex,
 } from "viem"
+import { privateKeyToAccount } from "viem/accounts"
 
 export type PayoutConfig = {
   rpcUrl: string
@@ -18,14 +20,24 @@ export type PayoutConfig = {
   chainId: number
   /** The GLM contract on that chain. */
   token: Hex
+  /** Absent while rehearsing: without it a run cannot send anything. */
+  privateKey?: Hex
 }
 
 export type Payout = {
   chain: Chain
+  /** The address the key gives, when a run has one. */
+  address?: Hex
   /** GLM held by an address, in wei. */
   glm(address: Hex): Promise<bigint>
   /** The chain's own currency, for gas. */
   gas(address: Hex): Promise<bigint>
+  /**
+   * Sends GLM and waits for the transaction to be mined, so a run
+   * writes a receipt for a payment that has landed rather than for
+   * one that was sent. A transaction that reverts throws.
+   */
+  transfer(to: Hex, amountWei: bigint): Promise<Hex>
 }
 
 export async function connectPayout(config: PayoutConfig): Promise<Payout> {
@@ -37,8 +49,31 @@ export async function connectPayout(config: PayoutConfig): Promise<Payout> {
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     rpcUrls: { default: { http: [config.rpcUrl] } },
   })
+  const account = config.privateKey === undefined ? undefined : privateKeyToAccount(config.privateKey)
+  const wallet =
+    account === undefined ? undefined : createWalletClient({ chain, transport: http(config.rpcUrl), account })
+
   return {
     chain,
+    address: account?.address,
+    transfer: async (to, amountWei) => {
+      if (wallet === undefined || account === undefined) {
+        throw new Error("no payout key: this run cannot send anything")
+      }
+      const hash = await wallet.writeContract({
+        address: config.token,
+        abi: erc20Abi,
+        functionName: "transfer",
+        args: [to, amountWei],
+        account,
+        chain,
+      })
+      const receipt = await client.waitForTransactionReceipt({ hash })
+      if (receipt.status !== "success") {
+        throw new Error(`the transfer ${hash} reverted`)
+      }
+      return hash
+    },
     glm: (address) =>
       client.readContract({
         address: config.token,

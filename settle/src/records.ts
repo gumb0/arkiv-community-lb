@@ -3,12 +3,14 @@
 
 import {
   addr,
+  ExpirationTime,
   i32,
   jsonToPayload,
   key as keyAttribute,
   str,
   type AttributeInputs,
   type Entity,
+  type Expiry,
 } from "@arkiv-network/sdk"
 import { bytesToString, type Hex } from "viem"
 
@@ -100,11 +102,13 @@ export function decodeReceipt(entity: Entity): Receipt {
 
 // --- writing ---------------------------------------------------------------
 
-/** A receipt as settle writes it: attributes, payload, permanent. */
+/** A receipt as settle writes it: the whole create, nothing added later. */
 export type ReceiptRecord = {
   attributes: AttributeInputs
   payload: Uint8Array
   contentType: "application/json"
+  expires: Expiry
+  flags: { readonly: true }
 }
 
 /**
@@ -129,5 +133,11 @@ export function receiptFor(record: Counter, payout: { chainId: number; tx: Hex }
       payout: { chain_id: payout.chainId, tx: payout.tx },
     }),
     contentType: "application/json",
+    // A receipt has to outlive the record it paid for: settle reads a
+    // record as unpaid until one of its own receipts names it, so a
+    // receipt that expired first would have the next run pay again.
+    expires: ExpirationTime.permanent(),
+    // And not even its writer may change one afterwards.
+    flags: { readonly: true },
   }
 }

@@ -1,10 +1,11 @@
-// The records as they come off the chain: what settle reads from a
-// counter record and from its own receipts. Run: npm test
+// The records: what settle reads from a counter record and from its
+// own receipts, and how it builds one. Run: npm test
 
-import { strictEqual as equal, throws } from "node:assert/strict"
+import { deepStrictEqual as deepEqual, strictEqual as equal, throws } from "node:assert/strict"
 import { describe, it } from "node:test"
+import { ExpirationTime } from "@arkiv-network/sdk"
 import { stringToBytes } from "viem"
-import { decodeCounter, decodeReceipt } from "../src/records.ts"
+import { decodeCounter, decodeReceipt, receiptFor } from "../src/records.ts"
 import { closedCounter, key, provider, receipt } from "./chain.ts"
 
 describe("a closed counter record", () => {
@@ -54,5 +55,18 @@ describe("a receipt", () => {
     equal(paid.provider, provider(1))
     equal(paid.amountWei, 5n * 10n ** 18n)
     equal(paid.payout.chainId, 560048)
+  })
+
+  it("is written permanent and readonly", () => {
+    // Settle reads a counter record as unpaid until one of its own
+    // receipts names it, so a receipt that expired before its record
+    // would have the next run pay for it again. Readonly because the
+    // evidence of a payment must not be editable, by settle either.
+    const record = receiptFor(
+      decodeCounter(closedCounter({ key: key(7), provider: provider(1), count: 10 })),
+      { chainId: 560048, tx: key(0xff) },
+    )
+    deepEqual(record.expires, ExpirationTime.permanent())
+    equal(record.flags.readonly, true)
   })
 })

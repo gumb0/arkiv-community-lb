@@ -1,12 +1,7 @@
 // Arkiv as settle sees it: queries only, every page of them. Behind a
 // small surface, so the ledger is tested over a fake.
 
-import {
-  createPublicClient,
-  createWalletClient,
-  ExpirationTime,
-  type Entity,
-} from "@arkiv-network/sdk"
+import { createPublicClient, createWalletClient, type Entity } from "@arkiv-network/sdk"
 import { defineChain, http, type Hex } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import type { ReceiptRecord } from "./records.ts"
@@ -98,18 +93,10 @@ export async function connectWriter(
   })
   return {
     address: account.address,
+    // A receipt is written exactly as `receiptFor` built it, lifetime
+    // and flags included: what a receipt is belongs in one place.
     write: async (records) => {
-      await wallet.executeBatch({
-        creates: records.map((record) => ({
-          payload: record.payload,
-          contentType: record.contentType,
-          attributes: record.attributes,
-          // A receipt outlives the record it paid for, and not even
-          // its writer can change it.
-          expires: ExpirationTime.permanent(),
-          flags: { readonly: true },
-        })),
-      })
+      await wallet.executeBatch({ creates: records })
     },
   }
 }

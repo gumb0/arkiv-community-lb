@@ -21,9 +21,10 @@ first-class concern, not an add-on.
   **expires** when it is no longer refreshed; it does not "lapse". The LB's
   own advertisement is the **LB listing**; a provider's request to join is
   an **offer** — never call either one a "listing" alone.
-- A provider is **eligible** when its probes pass: in rotation, receiving
-  traffic, and refreshed. **Active** and **dormant** (tunnel up / down) are
-  descriptive words only; no rule depends on them.
+- A provider is **eligible** when its probes pass and no integrity verdict
+  stands against it: in rotation, receiving traffic, and refreshed.
+  **Active** and **dormant** (tunnel up / down) are descriptive words only;
+  no rule depends on them.
 - The in-memory set of provider entries is the **provider pool**. The chain
   records are **the marketplace records**, never "the registry": that word
   names a proposed network-level key that would create LB listings.
@@ -78,6 +79,15 @@ first-class concern, not an add-on.
   admitted tunnel makes the provider's next probe due at once
   (`schedule_probe_now`), so a node is not kept waiting on a backed-off probe
   after it connects.
+- **Integrity is a second gate on eligibility, not a tick on the streak**
+  (`docs/INTEGRITY.md`). The checker compares what providers serve against
+  the reference on its own cadence and emits verdicts; only the Monitor
+  acts on them. A confirmed divergence takes a provider out of rotation,
+  and only a passing integrity round brings it back — never probe
+  successes, or a liar would be back within seconds. A provider is
+  eligible when neither gate holds. Stale is not lying: a provider behind
+  the chain is left to the lag path, and an integrity read that times out
+  is unknown for that round, never a health tick.
 - **LB-generated JSON-RPC errors** use codes −32050…−32054 and every message
   starts with `lb: ` — the prefix is applied in `jsonrpc.rs` and nowhere
   else. Standard codes (−32700, −32601, …) are always a provider's answer;

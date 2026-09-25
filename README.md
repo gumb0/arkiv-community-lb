@@ -57,6 +57,13 @@ not operator-chosen.
   and as an on-demand CI workflow. The testing approach across the
   repository is [docs/TESTING.md](docs/TESTING.md).
 
+## Still to come
+
+- Integrity checks: a provider serving data that is not the chain's is
+  taken out of rotation, with the two answers logged side by side. The
+  design is [docs/INTEGRITY.md](docs/INTEGRITY.md); the code is not
+  there yet.
+
 The node-operator side lives in the companion repo,
 [arkiv-community-node](https://github.com/gumb0/arkiv-community-node).
 

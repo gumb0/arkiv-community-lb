@@ -3,79 +3,13 @@
 //! Millisecond intervals and condition polling — never paused time with
 //! real sockets.
 
-use std::{
-    net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
-    time::Duration,
-};
+use std::{net::SocketAddr, sync::atomic::Ordering, time::Duration};
 
-use axum::{Router, body::Bytes, http::HeaderMap, response::IntoResponse};
 use lb::config::{Config, Provider};
 use serde_json::{Value, json};
 
-/// A provider that answers `eth_blockNumber` and `eth_chainId` from
-/// settable state, with a switch to play dead (503 to everything).
-struct Rpc {
-    height: AtomicU64,
-    chain_id: AtomicU64,
-    down: AtomicBool,
-    /// Client requests answered. Probes send id 0, the tests' client
-    /// sends id 1 — the only way to tell them apart at the fake.
-    served: AtomicU64,
-    /// Every request that arrived, probes and errors included.
-    requests: AtomicU64,
-    /// The last `Authorization` header seen, if any request carried one.
-    authorization: std::sync::Mutex<Option<String>>,
-}
-
-async fn rpc_provider(chain_id: u64) -> (SocketAddr, Arc<Rpc>) {
-    let rpc = Arc::new(Rpc {
-        height: AtomicU64::new(1),
-        chain_id: AtomicU64::new(chain_id),
-        down: AtomicBool::new(false),
-        served: AtomicU64::new(0),
-        requests: AtomicU64::new(0),
-        authorization: std::sync::Mutex::new(None),
-    });
-    let state = rpc.clone();
-    let app = Router::new().fallback(move |headers: HeaderMap, body: Bytes| {
-        let state = state.clone();
-        async move {
-            state.requests.fetch_add(1, Ordering::Relaxed);
-            if let Some(value) = headers.get("authorization") {
-                *state.authorization.lock().expect("authorization") =
-                    Some(value.to_str().unwrap_or_default().to_string());
-            }
-            if state.down.load(Ordering::Relaxed) {
-                return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "down").into_response();
-            }
-            let request: Value = serde_json::from_slice(&body).expect("json request");
-            let id = request.get("id").cloned().unwrap_or(Value::Null);
-            if id != json!(0) {
-                state.served.fetch_add(1, Ordering::Relaxed);
-            }
-            let result = match request.get("method").and_then(Value::as_str) {
-                Some("eth_blockNumber") => {
-                    json!(format!("{:#x}", state.height.load(Ordering::Relaxed)))
-                }
-                Some("eth_chainId") => {
-                    json!(format!("{:#x}", state.chain_id.load(Ordering::Relaxed)))
-                }
-                other => panic!("unexpected method probed: {other:?}"),
-            };
-            axum::Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
-        }
-    });
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
-    (addr, rpc)
-}
+mod common;
+use common::fake_provider::rpc_provider;
 
 const CHAIN_ID: u64 = 1337;
 

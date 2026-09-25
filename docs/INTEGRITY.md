@@ -67,10 +67,12 @@ must agree. The provider is never asked a pinned read, so the check
 cannot be told from client traffic by its shape, and a provider that
 lies to clients about an entity lies to the check.
 
-One key serves the whole fleet each round, and the reference's answer
-is kept per block. Providers close in time share a block or sit one
-apart, so a round costs the reference a handful of calls whatever the
-size of the fleet. 
+One key serves the whole fleet each round, and the reference is asked
+once, at the block most providers answered at. A provider that answered
+at another block, which happens when one is a block ahead of the rest,
+is not judged this round and is compared at the next. So a round costs
+the reference one block and one entity read whatever the size of the
+fleet, and every reference call is metered.
 
 ## Where the key comes from
 
@@ -105,9 +107,10 @@ Each provider gets one of four verdicts per round.
   lets a reorganisation of the chain's tip resolve; a provider that was
   briefly on the losing side of one matches on the second try. A liar
   does not.
-- **unknown** — the reference could not be reached, has no finalized
-  block, or does not yet have the block a provider answered at, which
-  happens when a provider is a block ahead. Nobody is judged. A provider
+- **unknown** — the reference could not be reached or has no finalized
+  block, so nobody is judged; or a provider answered the entity at a
+  block other than the one the reference was asked at, so that provider
+  waits for the next round. A provider
   that does not answer a round's read in time is unknown for that round
   too, not unhealthy: liveness is the health check's job, and a round
   must not count the same failure twice.

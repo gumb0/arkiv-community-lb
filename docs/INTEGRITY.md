@@ -147,7 +147,10 @@ is healthy again: its answers would mean nothing.
 The first round runs as soon as the LB has admitted its providers after
 a start, then every `interval`. What a round decided is not kept across
 a restart, so this is what keeps a provider found lying before the
-restart from serving for long after it.
+restart from serving for long after it. A provider that joins later is
+checked the moment it is first admitted, not at the next round, so a
+new provider serving wrong data is out within the time one check and
+its confirming second look take.
 
 Being out of rotation changes nothing about the tunnel. The provider
 keeps answering the LB's checks and the operator's direct requests. Its

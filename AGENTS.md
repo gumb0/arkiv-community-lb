@@ -81,13 +81,16 @@ first-class concern, not an add-on.
   after it connects.
 - **Integrity is a second gate on eligibility, not a tick on the streak**
   (`docs/INTEGRITY.md`). The checker compares what providers serve against
-  the reference on its own cadence and emits verdicts; only the Monitor
-  acts on them. A confirmed divergence takes a provider out of rotation,
-  and only a passing integrity round brings it back — never probe
-  successes, or a liar would be back within seconds. A provider is
-  eligible when neither gate holds. Stale is not lying: a provider behind
-  the chain is left to the lag path, and an integrity read that times out
-  is unknown for that round, never a health tick.
+  the reference on its own cadence and records its verdict on the entry
+  through `record_integrity`, the way the Monitor records health: two
+  tasks, one rule, provider state moves only through the entry's methods.
+  A confirmed divergence takes a provider out of rotation, and only a
+  passing integrity round brings it back — never probe successes, or a
+  liar would be back within seconds. A provider is eligible when neither
+  gate holds, and a round covers the providers whose health gate is clear,
+  integrity-quarantined ones included. Stale is not lying: a provider
+  behind the chain is left to the lag path, and an integrity read that
+  fails is unknown for that round, never a health tick, and never a pass.
 - **LB-generated JSON-RPC errors** use codes −32050…−32054 and every message
   starts with `lb: ` — the prefix is applied in `jsonrpc.rs` and nowhere
   else. Standard codes (−32700, −32601, …) are always a provider's answer;

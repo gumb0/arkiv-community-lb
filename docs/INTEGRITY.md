@@ -48,10 +48,16 @@ Two things, every round, and both are reads any client makes.
 
 **The block at the finalized height.** The LB reads the reference's
 finalized block once, with its transactions, and asks every provider for
-the block at that height. The two are compared whole, not by hash alone:
-a hash is one field any node can fetch from anywhere and serve wrong
-bodies behind. Every honest node has the same block at a finalized
-height, so a provider that does not is on a fork or on another chain.
+the block at that height. A fixed set of fields is compared: the block
+hash, the parent hash, the state, transactions and receipts roots, and
+the list of transaction hashes. Not the hash alone, which is one field
+any node can fetch from anywhere; and not every field, because clients
+of different versions render the same block with small differences in
+fields that are not part of consensus, and comparing those would take
+the whole fleet out of rotation whenever the reference runs a newer
+client than the providers. Every honest node has the same block at a
+finalized height, so a provider that does not is on a fork or on another
+chain.
 
 **One entity, read the way a client reads it.** The LB picks one entity
 key and asks every provider for it with an ordinary query by key, with
@@ -92,8 +98,11 @@ number of pages before taking one. It is not done today.
 
 Each provider gets one of four verdicts per round.
 
-- **match** — the block and the entity are the reference's. Nothing
-  happens.
+- **match** — both reads answered, and the block and the entity are the
+  reference's. Nothing happens. Only this verdict counts as a pass: a
+  block that matches while the entity read could not be judged is not
+  one, or a provider serving right blocks and wrong entities would be
+  let back in on the strength of its blocks.
 - **stale** — the provider does not have the finalized block yet, or
   answered the entity at a block further behind the reference than the
   lag tolerance allows. This is not lying and is not treated as such: the
@@ -110,13 +119,17 @@ Each provider gets one of four verdicts per round.
 - **unknown** — the reference could not be reached or has no finalized
   block, so nobody is judged; or a provider answered the entity at a
   block other than the one the reference was asked at, so that provider
-  waits for the next round. A provider
-  that does not answer a round's read in time is unknown for that round
-  too, not unhealthy: liveness is the health check's job, and a round
-  must not count the same failure twice.
+  waits for the next round; or a provider did not answer a round's read
+  in time, which is unknown for that provider and not unhealthy, since
+  liveness is the health check's job and a round must not count the
+  same failure twice. An unknown changes nothing, in either direction.
 
-The verdict is logged for every provider every round, so a quiet fleet
-still leaves a record that it was checked.
+Every round logs one line with the count of each verdict, so a quiet
+fleet still leaves a record that it was checked. Per provider, a match
+is logged at debug level and a stale or unknown at info; a confirmed
+divergence is the warning-level event below. Until the first page of
+keys has been read after a start, no round can pass, and the log says
+so.
 
 ## Out of rotation, and back
 
@@ -126,8 +139,15 @@ brings it back is different, and deliberately so.
 
 A health failure clears when the provider passes a few probes in a row.
 An integrity failure clears only when the provider passes an integrity
-round. The rounds keep running over providers that are out, which is
-how one that fixes itself gets back.
+round. The rounds keep running over providers that are out for
+integrity and healthy otherwise, which is how one that fixes itself gets
+back. A provider that is out for health is not checked at all until it
+is healthy again: its answers would mean nothing.
+
+The first round runs as soon as the LB has admitted its providers after
+a start, then every `interval`. What a round decided is not kept across
+a restart, so this is what keeps a provider found lying before the
+restart from serving for long after it.
 
 Being out of rotation changes nothing about the tunnel. The provider
 keeps answering the LB's checks and the operator's direct requests. Its
@@ -142,16 +162,20 @@ When a divergence is confirmed, the LB logs one event at warning level
 with everything it held at that moment: the provider, its agreement id,
 which check failed, and the two answers side by side. For the block,
 that is the height and the two block hashes. For the entity, it is the
-key, the block the provider answered at, and the two entities, with
-payloads as hashes when they are large.
+key, the block the provider answered at, and the two entities with their
+attributes in full and their payloads as hashes.
 
 That event is the evidence. The nodes view on the admin API also shows
-each provider's last verdict and when it was given, in memory only.
+each provider's last verdict and the block height it was judged at, in
+memory only, and while a provider is out for integrity its reason names
+the check and the height.
 
 ## Configuration
 
-Two fields under `[integrity]` in the config, documented in
-`config.example.toml`:
+The checks run when the config has an `[integrity]` section and the LB
+has a reference endpoint; without the section there are no rounds, and
+the section without a reference is refused at start, since it cannot
+work. Two fields, documented in `config.example.toml`:
 
 - `interval`, how often a round runs. Every round costs the reference a
   few metered calls, so this is the knob to turn if the reference's quota
@@ -165,6 +189,11 @@ Two fields under `[integrity]` in the config, documented in
 - **A wrong answer to a query**, as opposed to a wrong entity. The checks
   read entities by key and compare their contents. Which entities match
   a filter is not checked, and neither is any other served method.
+- **Altered transaction bodies behind true hashes.** The block check
+  compares the transaction hashes a node reports, not the transaction
+  contents. A node that reports the right hashes and serves changed
+  contents behind them passes. Catching it would mean hashing the served
+  transactions ourselves, which depends on the client version's encoding.
 - **A provider that proxies an honest node.** It passes every check its
   upstream would pass. Nothing in the answers can tell it apart, and
   nothing here tries to.

@@ -193,10 +193,12 @@ Symptom, then where to look.
 - **The LB exits at start with `the marketplace agent could not
   start`.** With `[marketplace]` configured, a start reads the LB's
   records from the reference and asks the sidecar for its address, and
-  refuses to run without either; compose keeps retrying. A running LB
-  is not affected by a hub outage, so do not restart or deploy during
-  one. Check `docker compose logs writer`, then `ARKIV_RPC_URL` as
-  below. To bring the endpoint back before the hub does, delete the
+  refuses to run without either; compose keeps retrying. Compose does
+  not start the LB until the sidecar answers its own health check, so
+  a sidecar that is merely slow to come up never shows here; one that
+  answered and then died does, as does the hub. A running LB is not
+  affected by a hub outage, so do not restart or deploy during one.
+  Check `docker compose logs writer`, then `ARKIV_RPC_URL` as below. To bring the endpoint back before the hub does, delete the
   `[marketplace]` section: the LB then serves the static providers
   alone.
 

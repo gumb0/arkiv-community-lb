@@ -23,10 +23,14 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       ARKIV_RPC_URL: ${ARKIV_RPC_URL:-}
       ARKIV_API_KEY: ${ARKIV_API_KEY:-}
-    # Stopped before the writer, so the counts a stop writes first
-    # still have a sidecar to go through.
+    # Started once the writer answers, and stopped before it, so the
+    # LB never starts against a sidecar that is not listening yet and
+    # the counts a stop writes first still have a sidecar to go
+    # through. Without the condition the LB starts, cannot get the
+    # sidecar's identity, exits, and is restarted until it can.
     depends_on:
-      - writer
+      writer:
+        condition: service_healthy
     restart: unless-stopped
     # A stop finishes the requests in flight, up to the request timeout
     # (30 s by default), and with the marketplace on writes the counts
@@ -51,6 +55,18 @@ services:
       WRITER_PRIVATE_KEY_FILE: /run/secrets/writer_key
     secrets:
       - writer_key
+    # Healthy once the identity route answers: the same question the LB
+    # asks first, on loopback, with the node the image already has. The
+    # port is the service's own rule: WRITER_PORT, or 8560.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch(`http://127.0.0.1:$${process.env.WRITER_PORT || 8560}/identity`).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 12
     restart: unless-stopped
     # A write in flight waits for its receipt.
     stop_grace_period: 200s

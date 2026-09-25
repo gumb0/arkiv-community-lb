@@ -96,6 +96,13 @@ impl Monitor {
                         false
                     };
                     self.probe_all(reference_height.height, chain_round).await;
+                    let providers = self.pool.snapshot();
+                    tracing::debug!(
+                        providers = providers.len(),
+                        eligible = providers.iter().filter(|provider| provider.eligible()).count(),
+                        reference = reference_height.height,
+                        "health round"
+                    );
                     // Ready once every healthy provider has had its
                     // flip_after rounds to be admitted: the boot window
                     // is closed.

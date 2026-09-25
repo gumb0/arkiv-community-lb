@@ -656,7 +656,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         let mut accepted_providers = taken_providers;
         let mut used_ports = taken_ports;
         let mut accepted = 0;
-        for offer in offers {
+        for offer in &offers {
             if accepted >= free {
                 tracing::info!(key = %offer.key, provider = %offer.creator, "offer waits: the cap is full");
                 continue;
@@ -696,12 +696,19 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 );
                 break;
             };
-            if self.accept(&offer, port, head).await {
+            if self.accept(offer, port, head).await {
                 accepted_providers.insert(offer.creator);
                 used_ports.insert(port);
                 accepted += 1;
             }
         }
+        tracing::info!(
+            head,
+            offers = offers.len(),
+            accepted,
+            slots_free = free.saturating_sub(accepted),
+            "discovery: the offers against the listing"
+        );
     }
 
     /// One acceptance: the agreement record, then its first counter

@@ -557,23 +557,21 @@ async fn a_provider_padding_its_probe_answers_is_never_admitted() {
 }
 
 #[tokio::test]
-async fn an_unanswered_initial_chain_check_changes_nothing_and_keeps_its_cadence() {
+async fn a_provider_down_at_boot_is_admitted_as_soon_as_it_answers() {
     let (addr, rpc) = rpc_provider(CHAIN_ID).await;
     rpc.down.store(true, Ordering::Relaxed);
+    // The chain interval stays at its default: admission must not
+    // wait for the next chain round.
     let service = start_monitored(&[addr], |_| {}).await;
     let provider = service.pool.snapshot()[0].clone();
 
-    // Many ordinary sweeps pass, but chain identity keeps its own
-    // slower cadence rather than retrying on every sweep.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(
-        rpc.requests.load(Ordering::Relaxed),
-        1,
-        "only the initial chain check was due"
-    );
-
-    // The failed check itself changed nothing: the admin view still
-    // reads "probe" — born ineligible, no passing probe yet.
+    // The unanswered chain check is retried round after round, and
+    // the failed checks change nothing: the admin view still reads
+    // "probe" — born ineligible, no passing probe yet.
+    wait_for("repeated chain checks", || {
+        rpc.requests.load(Ordering::Relaxed) >= 3
+    })
+    .await;
     assert_eq!(provider.ineligibility_reason(), Some("probe"));
     assert_eq!(
         provider.health_streak.load(Ordering::Relaxed),
@@ -583,7 +581,42 @@ async fn an_unanswered_initial_chain_check_changes_nothing_and_keeps_its_cadence
     assert_eq!(
         provider.last_probe_ms(),
         None,
-        "the block-height probe never ran"
+        "no height probe before the chain is verified"
+    );
+
+    rpc.down.store(false, Ordering::Relaxed);
+    wait_for_all_admitted(&service).await;
+}
+
+#[tokio::test]
+async fn a_provider_that_never_answers_its_chain_check_is_asked_ever_more_rarely() {
+    let (a, rpc_a) = rpc_provider(CHAIN_ID).await;
+    let (b, rpc_b) = rpc_provider(CHAIN_ID).await;
+    rpc_a.down.store(true, Ordering::Relaxed);
+    let service = start_monitored(&[a, b], |config| {
+        config.health.max_probe_backoff = Duration::from_millis(80);
+    })
+    .await;
+    wait_for("the live provider admitted", || {
+        service.pool.snapshot()[1].eligible()
+    })
+    .await;
+
+    // Unanswered from birth: the chain checks thin out toward
+    // max_probe_backoff while the live provider stays on the 20ms beat.
+    let dead_before = rpc_a.requests.load(Ordering::Relaxed);
+    let live_before = rpc_b.requests.load(Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let dead = rpc_a.requests.load(Ordering::Relaxed) - dead_before;
+    let live = rpc_b.requests.load(Ordering::Relaxed) - live_before;
+
+    assert!(
+        dead >= 3,
+        "backoff caps at max_probe_backoff, it never stops asking: {dead}"
+    );
+    assert!(
+        dead * 2 < live,
+        "an unverified dead provider must be asked much more rarely: dead {dead}, live {live}"
     );
 }
 
@@ -617,8 +650,8 @@ async fn a_chain_id_change_after_admission_evicts_and_a_fix_readmits() {
 async fn a_provider_that_joins_between_chain_rounds_is_checked_and_admitted_at_once() {
     let (first, _rpc) = rpc_provider(CHAIN_ID).await;
     let (joiner, _rpc_joiner) = rpc_provider(CHAIN_ID).await;
-    // Chain rounds far apart: without the newcomer's own request the
-    // joiner's first check, and so its first probe, would wait an hour.
+    // Chain rounds far apart: an unverified provider is checked every
+    // sweep, so the joiner does not wait an hour for its first probe.
     let service = start_monitored(&[first], |config| {
         config.health.chainid_check_interval = Duration::from_secs(3600);
     })
@@ -634,7 +667,10 @@ async fn a_provider_that_joins_between_chain_rounds_is_checked_and_admitted_at_o
         added.eligible()
     })
     .await;
-    assert!(added.chain_verified.load(Ordering::Relaxed));
+    assert!(matches!(
+        added.chain_status(),
+        lb::pool::ChainStatus::Verified
+    ));
 }
 
 #[tokio::test]

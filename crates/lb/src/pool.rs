@@ -52,14 +52,9 @@ pub struct Provider {
     /// Last head height a probe returned. `u64::MAX` means no
     /// successful height probe yet.
     height: AtomicU64,
-    /// Confirmed to be on the same chain as the reference. False until
-    /// the first passing check; a mismatch clears it and quarantines.
-    pub chain_verified: AtomicBool,
-    /// Asks the Monitor for a chain check at its next sweep, ahead of
-    /// the chain round. Set for a provider that just joined the pool,
-    /// and again when its tunnel is admitted: without it a newcomer
-    /// waits up to a chain-check interval before its first probe.
-    chain_check_due: AtomicBool,
+    /// The chain-identity verdict, a `ChainStatus` code. Unverified
+    /// until the first answered check.
+    chain_status: AtomicU8,
     /// When the next probe is due. Failing probes past the quarantine
     /// point push this out. A `Mutex` because `Instant` has no atomic;
     /// the Monitor touches it, briefly, and `schedule_probe_now` once
@@ -130,8 +125,7 @@ impl Provider {
             eligible: AtomicBool::new(false),
             health_streak: AtomicI64::new(0),
             height: AtomicU64::new(u64::MAX),
-            chain_verified: AtomicBool::new(false),
-            chain_check_due: AtomicBool::new(true),
+            chain_status: AtomicU8::new(ChainStatus::Unverified as u8),
             next_probe: Mutex::new(Instant::now()),
             unanswered_probe_streak: AtomicU32::new(0),
             served: AtomicU64::new(0),
@@ -154,14 +148,6 @@ impl Provider {
     /// keep a working node out of rotation for minutes.
     pub fn schedule_probe_now(&self) {
         *self.next_probe() = Instant::now();
-        // The probe is gated by the chain check; ask for that too.
-        self.chain_check_due.store(true, Ordering::Relaxed);
-    }
-
-    /// Whether a chain check was asked for since the last one, clearing
-    /// the request. The Monitor's to call.
-    pub fn take_chain_check_due(&self) -> bool {
-        self.chain_check_due.swap(false, Ordering::Relaxed)
     }
 
     /// One more probe gone unanswered.
@@ -249,6 +235,14 @@ impl Provider {
             .map(HealthSignal::as_str)
     }
 
+    pub fn chain_status(&self) -> ChainStatus {
+        ChainStatus::from_code(self.chain_status.load(Ordering::Relaxed))
+    }
+
+    pub fn set_chain_status(&self, status: ChainStatus) {
+        self.chain_status.store(status as u8, Ordering::Relaxed);
+    }
+
     fn record_health_source(&self, source: HealthSignal) {
         self.last_health_source
             .store(source as u8, Ordering::Relaxed);
@@ -316,6 +310,26 @@ impl Provider {
                 source = %source,
                 "health flip"
             );
+        }
+    }
+}
+
+/// What the `eth_chainId` checks have established. An unanswered check
+/// leaves the status as it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ChainStatus {
+    Unverified = 0,
+    Verified = 1,
+    WrongChain = 2,
+}
+
+impl ChainStatus {
+    fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::Verified,
+            2 => Self::WrongChain,
+            _ => Self::Unverified,
         }
     }
 }

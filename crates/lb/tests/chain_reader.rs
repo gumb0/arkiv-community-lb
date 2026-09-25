@@ -7,10 +7,10 @@ use std::{
     time::Duration,
 };
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 use axum::{Router, body::Bytes, http::HeaderMap, response::IntoResponse, routing::post};
 use lb::chain::{
-    reader::{PAGE_LIMIT, Query, ReadError, Reader},
+    reader::{BlockAt, PAGE_LIMIT, Query, ReadError, Reader},
     records::{Agreement, KIND_AGREEMENT, Record, Stored},
 };
 use serde_json::{Value, json};
@@ -72,7 +72,11 @@ fn lb() -> Address {
 
 #[tokio::test]
 async fn a_query_selects_every_record_field_at_the_page_limit_with_the_key() {
-    let (reader, reference) = reference(ok(json!({ "data": [] })), Some("secret")).await;
+    let (reader, reference) = reference(
+        ok(json!({ "data": [], "blockNumber": "0x1" })),
+        Some("secret"),
+    )
+    .await;
     let query = Query::kind(KIND_AGREEMENT).creator(lb());
     let page = reader.query(&query).await.expect("page");
     assert!(page.entities.is_empty());
@@ -116,7 +120,11 @@ async fn rows_parse_into_stored_records_and_a_cursor_means_more() {
         "payload": format!("0x{payload_hex}"),
         "attributes": attributes,
     });
-    let (reader, _) = reference(ok(json!({ "data": [row], "cursor": "b64:more" })), None).await;
+    let (reader, _) = reference(
+        ok(json!({ "data": [row], "cursor": "b64:more", "blockNumber": "0x1" })),
+        None,
+    )
+    .await;
     let page = reader
         .query(&Query::kind(KIND_AGREEMENT))
         .await
@@ -127,6 +135,103 @@ async fn rows_parse_into_stored_records_and_a_cursor_means_more() {
     assert_eq!(stored.creator, lb());
     assert_eq!(stored.expires_at, 0x92e21);
     assert_eq!(stored.record.remote_port, 20001);
+}
+
+#[tokio::test]
+async fn a_pinned_query_asks_at_the_block_and_reads_the_block_answered_at() {
+    let (reader, reference) =
+        reference(ok(json!({ "data": [], "blockNumber": "0x8e1ff" })), None).await;
+    let query = Query::kind(KIND_AGREEMENT).at_block(0x8e1ff);
+    let page = reader.query(&query).await.expect("page");
+    assert_eq!(page.block, 0x8e1ff);
+    let seen = reference.seen.lock().expect("seen");
+    assert_eq!(seen[0].1["params"][1]["atBlock"], "0x8e1ff");
+    // The pin is an option, never a condition in the text.
+    assert!(!query.text().contains("8e1ff"));
+}
+
+#[tokio::test]
+async fn an_unpinned_query_sends_no_block_and_reads_the_head_it_was_answered_at() {
+    let (reader, reference) =
+        reference(ok(json!({ "data": [], "blockNumber": "0x1b4" })), None).await;
+    let page = reader
+        .query(&Query::kind(KIND_AGREEMENT))
+        .await
+        .expect("page");
+    assert_eq!(page.block, 436);
+    let seen = reference.seen.lock().expect("seen");
+    assert!(seen[0].1["params"][1].get("atBlock").is_none());
+}
+
+#[tokio::test]
+async fn a_page_without_the_block_it_was_answered_at_is_an_unexpected_shape() {
+    // The node names the block on every query; a sample cannot be
+    // judged without it, so the parse says so rather than every caller.
+    let (reader, _) = reference(ok(json!({ "data": [] })), None).await;
+    let error = reader
+        .query(&Query::kind(KIND_AGREEMENT))
+        .await
+        .expect_err("no block");
+    assert!(matches!(error, ReadError::Unexpected(_)));
+}
+
+#[tokio::test]
+async fn a_block_is_asked_by_tag_or_number_and_read_down_to_the_fields_that_identify_it() {
+    // A field the node also renders, and which a newer client may
+    // render differently, is not read at all.
+    let block = json!({
+        "number": "0x1b4",
+        "hash": KEY,
+        "parentHash": KEY,
+        "stateRoot": KEY,
+        "transactionsRoot": KEY,
+        "receiptsRoot": KEY,
+        "transactions": [KEY],
+        "totalDifficulty": "0x0",
+        "size": "0x220",
+    });
+    let (reader, reference) = reference(ok(block), None).await;
+    let finalized = reader
+        .block(BlockAt::Finalized)
+        .await
+        .expect("block")
+        .expect("has one");
+    assert_eq!(finalized.number, 436);
+    assert_eq!(finalized.hash, KEY.parse::<B256>().expect("hash"));
+    assert_eq!(finalized.transactions.len(), 1);
+    let by_number = reader.block(BlockAt::Number(436)).await.expect("block");
+    assert_eq!(by_number.as_ref(), Some(&finalized));
+    let seen = reference.seen.lock().expect("seen");
+    assert_eq!(seen[0].1["method"], "eth_getBlockByNumber");
+    // The second parameter, false, asks for transaction hashes rather
+    // than full transactions: the hashes are what is compared.
+    assert_eq!(seen[0].1["params"], json!(["finalized", false]));
+    assert_eq!(seen[1].1["params"], json!(["0x1b4", false]));
+}
+
+#[tokio::test]
+async fn a_null_result_is_an_answer_only_for_a_block() {
+    // A null result reaches every read; for the others it is still an
+    // unexpected shape, said by the read that knows what it expected.
+    let (reader, _) = reference(ok(Value::Null), None).await;
+    let error = reader.block_number().await.expect_err("no height");
+    assert!(matches!(error, ReadError::Unexpected(_)));
+    assert!(error.to_string().contains("not a quantity: null"));
+    let error = reader
+        .query(&Query::kind(KIND_AGREEMENT))
+        .await
+        .expect_err("no page");
+    assert!(matches!(error, ReadError::Unexpected(_)));
+}
+
+#[tokio::test]
+async fn a_block_the_node_does_not_have_is_none() {
+    let (reader, _) = reference(ok(Value::Null), None).await;
+    let block = reader
+        .block(BlockAt::Number(1))
+        .await
+        .expect("null is an answer");
+    assert_eq!(block, None);
 }
 
 #[tokio::test]

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use alloy_primitives::{B256, Bytes, U256};
 use lb::chain::{
     ChainReader, ChainWriter,
-    reader::{Condition, PAGE_LIMIT, Page, Query, ReadError},
+    reader::{BlockAt, BlockFields, Condition, PAGE_LIMIT, Page, Query, ReadError},
     records::{Address, ArkivAttribute, ArkivEntity, Attributes, EncodedRecord, EntityKey},
     writer::{
         Batch, BatchResult, Create, Created, Delete, ErrorLink, Expiry, Identity, Operation, Patch,
@@ -20,6 +20,10 @@ use lb::chain::{
 
 #[derive(Clone)]
 pub struct FakeChain(Arc<Mutex<State>>);
+
+/// How far the fake's finalized block trails its head, as the dev
+/// node's does.
+pub const FINALITY_LAG: u64 = 64;
 
 struct State {
     head: u64,
@@ -263,12 +267,15 @@ impl State {
             })
     }
 
-    /// The rows a query returns: alive at the head, and matching every
-    /// condition.
+    /// The rows a query returns: alive at the block it is answered at,
+    /// the head unless pinned, and matching every condition. Nothing
+    /// else is versioned by block: a pinned read sees the store as it
+    /// is, which holds as long as a test does not patch mid-read.
     fn matching(&self, query: &Query) -> Vec<ArkivEntity> {
+        let at = query.at_block.unwrap_or(self.head);
         self.entities
             .iter()
-            .filter(|entity| entity.expires_at > self.head)
+            .filter(|entity| entity.expires_at > at)
             .filter(|entity| {
                 query
                     .conditions
@@ -351,7 +358,41 @@ impl ChainReader for FakeChain {
         let mut entities = state.matching(query);
         let more = entities.len() as u64 > PAGE_LIMIT;
         entities.truncate(PAGE_LIMIT as usize);
-        Ok(Page { entities, more })
+        Ok(Page {
+            entities,
+            more,
+            block: query.at_block.unwrap_or(state.head),
+        })
+    }
+
+    /// A block per height, made up from the height and the chain id so
+    /// every fake on one chain holds the same block, with no
+    /// transactions. Finalized trails the head by a fixed margin, as the
+    /// dev node's does. `None` above the head.
+    async fn block(&self, at: BlockAt) -> Result<Option<BlockFields>, ReadError> {
+        let state = self.state();
+        state.reference()?;
+        let number = match at {
+            BlockAt::Finalized => state.head.saturating_sub(FINALITY_LAG),
+            BlockAt::Number(number) if number > state.head => return Ok(None),
+            BlockAt::Number(number) => number,
+        };
+        let seal = |tag: &str, n: u64| -> B256 {
+            let mut bytes = Vec::with_capacity(32);
+            bytes.extend_from_slice(tag.as_bytes());
+            bytes.extend_from_slice(&n.to_be_bytes());
+            bytes.extend_from_slice(&state.chain_id.to_be_bytes());
+            alloy_primitives::keccak256(bytes)
+        };
+        Ok(Some(BlockFields {
+            number,
+            hash: seal("hash", number),
+            parent_hash: seal("hash", number.saturating_sub(1)),
+            state_root: seal("state", number),
+            transactions_root: seal("txs", number),
+            receipts_root: seal("receipts", number),
+            transactions: Vec::new(),
+        }))
     }
 
     async fn count(&self, query: &Query) -> Result<u64, ReadError> {

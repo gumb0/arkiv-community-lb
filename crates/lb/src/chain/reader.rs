@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use reqwest::{Url, header};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -24,6 +24,9 @@ pub const PAGE_LIMIT: u64 = 200;
 #[derive(Debug, Clone)]
 pub struct Query {
     pub conditions: Vec<Condition>,
+    /// The block the query is answered at, instead of the head. Not a
+    /// condition: it goes in the request's options, not its text.
+    pub at_block: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +48,14 @@ impl Query {
                 Condition::Attribute("kind", AttributeValue::Str(kind.to_owned())),
                 Condition::Attribute("v", AttributeValue::I32(SCHEMA_VERSION)),
             ],
+            at_block: None,
         }
+    }
+
+    /// Answered at this block rather than at the head.
+    pub fn at_block(mut self, block: u64) -> Self {
+        self.at_block = Some(block);
+        self
     }
 
     pub fn creator(mut self, creator: Address) -> Self {
@@ -118,10 +128,46 @@ fn literal(value: &AttributeValue) -> String {
 
 /// One page of a query. `more` means the node had rows beyond the page
 /// limit; the callers that must see everything check the count first.
+/// `block` is the block the node answered at: the head, unless the
+/// query was pinned.
 #[derive(Debug, Clone)]
 pub struct Page {
     pub entities: Vec<ArkivEntity>,
     pub more: bool,
+    pub block: u64,
+}
+
+/// Which block to read: the latest finalized one, or one by number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockAt {
+    Finalized,
+    Number(u64),
+}
+
+/// The fields of a block that say whether two nodes hold the same one:
+/// the hashes and roots the header commits to, and the transaction
+/// hashes the body is made of. Nothing else, so the JSON rendering of
+/// other fields, which differs between client versions, plays no part.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockFields {
+    #[serde(deserialize_with = "super::records::deserialize_quantity")]
+    pub number: u64,
+    pub hash: B256,
+    pub parent_hash: B256,
+    pub state_root: B256,
+    pub transactions_root: B256,
+    pub receipts_root: B256,
+    pub transactions: Vec<B256>,
+}
+
+impl BlockAt {
+    fn param(self) -> Value {
+        match self {
+            Self::Finalized => json!("finalized"),
+            Self::Number(number) => json!(format!("{number:#x}")),
+        }
+    }
 }
 
 /// What the LB reads from the chain. `Reader` is the real one; a test
@@ -129,6 +175,10 @@ pub struct Page {
 /// generic caller can run under `tokio::spawn`.
 pub trait ChainReader: Send + Sync {
     fn block_number(&self) -> impl Future<Output = Result<u64, ReadError>> + Send;
+    fn block(
+        &self,
+        at: BlockAt,
+    ) -> impl Future<Output = Result<Option<BlockFields>, ReadError>> + Send;
     fn balance(&self, account: Address) -> impl Future<Output = Result<U256, ReadError>> + Send;
     fn query(&self, query: &Query) -> impl Future<Output = Result<Page, ReadError>> + Send;
     fn count(&self, query: &Query) -> impl Future<Output = Result<u64, ReadError>> + Send;
@@ -163,6 +213,8 @@ struct QueryResult {
     #[serde(default)]
     data: Vec<ArkivEntity>,
     cursor: Option<String>,
+    #[serde(rename = "blockNumber")]
+    block_number: Value,
 }
 
 #[derive(Clone)]
@@ -191,6 +243,20 @@ impl Reader {
         parse_u64(&result).ok_or_else(|| ReadError::Unexpected(format!("not a quantity: {result}")))
     }
 
+    /// The fields that identify a block, with its transactions as
+    /// hashes; `None` when the node does not have the block.
+    pub async fn block(&self, at: BlockAt) -> Result<Option<BlockFields>, ReadError> {
+        let result = self
+            .call("eth_getBlockByNumber", json!([at.param(), false]))
+            .await?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        serde_json::from_value(result)
+            .map(Some)
+            .map_err(|e| ReadError::Unexpected(format!("not a block: {e}")))
+    }
+
     /// An account's balance in wei, at the head. The LB asks about its
     /// own key: a dry key stops every write.
     pub async fn balance(&self, account: Address) -> Result<U256, ReadError> {
@@ -204,26 +270,35 @@ impl Reader {
     /// One page of records matching the query, with every field a record
     /// needs selected.
     pub async fn query(&self, query: &Query) -> Result<Page, ReadError> {
-        let params = json!([
-            query.text(),
-            {
-                "select": {
-                    "key": true,
-                    "creator": true,
-                    "createdAt": true,
-                    "expiresAt": true,
-                    "payload": true,
-                    "attributes": true,
-                },
-                "limit": format!("{PAGE_LIMIT:#x}"),
-            }
-        ]);
-        let result = self.call("arkiv_query", params).await?;
+        let mut options = json!({
+            "select": {
+                "key": true,
+                "creator": true,
+                "createdAt": true,
+                "expiresAt": true,
+                "payload": true,
+                "attributes": true,
+            },
+            "limit": format!("{PAGE_LIMIT:#x}"),
+        });
+        if let Some(block) = query.at_block {
+            options["atBlock"] = json!(format!("{block:#x}"));
+        }
+        let result = self
+            .call("arkiv_query", json!([query.text(), options]))
+            .await?;
         let result: QueryResult =
             serde_json::from_value(result).map_err(|e| ReadError::Unexpected(e.to_string()))?;
+        let block = parse_u64(&result.block_number).ok_or_else(|| {
+            ReadError::Unexpected(format!(
+                "blockNumber is not a quantity: {}",
+                result.block_number
+            ))
+        })?;
         Ok(Page {
             entities: result.data,
             more: result.cursor.is_some(),
+            block,
         })
     }
 
@@ -263,15 +338,20 @@ impl Reader {
                 message: error.message,
             });
         }
-        response
-            .result
-            .ok_or_else(|| ReadError::Unexpected("neither result nor error".to_owned()))
+        // A null result is an answer (a block the node does not have);
+        // an absent one reads the same, and the caller's parse says
+        // what it expected instead.
+        Ok(response.result.unwrap_or(Value::Null))
     }
 }
 
 impl ChainReader for Reader {
     async fn block_number(&self) -> Result<u64, ReadError> {
         Reader::block_number(self).await
+    }
+
+    async fn block(&self, at: BlockAt) -> Result<Option<BlockFields>, ReadError> {
+        Reader::block(self, at).await
     }
 
     async fn balance(&self, account: Address) -> Result<U256, ReadError> {

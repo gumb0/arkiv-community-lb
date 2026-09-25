@@ -239,7 +239,7 @@ pub struct ArkivEntity {
     pub attributes: Vec<ArkivAttribute>,
 }
 
-fn deserialize_quantity<'de, D: serde::Deserializer<'de>>(
+pub(crate) fn deserialize_quantity<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<u64, D::Error> {
     let value = serde_json::Value::deserialize(deserializer)?;

@@ -664,6 +664,48 @@ mod tests {
     }
 
     #[test]
+    fn the_last_verdict_is_the_divergence_and_its_height() {
+        let pool = pool(&["a"]);
+        let provider = &pool.snapshot()[0];
+        provider.record_integrity(Verdict::Divergence, 1_204_000);
+        assert_eq!(
+            provider.last_verdict(),
+            Some((Verdict::Divergence, 1_204_000))
+        );
+    }
+
+    #[test]
+    fn the_two_gates_are_read_apart() {
+        let pool = pool(&["a"]);
+        let provider = &pool.snapshot()[0];
+        assert!(!provider.healthy(), "born unprobed");
+        assert!(!provider.serving_wrong_data(), "born unjudged");
+        provider.set_health(true);
+        provider.record_integrity(Verdict::Divergence, 10);
+        assert!(provider.healthy());
+        assert!(provider.serving_wrong_data());
+        provider.quarantine(HealthSignal::Probe);
+        provider.record_integrity(Verdict::Match, 11);
+        assert!(!provider.healthy());
+        assert!(!provider.serving_wrong_data());
+    }
+
+    #[test]
+    fn every_verdict_survives_the_slot() {
+        let pool = pool(&["a"]);
+        let provider = &pool.snapshot()[0];
+        for verdict in [
+            Verdict::Match,
+            Verdict::Stale,
+            Verdict::Divergence,
+            Verdict::Unknown,
+        ] {
+            provider.record_integrity(verdict, 7);
+            assert_eq!(provider.last_verdict(), Some((verdict, 7)));
+        }
+    }
+
+    #[test]
     fn a_provider_never_judged_has_no_verdict() {
         let pool = pool(&["a"]);
         assert_eq!(pool.snapshot()[0].last_verdict(), None);

@@ -48,6 +48,9 @@ struct State {
     /// A batch with more operations than this is refused as too large,
     /// the way the node refuses a transaction over its size cap.
     operation_limit: usize,
+    /// The block of every query answered at a pinned block, in order:
+    /// the reads a round pays for, and where it pinned them.
+    pinned_at: Vec<u64>,
 }
 
 /// A stored entity, as a test sees it.
@@ -99,6 +102,7 @@ impl FakeChain {
             reference_down: None,
             unresolved_next: false,
             operation_limit: usize::MAX,
+            pinned_at: Vec::new(),
         })))
     }
 
@@ -150,6 +154,11 @@ impl FakeChain {
 
     pub fn transactions(&self) -> Vec<Transaction> {
         self.state().transactions.clone()
+    }
+
+    /// The block of every query answered at a pinned block so far.
+    pub fn pinned_at(&self) -> Vec<u64> {
+        self.state().pinned_at.clone()
     }
 
     /// Every write and the identity fail with this message, until `heal`.
@@ -358,8 +367,11 @@ impl ChainReader for FakeChain {
     }
 
     async fn query(&self, query: &Query) -> Result<Page, ReadError> {
-        let state = self.state();
+        let mut state = self.state();
         state.reference()?;
+        if let Some(block) = query.at_block {
+            state.pinned_at.push(block);
+        }
         let mut entities = state.matching(query);
         let more = entities.len() as u64 > PAGE_LIMIT;
         entities.truncate(PAGE_LIMIT as usize);

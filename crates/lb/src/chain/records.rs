@@ -214,7 +214,7 @@ impl Attributes {
 }
 
 /// One attribute as `arkiv_query` returns it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ArkivAttribute {
     pub name: String,
     #[serde(rename = "type")]
@@ -224,7 +224,7 @@ pub struct ArkivAttribute {
 
 /// An entity as `arkiv_query` returns it, with the fields every read
 /// selects. The payload arrives as `0x`-prefixed hex.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ArkivEntity {
     pub key: EntityKey,
     pub creator: Address,

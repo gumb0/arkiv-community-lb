@@ -12,6 +12,7 @@ base64 = "0.22.1"
 axum = "0.8.9"
 bytesize = { version = "2.7.0", features = ["serde"] }
 futures = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }
+rand = "0.9.5"
 humantime-serde = "1.1.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1.0.229", features = ["derive"] }

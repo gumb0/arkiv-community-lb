@@ -112,6 +112,10 @@ impl FakeChain {
         self.state().head
     }
 
+    pub fn chain_id(&self) -> u64 {
+        self.state().chain_id
+    }
+
     /// Moves the head forward. Records whose expiry it passes vanish
     /// from reads, the way they do on the node.
     pub fn advance(&self, blocks: u64) {

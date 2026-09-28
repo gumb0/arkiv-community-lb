@@ -283,3 +283,16 @@ async fn a_bad_reference_url_refuses_to_start() {
         .expect_err("must refuse a reference that cannot be probed");
     assert!(error.to_string().contains("not a url"), "{error}");
 }
+
+#[tokio::test]
+async fn an_integrity_section_without_a_reference_refuses_to_start() {
+    let mut config = Config::default();
+    config.listen.public = "127.0.0.1:0".parse().expect("addr");
+    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    config.integrity = Some(lb::config::Integrity::default());
+
+    let error = lb::service::start(config)
+        .await
+        .expect_err("the rounds need a reference to compare against");
+    assert!(error.to_string().contains("ARKIV_RPC_URL"), "{error}");
+}

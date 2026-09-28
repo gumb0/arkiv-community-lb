@@ -138,6 +138,20 @@ flush_interval = "1d"
 # warning.
 gas_warn_below = "0.02"
 
+# Integrity checks run when this section is present and the LB has a
+# reference endpoint (ARKIV_RPC_URL); the section without one refuses
+# to start. Without the section a provider is judged by its probes
+# alone. What a round does is docs/INTEGRITY.md.
+[integrity]
+# How often a round runs. Every round costs the reference a few
+# metered calls whatever the size of the fleet, so this is the knob
+# to turn if the reference's quota is short, like ref_height_interval.
+interval = "30m"
+# How long a mismatch waits before both sides are asked again; only a
+# second mismatch is a divergence. Long enough for a reorganisation of
+# the chain's tip to resolve. Must be shorter than interval.
+confirm_after = "30s"
+
 # One block per provider. id is the stable handle (lowercase letters,
 # digits, '-') used in logs, /nodes and /node/{id}; a tunneled provider
 # is just a loopback URL on this host.

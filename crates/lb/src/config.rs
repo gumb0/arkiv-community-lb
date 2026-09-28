@@ -32,6 +32,9 @@ pub struct Config {
     /// discovery, no listing, no tunnel admission, and no Arkiv
     /// endpoint needed at startup.
     pub marketplace: Option<Marketplace>,
+    /// Absent: no integrity rounds; a provider is judged by its probes
+    /// alone. Present, it needs the reference endpoint too.
+    pub integrity: Option<Integrity>,
     pub providers: Vec<Provider>,
     /// The reference RPC endpoint. Comes from `ARKIV_RPC_URL` in the
     /// environment — the same variable the writer sidecar reads.
@@ -41,6 +44,50 @@ pub struct Config {
     /// sent to the reference only, never to a provider.
     #[serde(skip)]
     pub reference_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Integrity {
+    #[serde(with = "humantime_serde")]
+    pub interval: Duration,
+    #[serde(with = "humantime_serde")]
+    pub confirm_after: Duration,
+}
+
+impl Default for Integrity {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(30 * 60),
+            confirm_after: Duration::from_secs(30),
+        }
+    }
+}
+
+impl Integrity {
+    fn validate(&self) -> Result<(), ConfigError> {
+        for (name, duration) in [
+            ("integrity.interval", self.interval),
+            ("integrity.confirm_after", self.confirm_after),
+        ] {
+            if duration.is_zero() {
+                return Err(ConfigError::Invalid(format!(
+                    "{name} must be greater than zero"
+                )));
+            }
+        }
+        // The confirming re-ask happens inside the round that found the
+        // mismatch; a wait as long as the interval would be a round of
+        // its own.
+        if self.confirm_after >= self.interval {
+            return Err(ConfigError::Invalid(format!(
+                "integrity.confirm_after ({:?}) must be shorter than interval ({:?}): a mismatch \
+                 is asked again before the next round",
+                self.confirm_after, self.interval
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -344,10 +391,13 @@ impl Config {
             }
             validate_http_url(&format!("provider {id:?}: url"), &provider.url)?;
         }
-        match &self.marketplace {
-            Some(marketplace) => marketplace.validate(),
-            None => Ok(()),
+        if let Some(marketplace) = &self.marketplace {
+            marketplace.validate()?;
         }
+        if let Some(integrity) = &self.integrity {
+            integrity.validate()?;
+        }
+        Ok(())
     }
 }
 
@@ -471,6 +521,50 @@ mod tests {
         assert_eq!(config.listen.public.port(), 8545);
         assert!(config.providers.is_empty());
         assert!(config.marketplace.is_none(), "no section, no marketplace");
+        assert!(
+            config.integrity.is_none(),
+            "no section, no integrity rounds"
+        );
+    }
+
+    #[test]
+    fn the_integrity_section_yields_the_settled_defaults() {
+        let config = parse("[integrity]\n").expect("an empty section is valid");
+        let integrity = config.integrity.expect("the section is there");
+        assert_eq!(integrity.interval, Duration::from_secs(30 * 60));
+        assert_eq!(integrity.confirm_after, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn an_unknown_integrity_key_is_an_error() {
+        let error = parse("[integrity]\nconfirm_afte = \"30s\"\n").expect_err("must refuse");
+        assert!(rendered(&error).contains("confirm_afte"), "{error}");
+    }
+
+    #[test]
+    fn integrity_durations_must_be_positive() {
+        for field in ["interval", "confirm_after"] {
+            let error =
+                parse(&format!("[integrity]\n{field} = \"0s\"\n")).expect_err("must refuse");
+            assert!(error.to_string().contains(field), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_confirmation_wait_as_long_as_the_interval_is_refused() {
+        let error = parse("[integrity]\ninterval = \"30s\"\nconfirm_after = \"30s\"\n")
+            .expect_err("must refuse");
+        assert!(error.to_string().contains("confirm_after"), "{error}");
+        assert!(
+            error.to_string().contains("before the next round"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_example_integrity_section_is_the_defaults() {
+        let config = parse(include_str!("../../../config.example.toml")).expect("example parses");
+        assert_eq!(config.integrity, Some(Integrity::default()));
     }
 
     /// The two lines a deployment must write; everything else in the

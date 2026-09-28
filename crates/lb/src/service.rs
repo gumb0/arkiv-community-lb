@@ -56,6 +56,11 @@ pub enum StartError {
          its own records from the reference"
     )]
     MarketplaceNeedsReference,
+    #[error(
+        "[integrity] is configured but ARKIV_RPC_URL is not set: the rounds compare providers \
+         against the reference"
+    )]
+    IntegrityNeedsReference,
     #[error("the marketplace agent could not start")]
     Marketplace(#[source] agent::StartError),
     #[error("health.chain_id is {configured}, but the sidecar writes to chain {actual}")]
@@ -66,6 +71,9 @@ pub enum StartError {
 /// configured: the read client on the reference, the writer client on
 /// the sidecar.
 pub async fn start(config: Config) -> Result<Service, StartError> {
+    if config.integrity.is_some() && config.reference.is_none() {
+        return Err(StartError::IntegrityNeedsReference);
+    }
     let chain = match &config.marketplace {
         Some(marketplace) => {
             let reference_url = parse_url(

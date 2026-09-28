@@ -303,6 +303,7 @@ impl Entity {
 
     fn matches(&self, condition: &Condition) -> bool {
         match condition {
+            Condition::Key(key) => self.key == *key,
             Condition::Creator(creator) => self.creator == *creator,
             Condition::Attribute(name, value) => self.attributes.get(name) == Some(value),
             Condition::ExpiresAfter(head) => self.expires_at > *head,

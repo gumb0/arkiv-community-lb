@@ -18,9 +18,11 @@ pub const PAGE_LIMIT: u64 = 200;
 /// A filter for `arkiv_query`. Built from typed conditions, so that a
 /// fake chain can evaluate the same query the node is sent; `text()`
 /// renders them in the node's query language, joined by `AND`. Every
-/// query starts from a record kind at the schema version this code
-/// understands, so a newer record never takes a row of the page or a
-/// unit of the count.
+/// query of the LB's own records starts from a record kind at the
+/// schema version this code understands, so a newer record never takes
+/// a row of the page or a unit of the count. The one exception is a
+/// read by key (`by_key`), which is how the integrity sample reads an
+/// entity of any writer.
 #[derive(Debug, Clone)]
 pub struct Query {
     pub conditions: Vec<Condition>,
@@ -31,6 +33,9 @@ pub struct Query {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Condition {
+    /// `$key = key(…)`: one entity, whoever wrote it and whatever its
+    /// kind. The integrity sample reads other writers' records too.
+    Key(EntityKey),
     Creator(Address),
     Attribute(&'static str, AttributeValue),
     /// `$expiresAt > head`: only records still alive at `head`. The node
@@ -48,6 +53,15 @@ impl Query {
                 Condition::Attribute("kind", AttributeValue::Str(kind.to_owned())),
                 Condition::Attribute("v", AttributeValue::I32(SCHEMA_VERSION)),
             ],
+            at_block: None,
+        }
+    }
+
+    /// One entity by its key: no kind, no version, since the entity
+    /// may be anyone's.
+    pub fn by_key(key: EntityKey) -> Self {
+        Self {
+            conditions: vec![Condition::Key(key)],
             at_block: None,
         }
     }
@@ -106,6 +120,7 @@ impl Query {
 impl Condition {
     fn text(&self) -> String {
         match self {
+            Self::Key(key) => format!("$key = key({key:#x})"),
             Self::Creator(creator) => format!("$creator = addr({creator:#x})"),
             Self::Attribute(name, value) => format!("{name} = {}", literal(value)),
             Self::ExpiresAfter(head) => format!("$expiresAt > u64({head})"),
@@ -393,6 +408,12 @@ mod tests {
              AND lb_listing = key(0x8863000000000000000000000000000000000000000000000000000000009057) \
              AND $expiresAt > u64(1000) AND $expiresAt <= u64(87400)"
         );
+    }
+
+    #[test]
+    fn a_query_by_key_names_nothing_but_the_key() {
+        let key = EntityKey::repeat_byte(0xab);
+        assert_eq!(Query::by_key(key).text(), format!("$key = key({key:#x})"));
     }
 
     #[test]

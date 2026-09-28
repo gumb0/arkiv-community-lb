@@ -137,7 +137,7 @@ async fn shutdown_lets_an_in_flight_request_finish() {
         url: format!("http://{provider_addr}"),
     }];
     let service = lb::service::start(config).await.expect("service boots");
-    service.pool.snapshot()[0].set_eligible(true);
+    service.pool.snapshot()[0].set_health(true);
     let public = format!("http://{}", service.public_addr);
 
     let request = tokio::spawn(async move {

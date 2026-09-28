@@ -258,7 +258,7 @@ impl Provider {
         self.eligible.load(Ordering::Relaxed)
     }
 
-    pub fn set_eligible(&self, value: bool) {
+    pub fn set_health(&self, value: bool) {
         self.eligible.store(value, Ordering::Relaxed);
     }
 
@@ -497,7 +497,7 @@ mod tests {
     #[test]
     fn single_eligible_provider_is_always_picked() {
         let pool = pool(&["a", "b", "c"]);
-        pool.snapshot()[1].set_eligible(true);
+        pool.snapshot()[1].set_health(true);
         for _ in 0..10 {
             assert_eq!(pool.next_eligible().expect("one eligible").id, "b");
         }
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn a_lone_eligible_provider_is_always_found_under_contention() {
         let pool = std::sync::Arc::new(pool(&["dead", "live"]));
-        pool.snapshot()[1].set_eligible(true);
+        pool.snapshot()[1].set_health(true);
 
         let threads: Vec<_> = (0..8)
             .map(|_| {
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn an_added_provider_is_selected_once_eligible() {
         let pool = pool(&["a"]);
-        pool.snapshot()[0].set_eligible(true);
+        pool.snapshot()[0].set_health(true);
         let added = pool.add(Provider::from_marketplace(
             Address::repeat_byte(0xbb),
             EntityKey::repeat_byte(0x01),
@@ -544,7 +544,7 @@ mod tests {
             assert_eq!(pool.next_eligible().expect("a is eligible").id, "a");
         }
 
-        added.set_eligible(true);
+        added.set_health(true);
         let ids: Vec<String> = (0..4)
             .map(|_| pool.next_eligible().expect("both eligible").id.clone())
             .collect();
@@ -560,7 +560,7 @@ mod tests {
     fn a_removed_provider_is_never_selected_again() {
         let pool = std::sync::Arc::new(pool(&["a", "b"]));
         for provider in pool.snapshot().iter() {
-            provider.set_eligible(true);
+            provider.set_health(true);
         }
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let threads: Vec<_> = (0..4)
@@ -673,8 +673,8 @@ mod tests {
         let pool = pool(&["a", "b", "c", "d"]);
         // Only the outer two are in rotation; the ineligible middle must
         // not skew the split.
-        pool.snapshot()[0].set_eligible(true);
-        pool.snapshot()[3].set_eligible(true);
+        pool.snapshot()[0].set_health(true);
+        pool.snapshot()[3].set_health(true);
         let mut picks = std::collections::HashMap::new();
         for _ in 0..100 {
             let id = pool.next_eligible().expect("eligible exist").id.clone();

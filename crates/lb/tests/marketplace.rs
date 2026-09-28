@@ -1950,12 +1950,12 @@ fn expires_at(chain: &FakeChain, key: alloy_primitives::B256) -> u64 {
 }
 
 /// Flips the marketplace provider's eligibility, the Monitor's job.
-fn set_eligible(pool: &Pool, address: Address, value: bool) {
+fn set_health(pool: &Pool, address: Address, value: bool) {
     pool.snapshot()
         .iter()
         .find(|p| p.id == format!("{address:#x}"))
         .expect("in the pool")
-        .set_eligible(value);
+        .set_health(value);
 }
 
 #[tokio::test]
@@ -1973,12 +1973,12 @@ async fn a_refresh_extends_the_listing_and_the_eligible_providers_only() {
         .expect("pool"),
     );
     let agent = start(&chain, &config, &pool).await.expect("starts");
-    set_eligible(&pool, provider(1), true);
+    set_health(&pool, provider(1), true);
     pool.snapshot()
         .iter()
         .find(|p| p.id == "static-1")
         .expect("in the pool")
-        .set_eligible(true);
+        .set_health(true);
     chain.advance(100);
     let writes_before = chain.transactions().len();
 
@@ -2029,7 +2029,7 @@ async fn a_refresh_over_the_transaction_limit_lands_in_several() {
     let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &config, &pool).await.expect("starts");
     for n in 1..=3 {
-        set_eligible(&pool, provider(n), true);
+        set_health(&pool, provider(n), true);
     }
     chain.advance(10);
     // Room for two extends per transaction: the listing and three
@@ -2075,17 +2075,17 @@ async fn a_quarantined_provider_misses_a_cycle_and_is_refreshed_next() {
     let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
 
-    set_eligible(&pool, provider(1), true);
+    set_health(&pool, provider(1), true);
     chain.advance(10);
     agent.refresh().await;
     let first = expires_at(&chain, key);
 
-    set_eligible(&pool, provider(1), false);
+    set_health(&pool, provider(1), false);
     chain.advance(10);
     agent.refresh().await;
     assert_eq!(expires_at(&chain, key), first, "missed while quarantined");
 
-    set_eligible(&pool, provider(1), true);
+    set_health(&pool, provider(1), true);
     chain.advance(10);
     agent.refresh().await;
     assert!(
@@ -2102,8 +2102,8 @@ async fn a_record_memory_knows_expired_is_left_out_of_the_refresh() {
     let live = seed_agreement(&chain, provider(2), 20001, 3600);
     let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &config, &pool).await.expect("starts");
-    set_eligible(&pool, provider(1), true);
-    set_eligible(&pool, provider(2), true);
+    set_health(&pool, provider(1), true);
+    set_health(&pool, provider(2), true);
     // Past the first record's expiry, with no poll in between: memory
     // still holds it. An extend of a gone record would fail the batch.
     chain.advance(31);
@@ -2130,7 +2130,7 @@ async fn the_reconcile_learns_a_refreshed_expiry() {
     post(&chain, provider(1), &offer_for(&agent, &chain), DAY);
     agent.discovery_poll().await;
     let key = agent.agreements()[0].key;
-    set_eligible(&pool, provider(1), true);
+    set_health(&pool, provider(1), true);
 
     // Refreshed within its accept window, then a poll, then past the
     // window: memory must know the record lives on, or the next
@@ -2152,7 +2152,7 @@ async fn a_refresh_goes_on_when_the_reference_cannot_be_read() {
     let key = seed_agreement(&chain, provider(1), 20000, 3600);
     let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
-    set_eligible(&pool, provider(1), true);
+    set_health(&pool, provider(1), true);
     let before = expires_at(&chain, key);
     chain.advance(10);
 
@@ -2168,7 +2168,7 @@ async fn a_failed_refresh_changes_nothing_and_the_next_one_extends() {
     let key = seed_agreement(&chain, provider(1), 20000, 3600);
     let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
-    set_eligible(&pool, provider(1), true);
+    set_health(&pool, provider(1), true);
     let before = expires_at(&chain, key);
     chain.advance(10);
 
@@ -2356,7 +2356,7 @@ async fn the_agent_refreshes_on_its_interval() {
     let service = lb::service::start_with(config, Some((chain.clone(), chain.clone())))
         .await
         .expect("starts");
-    set_eligible(&service.pool, provider(1), true);
+    set_health(&service.pool, provider(1), true);
     let before = expires_at(&chain, key);
     chain.advance(10);
 

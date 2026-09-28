@@ -157,7 +157,7 @@ async fn start_lb_with(
     tune(&mut config);
     let service = lb::service::start(config).await.expect("service boots");
     for provider in service.pool.snapshot().iter() {
-        provider.set_eligible(true);
+        provider.set_health(true);
     }
     let public = format!("http://{}", service.public_addr);
     (service, public)
@@ -778,7 +778,7 @@ async fn pinned_forward_reaches_an_ineligible_provider_and_changes_nothing() {
     let (addr, fake) = fake_provider(answer, Duration::ZERO).await;
     let (service, _public) = start_lb(&[addr]).await;
     let provider = service.pool.snapshot()[0].clone();
-    provider.set_eligible(false);
+    provider.set_health(false);
 
     let (status, body) = post_pinned(&service, "p0", request(61)).await;
     assert_eq!(status, 200, "eligibility does not gate a pinned forward");

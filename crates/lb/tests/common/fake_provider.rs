@@ -30,7 +30,7 @@ use super::fake_chain::FakeChain;
 /// settable state, with a switch to play dead (503 to everything), and
 /// `eth_getBlockByNumber` and `arkiv_query` by key from the chain it
 /// serves, up to its own height.
-pub struct Rpc {
+pub struct FakeProvider {
     pub height: AtomicU64,
     pub chain_id: AtomicU64,
     pub down: AtomicBool,
@@ -60,17 +60,17 @@ pub struct Rpc {
     pub delay_ms: AtomicU64,
 }
 
-pub async fn rpc_provider(chain_id: u64) -> (SocketAddr, Arc<Rpc>) {
+pub async fn rpc_provider(chain_id: u64) -> (SocketAddr, Arc<FakeProvider>) {
     serve(FakeChain::new(Address::ZERO, chain_id)).await
 }
 
 /// A provider serving the fake chain, at the chain's id.
-pub async fn rpc_provider_on(chain: &FakeChain) -> (SocketAddr, Arc<Rpc>) {
+pub async fn rpc_provider_on(chain: &FakeChain) -> (SocketAddr, Arc<FakeProvider>) {
     serve(chain.clone()).await
 }
 
-async fn serve(chain: FakeChain) -> (SocketAddr, Arc<Rpc>) {
-    let rpc = Arc::new(Rpc {
+async fn serve(chain: FakeChain) -> (SocketAddr, Arc<FakeProvider>) {
+    let rpc = Arc::new(FakeProvider {
         height: AtomicU64::new(1),
         chain_id: AtomicU64::new(chain.chain_id()),
         down: AtomicBool::new(false),
@@ -124,7 +124,7 @@ async fn serve(chain: FakeChain) -> (SocketAddr, Arc<Rpc>) {
     (addr, rpc)
 }
 
-impl Rpc {
+impl FakeProvider {
     async fn delay(&self) {
         let delay = self.delay_ms.load(Ordering::Relaxed);
         if delay > 0 {

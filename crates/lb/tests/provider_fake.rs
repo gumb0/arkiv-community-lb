@@ -14,12 +14,12 @@ use lb::chain::{
 mod common;
 use common::{
     fake_chain::{FINALITY_LAG, FakeChain},
-    fake_provider::{Rpc, rpc_provider_on},
+    fake_provider::{FakeProvider, rpc_provider_on},
 };
 
 const CHAIN_ID: u64 = 1337;
 
-async fn provider_and_chain() -> (Reader, std::sync::Arc<Rpc>, FakeChain) {
+async fn provider_and_chain() -> (Reader, std::sync::Arc<FakeProvider>, FakeChain) {
     let chain = FakeChain::new(Address::ZERO, CHAIN_ID);
     chain.advance(200);
     let (addr, rpc) = rpc_provider_on(&chain).await;

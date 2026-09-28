@@ -170,8 +170,9 @@ attributes in full and their payloads as hashes.
 
 That event is the evidence. The nodes view on the admin API also shows
 each provider's last verdict and the block height it was judged at, in
-memory only, and while a provider is out for integrity its reason names
-the check and the height.
+memory only; while a provider is out for integrity its reason says so,
+in one word like the health reasons, and the verdict beside it says
+when.
 
 ## Configuration
 

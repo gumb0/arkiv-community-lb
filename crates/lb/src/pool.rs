@@ -22,6 +22,7 @@ use reqwest::Url;
 use crate::{
     chain::records::{Address, EntityKey},
     config,
+    integrity::Verdict,
 };
 
 /// How a provider entered the pool.
@@ -43,9 +44,20 @@ pub struct Provider {
     pub id: String,
     pub url: Url,
     pub source: Source,
-    /// In or out of rotation. Providers are born ineligible: nothing is
-    /// served until the first probes pass.
-    eligible: AtomicBool,
+    /// The two gates on eligibility as one byte, a bit per gate, set
+    /// while that gate lets the provider through: health, by the probes,
+    /// and integrity, by the absence of a confirmed divergence. Eligible
+    /// is both bits set. One word, so a change to either gate sees the
+    /// other exactly, and a flip of what `eligible()` answers is logged
+    /// once. Read through `eligible`, `healthy` and
+    /// `serving_wrong_data`, written through `set_eligibility`; nothing
+    /// else touches the bits. Providers are born with the health bit
+    /// clear: nothing is served until the first probes pass.
+    eligibility: AtomicU8,
+    /// The last integrity verdict, encoded, `0` before any; and the
+    /// height it was given at.
+    verdict: AtomicU8,
+    verdict_height: AtomicU64,
     /// Positive = consecutive successes (probes only), negative =
     /// consecutive failures (probes and traffic alike).
     pub health_streak: AtomicI64,
@@ -127,7 +139,9 @@ impl Provider {
             id,
             url,
             source,
-            eligible: AtomicBool::new(false),
+            eligibility: AtomicU8::new(Gate::Integrity.bit()),
+            verdict: AtomicU8::new(0),
+            verdict_height: AtomicU64::new(0),
             health_streak: AtomicI64::new(0),
             height: AtomicU64::new(u64::MAX),
             chain_verified: AtomicBool::new(false),
@@ -239,14 +253,20 @@ impl Provider {
     }
 
     /// Why this provider is out of rotation, for the admin view: the
-    /// source of its latest health signal — for a fresh provider,
-    /// `probe`, meaning no passing probe yet. `None` while eligible.
+    /// source of the signal that keeps it out. While the provider is
+    /// unhealthy, its latest health signal's — for a fresh provider,
+    /// `probe`, meaning no passing probe yet; while it is healthy but
+    /// was found serving wrong data, `integrity`, and the last verdict
+    /// beside it says when. `None` while eligible.
     pub fn ineligibility_reason(&self) -> Option<&'static str> {
         if self.eligible() {
             return None;
         }
-        HealthSignal::from_code(self.last_health_source.load(Ordering::Relaxed))
-            .map(HealthSignal::as_str)
+        if !self.healthy() {
+            return HealthSignal::from_code(self.last_health_source.load(Ordering::Relaxed))
+                .map(HealthSignal::as_str);
+        }
+        Some(HealthSignal::Integrity.as_str())
     }
 
     fn record_health_source(&self, source: HealthSignal) {
@@ -254,12 +274,54 @@ impl Provider {
             .store(source as u8, Ordering::Relaxed);
     }
 
+    /// In rotation: both gates let it through.
     pub fn eligible(&self) -> bool {
-        self.eligible.load(Ordering::Relaxed)
+        self.eligibility.load(Ordering::Relaxed) == ALL_GATES
     }
 
+    /// The probes pass.
+    pub fn healthy(&self) -> bool {
+        self.eligibility.load(Ordering::Relaxed) & Gate::Health.bit() != 0
+    }
+
+    /// Found serving data that is not the chain's, and no passing round
+    /// since.
+    pub fn serving_wrong_data(&self) -> bool {
+        self.eligibility.load(Ordering::Relaxed) & Gate::Integrity.bit() == 0
+    }
+
+    /// Opens or closes the health gate by hand, for tests that place
+    /// providers without probing them. The integrity gate is untouched.
     pub fn set_health(&self, value: bool) {
-        self.eligible.store(value, Ordering::Relaxed);
+        self.set_eligibility(Gate::Health, value);
+    }
+
+    /// Records one integrity verdict and the height it was given at.
+    pub fn record_integrity(&self, verdict: Verdict, height: u64) {
+        self.verdict
+            .store(encode_verdict(verdict), Ordering::Relaxed);
+        self.verdict_height.store(height, Ordering::Relaxed);
+        match verdict {
+            Verdict::Divergence => {
+                self.set_eligibility_and_log(Gate::Integrity, false, HealthSignal::Integrity)
+            }
+            // Only a passing round lifts an integrity quarantine, never
+            // the probes.
+            Verdict::Match => {
+                self.set_eligibility_and_log(Gate::Integrity, true, HealthSignal::Integrity)
+            }
+            // Stale ticks no health either: the probes see the same lag,
+            // with the same tolerance, every few seconds, so a tick from
+            // a round would count it twice.
+            Verdict::Stale | Verdict::Unknown => {}
+        }
+    }
+
+    /// The last integrity verdict and the height it was given at, if
+    /// any round has judged this provider yet.
+    pub fn last_verdict(&self) -> Option<(Verdict, u64)> {
+        decode_verdict(self.verdict.load(Ordering::Relaxed))
+            .map(|verdict| (verdict, self.verdict_height.load(Ordering::Relaxed)))
     }
 
     /// Records one health signal and flips eligibility once `flip_after`
@@ -290,9 +352,9 @@ impl Provider {
         // Using outdated `streak` for eligibility decision is harmless,
         // because no single result can flip state (flip_after >= 2).
         if streak >= flip {
-            self.set_eligible_and_log(true, source);
+            self.set_eligibility_and_log(Gate::Health, true, source);
         } else if streak <= -flip {
-            self.set_eligible_and_log(false, source);
+            self.set_eligibility_and_log(Gate::Health, false, source);
         }
     }
 
@@ -302,21 +364,80 @@ impl Provider {
     pub fn quarantine(&self, source: HealthSignal) {
         self.health_streak.store(0, Ordering::Relaxed);
         self.record_health_source(source);
-        self.set_eligible_and_log(false, source);
+        self.set_eligibility_and_log(Gate::Health, false, source);
     }
 
-    /// Sets eligibility and logs the flip when the value actually
-    /// changed. `swap` makes check-and-set one atomic step, so two
-    /// racing callers cannot both log the same flip.
-    fn set_eligible_and_log(&self, value: bool, source: HealthSignal) {
-        if self.eligible.swap(value, Ordering::Relaxed) != value {
+    /// Sets one gate's bit to `value` and answers what `eligible()` said
+    /// before and after, from the one atomic update, so two racing
+    /// callers cannot both see the same flip.
+    fn set_eligibility(&self, gate: Gate, value: bool) -> (bool, bool) {
+        let bit = gate.bit();
+        // Either atomic returns the byte as it was just before.
+        let before = if value {
+            self.eligibility.fetch_or(bit, Ordering::Relaxed)
+        } else {
+            self.eligibility.fetch_and(!bit, Ordering::Relaxed)
+        };
+        let after = if value { before | bit } else { before & !bit };
+        (before == ALL_GATES, after == ALL_GATES)
+    }
+
+    /// Sets a gate and logs the flip when what `eligible()` answers
+    /// actually changed. A health readmission of a provider found
+    /// serving wrong data changes nothing visible and logs nothing; the
+    /// match that clears that afterwards is the flip.
+    fn set_eligibility_and_log(&self, gate: Gate, value: bool, source: HealthSignal) {
+        let (was, now) = self.set_eligibility(gate, value);
+        if was != now {
             tracing::info!(
                 provider = %self.id,
-                eligible = value,
+                eligible = now,
                 source = %source,
                 "health flip"
             );
         }
+    }
+}
+
+/// The two gates on eligibility. Each has a bit in the entry's
+/// eligibility byte, set while the gate lets the provider through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gate {
+    /// Set by passing probes; cleared by failing probes and by traffic
+    /// failures.
+    Health,
+    /// Cleared by a confirmed divergence; set by a passing round.
+    Integrity,
+}
+
+impl Gate {
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Health => 1,
+            Self::Integrity => 2,
+        }
+    }
+}
+
+/// Both bits set: eligible.
+const ALL_GATES: u8 = Gate::Health.bit() | Gate::Integrity.bit();
+
+fn encode_verdict(verdict: Verdict) -> u8 {
+    match verdict {
+        Verdict::Match => 1,
+        Verdict::Stale => 2,
+        Verdict::Divergence => 3,
+        Verdict::Unknown => 4,
+    }
+}
+
+fn decode_verdict(code: u8) -> Option<Verdict> {
+    match code {
+        1 => Some(Verdict::Match),
+        2 => Some(Verdict::Stale),
+        3 => Some(Verdict::Divergence),
+        4 => Some(Verdict::Unknown),
+        _ => None,
     }
 }
 
@@ -328,6 +449,9 @@ pub enum HealthSignal {
     Traffic = 2,
     Lag = 3,
     Chain = 4,
+    /// A verdict from an integrity round: the second gate, never a
+    /// tick on the streak.
+    Integrity = 5,
 }
 
 impl HealthSignal {
@@ -337,6 +461,7 @@ impl HealthSignal {
             2 => Some(Self::Traffic),
             3 => Some(Self::Lag),
             4 => Some(Self::Chain),
+            5 => Some(Self::Integrity),
             _ => None,
         }
     }
@@ -347,6 +472,7 @@ impl HealthSignal {
             Self::Traffic => "traffic",
             Self::Lag => "lag",
             Self::Chain => "chain",
+            Self::Integrity => "integrity",
         }
     }
 }
@@ -480,6 +606,67 @@ mod tests {
         }
         provider.subtract_served(10);
         assert_eq!(provider.served.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn a_confirmed_divergence_takes_a_healthy_provider_out() {
+        let pool = pool(&["a"]);
+        let provider = &pool.snapshot()[0];
+        provider.set_health(true);
+        provider.record_integrity(Verdict::Divergence, 1_204_000);
+        assert!(!provider.eligible());
+        assert_eq!(provider.ineligibility_reason(), Some("integrity"));
+    }
+
+    #[test]
+    fn probe_successes_do_not_readmit_a_diverged_provider_but_a_match_does() {
+        let pool = pool(&["a"]);
+        let provider = &pool.snapshot()[0];
+        provider.set_health(true);
+        provider.record_integrity(Verdict::Divergence, 10);
+        // The health gate is open the whole time; the probes cannot
+        // touch the other one.
+        for _ in 0..3 {
+            provider.record_health(true, 3, HealthSignal::Probe);
+        }
+        assert!(!provider.eligible());
+        provider.record_integrity(Verdict::Match, 11);
+        assert!(provider.eligible());
+    }
+
+    #[test]
+    fn stale_and_unknown_leave_the_integrity_gate_as_it_is() {
+        let pool = pool(&["a"]);
+        let provider = &pool.snapshot()[0];
+        provider.set_health(true);
+        provider.record_integrity(Verdict::Unknown, 10);
+        assert!(provider.eligible(), "nothing judged, nothing changed");
+        provider.record_integrity(Verdict::Divergence, 11);
+        provider.record_integrity(Verdict::Stale, 12);
+        provider.record_integrity(Verdict::Unknown, 13);
+        assert!(!provider.eligible(), "only a match lifts it");
+        assert_eq!(provider.last_verdict(), Some((Verdict::Unknown, 13)));
+    }
+
+    #[test]
+    fn a_diverged_provider_that_is_also_unhealthy_names_its_health_reason() {
+        let pool = pool(&["a"]);
+        let provider = &pool.snapshot()[0];
+        provider.set_health(true);
+        provider.record_integrity(Verdict::Divergence, 10);
+        provider.quarantine(HealthSignal::Chain);
+        assert_eq!(provider.ineligibility_reason(), Some("chain"));
+        // Health back, still diverged: the reason moves to integrity.
+        for _ in 0..3 {
+            provider.record_health(true, 3, HealthSignal::Probe);
+        }
+        assert_eq!(provider.ineligibility_reason(), Some("integrity"));
+    }
+
+    #[test]
+    fn a_provider_never_judged_has_no_verdict() {
+        let pool = pool(&["a"]);
+        assert_eq!(pool.snapshot()[0].last_verdict(), None);
     }
 
     #[test]

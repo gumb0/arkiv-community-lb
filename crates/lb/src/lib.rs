@@ -7,6 +7,7 @@ pub mod chain;
 pub mod config;
 pub mod denylist;
 pub mod forwarder;
+pub mod integrity;
 pub mod jsonrpc;
 pub mod marketplace;
 pub mod monitor;

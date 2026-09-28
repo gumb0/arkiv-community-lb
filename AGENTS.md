@@ -71,7 +71,8 @@ first-class concern, not an add-on.
   receives no traffic). An oversized response costs no health tick: the
   breach may be the query's own fault. Provider state is atomics on the
   pool entry, mutated only through its methods (`record_health`,
-  `record_served`, `seed_served`, `subtract_served`, `quarantine`) —
+  `record_served`, `seed_served`, `subtract_served`, `quarantine`,
+  `record_integrity`) —
   never raw from other modules — and every eligibility flip logs
   exactly one event naming its source. Scheduling
   state (cadences, backoff clocks, the unanswered-probe streak behind

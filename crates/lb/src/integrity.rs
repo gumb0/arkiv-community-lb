@@ -308,8 +308,8 @@ impl<R: ChainReader> IntegrityChecker<R> {
 
     /// A divergence from one look is looked at again after a wait: a
     /// reorganisation of the tip has resolved by then, a liar has not.
-    /// Twice is the divergence, named by its first read; anything else
-    /// is what the second look said.
+    /// The second look is the finding, whatever it said: a confirmed
+    /// divergence is logged with the answers the verdict rests on.
     async fn confirm(
         &self,
         findings: &mut [Finding],
@@ -331,9 +331,7 @@ impl<R: ChainReader> IntegrityChecker<R> {
                 .iter_mut()
                 .find(|finding| Arc::ptr_eq(&finding.provider, &second.provider))
                 .expect("the same providers were asked");
-            if second.verdict != Verdict::Divergence {
-                *first = second;
-            }
+            *first = second;
         }
     }
 

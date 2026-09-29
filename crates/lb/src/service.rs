@@ -15,6 +15,7 @@ use crate::{
     chain::{ChainReader, ChainWriter, reader::Reader, writer::Writer},
     config::Config,
     forwarder::Forwarder,
+    integrity::IntegrityChecker,
     marketplace::{
         admission::Agreements,
         agent::{self, Agent},
@@ -71,9 +72,6 @@ pub enum StartError {
 /// configured: the read client on the reference, the writer client on
 /// the sidecar.
 pub async fn start(config: Config) -> Result<Service, StartError> {
-    if config.integrity.is_some() && config.reference.is_none() {
-        return Err(StartError::IntegrityNeedsReference);
-    }
     let chain = match &config.marketplace {
         Some(marketplace) => {
             let reference_url = parse_url(
@@ -118,6 +116,11 @@ pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
     config: Config,
     chain: Option<(R, W)>,
 ) -> Result<Service, StartError> {
+    // Refused before anything binds, like a provider URL that does not
+    // parse.
+    if config.integrity.is_some() && config.reference.is_none() {
+        return Err(StartError::IntegrityNeedsReference);
+    }
     let pool = Arc::new(pool::Pool::new(&config.providers)?);
     let agent = if let Some(marketplace) = &config.marketplace {
         let (reader, writer) = chain.expect("the marketplace needs chain clients");
@@ -190,6 +193,28 @@ pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
     ];
     if let Some(agent) = agent {
         tasks.push(tokio::spawn(agent.run(shutdown.subscribe())));
+    }
+    if let (Some(integrity), Some(url)) = (&config.integrity, &config.reference) {
+        // Its own reader on the reference: a block read is heavier than
+        // the probe's one number, so it gets the client's timeout.
+        let reference = Reader::new(
+            client.clone(),
+            parse_url("reference url", url)?,
+            config.reference_key.clone(),
+            config.proxy.attempt_timeout,
+        );
+        let checker = IntegrityChecker::new(
+            pool.clone(),
+            client.clone(),
+            reference,
+            integrity.clone(),
+            config.health.lag_tolerance_blocks,
+            config.proxy.attempt_timeout,
+            ready.clone(),
+        );
+        tasks.push(tokio::spawn(checker.run(shutdown.subscribe())));
+    } else {
+        tracing::info!("no [integrity] section: providers are judged by probes alone");
     }
     if !config.health.disable_probing {
         let reference = match &config.reference {

@@ -1,15 +1,32 @@
 //! The service's wiring, checked from the outside: both listeners
 //! bind and route independently, a zero-config boot answers
-//! truthfully, and shutdown completes.
+//! truthfully, shutdown completes, and a configured integrity round
+//! reaches the pool.
 
-use std::time::Duration;
+use std::{
+    sync::{Arc, atomic::Ordering},
+    time::Duration,
+};
 
+use alloy_primitives::Address;
 use lb::{
-    config::{Config, Provider},
+    chain::{
+        records::{Agreement, Record, Wei},
+        writer::Expiry,
+    },
+    config::{Config, Integrity, Provider},
     integrity::Verdict,
     jsonrpc::NO_HEALTHY_PROVIDER,
     pool::HealthSignal,
 };
+
+mod common;
+use common::{
+    fake_chain::{FINALITY_LAG, FakeChain},
+    fake_provider::{FakeProvider, rpc_provider_on},
+};
+
+const CHAIN_ID: u64 = 1337;
 
 #[tokio::test]
 async fn boots_serves_and_shuts_down() {
@@ -300,4 +317,184 @@ async fn an_integrity_section_without_a_reference_refuses_to_start() {
         .await
         .expect_err("the rounds need a reference to compare against");
     assert!(error.to_string().contains("ARKIV_RPC_URL"), "{error}");
+}
+
+/// A chain with one entity, a fake reference at its head, an honest
+/// provider and one lying about the entity, and a config that probes
+/// fast with the reference set; the tests add the integrity section.
+struct IntegrityFleet {
+    chain: FakeChain,
+    reference: Arc<FakeProvider>,
+    honest: Arc<FakeProvider>,
+    liar: Arc<FakeProvider>,
+    config: Config,
+}
+
+async fn integrity_fleet() -> IntegrityFleet {
+    let chain = FakeChain::new(Address::ZERO, CHAIN_ID);
+    chain.advance(200);
+    chain.write_as(
+        Address::ZERO,
+        Agreement {
+            provider: Address::ZERO,
+            offer: alloy_primitives::B256::ZERO,
+            wei_per_call: Wei::new(5),
+            remote_port: 20001,
+        }
+        .encode(),
+        Expiry::Seconds(3600),
+    );
+    let (reference_addr, reference) = rpc_provider_on(&chain).await;
+    let (honest_addr, honest) = rpc_provider_on(&chain).await;
+    let (liar_addr, liar) = rpc_provider_on(&chain).await;
+    for rpc in [&reference, &honest, &liar] {
+        rpc.height.store(chain.head(), Ordering::Relaxed);
+    }
+    liar.lie_entity.store(true, Ordering::Relaxed);
+
+    let mut config = Config::default();
+    config.listen.public = "127.0.0.1:0".parse().expect("addr");
+    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    config.reference = Some(format!("http://{reference_addr}"));
+    config.health.probe_interval = Duration::from_millis(20);
+    config.health.flip_after = 2;
+    config.health.chain_id = Some(CHAIN_ID);
+    config.providers = vec![
+        Provider {
+            id: "honest".into(),
+            url: format!("http://{honest_addr}"),
+        },
+        Provider {
+            id: "liar".into(),
+            url: format!("http://{liar_addr}"),
+        },
+    ];
+    IntegrityFleet {
+        chain,
+        reference,
+        honest,
+        liar,
+        config,
+    }
+}
+
+const INTEGRITY: Integrity = Integrity {
+    interval: Duration::from_millis(500),
+    confirm_after: Duration::from_millis(50),
+};
+
+async fn nodes(admin: &str) -> serde_json::Value {
+    reqwest::Client::new()
+        .get(format!("{admin}/nodes"))
+        .send()
+        .await
+        .expect("nodes answers")
+        .json()
+        .await
+        .expect("json")
+}
+
+/// `/nodes` once `accept` is true of it, within ten seconds.
+async fn nodes_until(
+    admin: &str,
+    accept: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let nodes = nodes(admin).await;
+        if accept(&nodes) {
+            return nodes;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the nodes view never showed what was waited for: {nodes}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The whole path over the wire: fake reference, fake providers, the
+/// configured checker in the service, the verdict on `/nodes`.
+#[tokio::test]
+async fn a_configured_integrity_round_takes_a_liar_out_of_rotation() {
+    let mut fleet = integrity_fleet().await;
+    fleet.config.integrity = Some(INTEGRITY);
+    let service = lb::service::start(fleet.config)
+        .await
+        .expect("service boots");
+    let admin = format!("http://{}", service.admin_addr);
+
+    // The first round runs once the probes have admitted the providers;
+    // the liar's mismatch is confirmed inside it.
+    let nodes = nodes_until(&admin, |nodes| {
+        nodes[1]["integrity_verdict"] == "divergence"
+    })
+    .await;
+    assert_eq!(nodes[0]["id"], "honest");
+    assert_eq!(nodes[0]["integrity_verdict"], "match");
+    assert_eq!(nodes[0]["eligible"], true);
+    assert_eq!(nodes[1]["id"], "liar");
+    assert_eq!(nodes[1]["eligible"], false);
+    assert_eq!(nodes[1]["ineligibility_reason"], "integrity");
+    assert_eq!(
+        nodes[1]["integrity_height"],
+        fleet.chain.head() - FINALITY_LAG,
+        "a verdict is stamped with the round's finalized height"
+    );
+
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn without_an_integrity_section_nobody_is_checked() {
+    let fleet = integrity_fleet().await;
+    assert!(fleet.config.integrity.is_none());
+    let service = lb::service::start(fleet.config)
+        .await
+        .expect("service boots");
+    let admin = format!("http://{}", service.admin_addr);
+
+    // Admitted by the probes, the point at which a configured checker
+    // would run its first round; a little longer, so a round that did
+    // run would have left its reads on the reference.
+    nodes_until(&admin, |nodes| {
+        nodes[0]["eligible"] == true && nodes[1]["eligible"] == true
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let nodes = nodes(&admin).await;
+    assert_eq!(nodes[1]["id"], "liar");
+    assert_eq!(nodes[1]["eligible"], true, "a liar nobody checks serves");
+    assert_eq!(nodes[1]["integrity_verdict"], serde_json::Value::Null);
+    assert_eq!(fleet.reference.blocks.load(Ordering::Relaxed), 0);
+    assert!(fleet.reference.asked_keys.lock().expect("keys").is_empty());
+    assert_eq!(fleet.liar.blocks.load(Ordering::Relaxed), 0);
+
+    service.shutdown().await;
+}
+
+/// The probes keep their short timeout while the round's reads, which
+/// are heavier, run under the client's: a fleet that answers integrity
+/// reads slower than a probe may wait is still judged.
+#[tokio::test]
+async fn integrity_reads_run_under_the_client_timeout_not_the_probes() {
+    let mut fleet = integrity_fleet().await;
+    fleet.config.integrity = Some(INTEGRITY);
+    fleet.config.health.probe_timeout = Duration::from_millis(100);
+    fleet.config.proxy.attempt_timeout = Duration::from_secs(2);
+    for rpc in [&fleet.reference, &fleet.honest, &fleet.liar] {
+        rpc.delay_ms.store(300, Ordering::Relaxed);
+    }
+    let service = lb::service::start(fleet.config)
+        .await
+        .expect("service boots");
+    let admin = format!("http://{}", service.admin_addr);
+
+    // A read cut off by the probe's timeout would be unknown, never a
+    // match.
+    let nodes = nodes_until(&admin, |nodes| nodes[0]["integrity_verdict"] == "match").await;
+    assert_eq!(nodes[0]["id"], "honest");
+    assert_eq!(nodes[0]["eligible"], true, "probes stayed quick");
+
+    service.shutdown().await;
 }

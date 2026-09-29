@@ -3,7 +3,8 @@
 //! how much of that chain it has. It answers block and entity reads
 //! as an honest node would, and it can be told to lie in the ways the
 //! integrity checks are meant to catch: a wrong block, a wrong entity,
-//! a head kept behind.
+//! a head kept behind. It answers the reference's reads too, so a
+//! service test can run the LB against nothing but fakes.
 
 use std::{
     net::SocketAddr,
@@ -24,12 +25,12 @@ use lb::chain::{
 };
 use serde_json::{Value, json};
 
-use super::fake_chain::FakeChain;
+use super::fake_chain::{FINALITY_LAG, FakeChain};
 
 /// A provider that answers `eth_blockNumber` and `eth_chainId` from
 /// settable state, with a switch to play dead (503 to everything), and
-/// `eth_getBlockByNumber` and `arkiv_query` by key from the chain it
-/// serves, up to its own height.
+/// `eth_getBlockByNumber` and `arkiv_query` from the chain it serves,
+/// up to its own height.
 pub struct FakeProvider {
     pub height: AtomicU64,
     pub chain_id: AtomicU64,
@@ -134,15 +135,18 @@ impl FakeProvider {
     }
 
     /// `eth_getBlockByNumber`: the chain's block, as a node renders it,
-    /// or null past this provider's own height.
+    /// or null past this provider's own height. `finalized` is the
+    /// chain's margin behind this provider's height.
     async fn block(&self, params: &Value) -> Value {
         self.blocks.fetch_add(1, Ordering::Relaxed);
         self.delay().await;
-        let number = params[0]
-            .as_str()
-            .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
-            .expect("a block number in hex");
-        if number > self.height.load(Ordering::Relaxed) {
+        let height = self.height.load(Ordering::Relaxed);
+        let number = match params[0].as_str() {
+            Some("finalized") => height.saturating_sub(FINALITY_LAG),
+            Some(hex) => parse_hex(hex),
+            None => panic!("a block tag or number"),
+        };
+        if number > height {
             return Value::Null;
         }
         let Some(mut block) = self
@@ -159,23 +163,32 @@ impl FakeProvider {
         render_block(&block)
     }
 
-    /// `arkiv_query` by `$key`: the chain's entity if it is alive at
-    /// this provider's height, answered at that height.
+    /// `arkiv_query`, in the two shapes the LB sends: one entity by
+    /// `$key`, or the page alive past a height. Answered at this
+    /// provider's height, or at `atBlock` when the read is pinned; an
+    /// entity is on the answer when it is alive at that block.
     async fn query(&self, params: &Value) -> Value {
         self.delay().await;
         let text = params[0].as_str().expect("a query text");
-        let key = text
-            .split("$key = key(")
-            .nth(1)
-            .and_then(|rest| rest.split(')').next())
-            .and_then(|hex| B256::from_str(hex).ok())
-            .expect("a query by $key");
-        self.asked_keys.lock().expect("asked keys").push(key);
-        let height = self.height.load(Ordering::Relaxed);
-        let data: Vec<Value> = self
-            .chain
-            .entity(key)
-            .filter(|entity| entity.expires_at > height)
+        let at = match params[1]["atBlock"].as_str() {
+            Some(hex) => parse_hex(hex),
+            None => self.height.load(Ordering::Relaxed),
+        };
+        let entities = if let Some(key) = argument(text, "$key = key(") {
+            let key = B256::from_str(key).expect("a key");
+            self.asked_keys.lock().expect("asked keys").push(key);
+            self.chain.entity(key).into_iter().collect()
+        } else if let Some(head) = argument(text, "$expiresAt > u64(") {
+            let head: u64 = head.parse().expect("a height");
+            let mut page = self.chain.entities();
+            page.retain(|entity| entity.expires_at > head);
+            page
+        } else {
+            panic!("unexpected query: {text}");
+        };
+        let data: Vec<Value> = entities
+            .iter()
+            .filter(|entity| entity.expires_at > at)
             .map(|entity| {
                 let mut entity = entity.as_arkiv_entity();
                 if self.lie_entity.load(Ordering::Relaxed) {
@@ -185,10 +198,20 @@ impl FakeProvider {
                 }
                 render_entity(&entity)
             })
-            .into_iter()
             .collect();
-        json!({ "data": data, "blockNumber": format!("{height:#x}") })
+        json!({ "data": data, "blockNumber": format!("{at:#x}") })
     }
+}
+
+fn parse_hex(hex: &str) -> u64 {
+    u64::from_str_radix(hex.trim_start_matches("0x"), 16).expect("a hex quantity")
+}
+
+/// What stands between `opener` and the next `)` in the query text.
+fn argument<'a>(text: &'a str, opener: &str) -> Option<&'a str> {
+    text.split(opener)
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
 }
 
 /// A block in the node's JSON, with the fields the reader decodes and

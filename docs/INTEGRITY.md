@@ -47,8 +47,8 @@ reference                        LB                          provider
 Two things, every round, and both are reads any client makes.
 
 **The block at the finalized height.** The LB reads the reference's
-finalized block once, with its transactions, and asks every provider for
-the block at that height. A fixed set of fields is compared: the block
+finalized block once, with its transaction hashes, and asks every
+provider for the block at that height. A fixed set of fields is compared: the block
 hash, the parent hash, the state, transactions and receipts roots, and
 the list of transaction hashes. Not the hash alone, which is one field
 any node can fetch from anywhere; and not every field, because clients
@@ -64,7 +64,7 @@ key and asks every provider for it with an ordinary query by key, with
 no block parameter, exactly as a client would. Each answer says which
 block it was served at. The LB then asks the reference for the same key
 pinned at that block, and compares the two entities field by field:
-attributes, payload, owner, creator, expiry, content type.
+creator, creation and expiry heights, payload, attributes.
 
 Pinning the reference to the provider's own block is what makes the
 comparison exact. Blocks are two seconds apart, and two nodes asked at
@@ -74,11 +74,13 @@ cannot be told from client traffic by its shape, and a provider that
 lies to clients about an entity lies to the check.
 
 One key serves the whole fleet each round, and the reference is asked
-once, at the block most providers answered at. A provider that answered
-at another block, which happens when one is a block ahead of the rest,
-is not judged this round and is compared at the next. So a round costs
-the reference one block and one entity read whatever the size of the
-fleet, and every reference call is metered.
+once per block the providers answered at, not once per provider. The
+fleet answers at one or two blocks, since one provider is at most a
+block ahead of the rest, so a round costs the reference one block read
+and one or two entity reads whatever the size of the fleet, and every
+reference call is metered. The reference is not asked at a block it
+does not have yet, nor at one further behind its head than the lag
+tolerance: those answers are unknown or stale before any comparison.
 
 ## Where the key comes from
 
@@ -117,12 +119,13 @@ Each provider gets one of four verdicts per round.
   briefly on the losing side of one matches on the second try. A liar
   does not.
 - **unknown** — the reference could not be reached or has no finalized
-  block, so nobody is judged; or a provider answered the entity at a
-  block other than the one the reference was asked at, so that provider
-  waits for the next round; or a provider did not answer a round's read
-  in time, which is unknown for that provider and not unhealthy, since
-  liveness is the health check's job and a round must not count the
-  same failure twice. An unknown changes nothing, in either direction.
+  block, so nobody is judged; or the reference could not be read at the
+  block a provider answered at, or does not have that block yet, so
+  that provider waits for the next round; or a provider did not answer
+  a round's read in time, which is unknown for that provider and not
+  unhealthy, since liveness is the health check's job and a round must
+  not count the same failure twice. An unknown changes nothing, in
+  either direction.
 
 Every round logs one line with the count of each verdict, so a quiet
 fleet still leaves a record that it was checked. Per provider, a match
@@ -164,9 +167,10 @@ it does not serve are not paid.
 When a divergence is confirmed, the LB logs one event at warning level
 with everything it held at that moment: the provider, its agreement id,
 which check failed, and the two answers side by side. For the block,
-that is the height and the two block hashes. For the entity, it is the
-key, the block the provider answered at, and the two entities with their
-attributes in full and their payloads as hashes.
+that is the height, the two block hashes, and every compared field that
+differs, with both values. For the entity, it is the key, the block the
+provider answered at, and the two entities with their attributes in
+full and their payloads as hashes.
 
 That event is the evidence. The nodes view on the admin API also shows
 each provider's last verdict and the block height it was judged at, in

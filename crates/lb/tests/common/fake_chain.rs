@@ -160,6 +160,11 @@ impl FakeChain {
             .cloned()
     }
 
+    /// Every entity stored, expired ones included.
+    pub fn entities(&self) -> Vec<Entity> {
+        self.state().entities.clone()
+    }
+
     pub fn transactions(&self) -> Vec<Transaction> {
         self.state().transactions.clone()
     }

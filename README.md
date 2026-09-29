@@ -45,6 +45,15 @@ not operator-chosen.
   and rehearsing needs no key at all. It talks to no part of the load
   balancer, so it runs anywhere with access to both chains. How to run
   it is in [docs/RUNBOOK.md](docs/RUNBOOK.md).
+- **The integrity checker** (`crates/lb/src/integrity.rs`): with the
+  `[integrity]` section configured, the LB compares what each provider
+  serves against the reference endpoint, once a round: the block at
+  the finalized height, and one entity read the way a client reads it.
+  A provider whose answers differ, twice, is taken out of rotation
+  with both answers logged side by side, and only a passing round
+  brings it back. The design and what it cannot catch are
+  [docs/INTEGRITY.md](docs/INTEGRITY.md). Tested in-process over fake
+  providers and a fake reference.
 - **The host stack** (`compose.yaml`, `Dockerfile`, `tunnel/`): the LB
   and the tunnel server for NAT'd providers, deployed together —
   operations in [docs/RUNBOOK.md](docs/RUNBOOK.md), the tunnel decision
@@ -56,13 +65,6 @@ not operator-chosen.
   standalone load generator pointable at any endpoint. Runs locally
   and as an on-demand CI workflow. The testing approach across the
   repository is [docs/TESTING.md](docs/TESTING.md).
-
-## Still to come
-
-- Integrity checks: a provider serving data that is not the chain's is
-  taken out of rotation, with the two answers logged side by side. The
-  design is [docs/INTEGRITY.md](docs/INTEGRITY.md); the code is not
-  there yet.
 
 The node-operator side lives in the companion repo,
 [arkiv-community-node](https://github.com/gumb0/arkiv-community-node).

@@ -450,6 +450,15 @@ impl Marketplace {
                 )));
             }
         }
+        // A record still on its accept window is told from an extended
+        // one by its life alone.
+        if self.accept_window >= self.agreement_life {
+            return Err(ConfigError::Invalid(format!(
+                "marketplace.accept_window ({:?}) must be shorter than agreement_life ({:?}): \
+                 an accepted record is told from an extended one by its life",
+                self.accept_window, self.agreement_life
+            )));
+        }
         // The refresh leaves out records memory shows expired, and
         // memory learns a refreshed expiry at the next discovery poll:
         // the poll has to come before the next refresh.
@@ -691,9 +700,15 @@ mod tests {
                 assert!(error.to_string().contains(name), "{odd}: {error}");
                 assert!(error.to_string().contains("even"), "{odd}: {error}");
             }
-            // A four-second agreement life needs a flush that fits it.
+            // A four-second agreement life needs a flush that fits it
+            // and an accept window shorter still.
+            let window = if name == "accept_window" {
+                ""
+            } else {
+                "accept_window = \"2s\"\n"
+            };
             parse(&format!(
-                "{MARKETPLACE}{name} = \"4s\"\nflush_interval = \"2s\"\n"
+                "{MARKETPLACE}{name} = \"4s\"\nflush_interval = \"2s\"\n{window}"
             ))
             .expect("even seconds are fine");
         }
@@ -724,6 +739,20 @@ mod tests {
         assert!(error.to_string().contains("refresh_interval"), "{error}");
         parse(&format!(
             "{MARKETPLACE}discovery_interval = \"59m\"\nrefresh_interval = \"1h\"\n"
+        ))
+        .expect("shorter is fine");
+    }
+
+    #[test]
+    fn the_accept_window_is_shorter_than_the_agreement_life() {
+        let error = parse(&format!(
+            "{MARKETPLACE}accept_window = \"1d\"\nagreement_life = \"1d\"\n"
+        ))
+        .expect_err("must refuse");
+        assert!(error.to_string().contains("accept_window"), "{error}");
+        assert!(error.to_string().contains("agreement_life"), "{error}");
+        parse(&format!(
+            "{MARKETPLACE}accept_window = \"2h\"\nagreement_life = \"1d\"\n"
         ))
         .expect("shorter is fine");
     }

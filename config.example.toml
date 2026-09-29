@@ -94,7 +94,9 @@ remote_port_start = 20000
 # own records back, which is how a refresh knows which ones still live.
 discovery_interval = "5m"
 # An accepted provider's first lifetime: the time it has to connect
-# its tunnel before its slot frees up again.
+# its tunnel before its slot frees up again. Shorter than
+# agreement_life: a record still on this window is told from an
+# extended one by its life.
 # An even number of seconds: lifetimes are whole blocks of two seconds.
 accept_window = "2h"
 # How often the listing and every eligible provider's agreement record

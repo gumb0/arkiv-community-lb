@@ -482,7 +482,36 @@ async fn an_expired_key_is_never_picked() {
 }
 
 #[tokio::test]
-async fn a_page_with_no_live_key_left_skips_the_round() {
+async fn a_page_with_no_live_key_left_is_read_again() {
+    let fleet = fleet(1).await;
+    fleet.checker.round().await;
+    assert_eq!(fleet.chain.unpinned_reads(), 1);
+
+    // The chain moves past the expiry of the page's one entity, and
+    // has another by then.
+    let old = fleet.providers[0].asked_keys.lock().expect("asked")[0];
+    let expires_at = fleet.chain.entity(old).expect("stored").expires_at;
+    fleet.chain.advance(expires_at + 1 - fleet.chain.head());
+    let new = write_entity(&fleet.chain, 3600);
+    fleet.providers[0]
+        .height
+        .store(fleet.chain.head(), Ordering::Relaxed);
+    fleet.checker.round().await;
+    assert_eq!(
+        fleet.chain.unpinned_reads(),
+        2,
+        "a day has not passed, and the page was read"
+    );
+    let asked = fleet.providers[0].asked_keys.lock().expect("asked").clone();
+    assert_eq!(asked, [old, new]);
+    assert_eq!(
+        entry(&fleet.pool, 0).last_verdict(),
+        Some((Verdict::Match, fleet.chain.head() - FINALITY_LAG))
+    );
+}
+
+#[tokio::test]
+async fn a_chain_with_no_live_entity_skips_the_round() {
     let chain = FakeChain::new(Address::ZERO, CHAIN_ID);
     chain.advance(200);
     let only = write_entity(&chain, 20);
@@ -512,6 +541,11 @@ async fn a_page_with_no_live_key_left_skips_the_round() {
         "nobody judged: the verdict is the first round's"
     );
     assert_eq!(rpc.blocks.load(Ordering::Relaxed), 1, "no provider asked");
+    assert_eq!(
+        chain.unpinned_reads(),
+        2,
+        "the page was read again, and held nothing alive"
+    );
 }
 
 #[tokio::test]

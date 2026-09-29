@@ -424,17 +424,24 @@ impl<R: ChainReader> IntegrityChecker<R> {
     }
 
     /// Reads one page of live entities from the reference and keeps
-    /// their keys and expiries, at the first round and then once the
-    /// page is a day old. A read that fails keeps the
-    /// page as it was and is tried again at the next round. The lock is
-    /// never held across the read.
+    /// their keys and expiries, at the first round, once the page is a
+    /// day old, and once no key on it is alive any more. A read that
+    /// fails keeps the page as it was and is tried again at the next
+    /// round. The lock is never held across the read.
     async fn load_keys_if_due(&self, head: u64) {
-        let due = self
-            .keys
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .read_at
-            .is_none_or(|at| at.elapsed() >= self.key_page_interval);
+        let due = {
+            let page = self
+                .keys
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A page of short-lived entities has none left long before
+            // the day is over, and the chain has others by then.
+            let none_alive = !page.keys.iter().any(|(_, expires_at)| *expires_at > head);
+            none_alive
+                || page
+                    .read_at
+                    .is_none_or(|at| at.elapsed() >= self.key_page_interval)
+        };
         if !due {
             return;
         }

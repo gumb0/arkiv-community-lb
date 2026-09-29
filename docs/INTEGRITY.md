@@ -88,7 +88,10 @@ Once a day the LB reads one page of live entities from the reference,
 every writer's records and not only its own, and each round picks a key
 from that page at random. The page carries each entity's expiry, so a
 round skips a key whose entity has expired since the page was read and
-picks another.
+picks another. When every entity on the page has expired, the page is
+read again at the next round instead of at the end of the day: a page
+of short-lived entities would otherwise leave the rounds with nothing
+to sample for hours.
 
 Known weakness: the page a node returns for the same query is in the
 node's own order, so a stable set of long-lived entities can make the

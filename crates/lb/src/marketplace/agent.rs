@@ -651,6 +651,9 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     async fn reconcile_counters(&self, head: u64) -> Result<Counters, ReconcileError> {
         let records = self.read_open_counters(head).await?;
         let (oldest, duplicates) = Self::oldest_per_agreement(records);
+        // A record memory held that is no longer open may have been
+        // closed by a write whose answer was lost.
+        self.forget_closed_counters(&oldest).await?;
         let (open, strays) = self.match_to_agreements(oldest);
         Ok(Counters {
             open,
@@ -720,6 +723,48 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         (oldest, duplicates)
     }
 
+    /// Finds the records memory held that are no longer among the open
+    /// ones and are closed on the chain: their counts leave the
+    /// entries, and memory forgets them.
+    async fn forget_closed_counters(
+        &self,
+        open: &CountersByAgreement,
+    ) -> Result<(), ReconcileError> {
+        let missing: Vec<(EntityKey, EntityKey)> = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(key, _)| !open.contains_key(*key))
+            .filter_map(|(key, live)| Some((*key, live.counter.as_ref()?.key)))
+            .collect();
+        // Every read before memory changes, so one that fails changes
+        // nothing.
+        let mut closed = Vec::new();
+        for (agreement, counter) in missing {
+            if let Some(count) = self.closed_count(counter).await? {
+                closed.push((agreement, count));
+            }
+        }
+        let mut known = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (agreement, count) in closed {
+            let Some(live) = known.get_mut(&agreement) else {
+                continue;
+            };
+            tracing::warn!(%agreement, count, "the counter record was closed by a write whose answer was lost: the next flush opens its successor");
+            // The period is written, so its count leaves the entry, as
+            // it does when the close is answered.
+            if let Some(entry) = self.provider_entry(&live.agreement.record) {
+                entry.subtract_served(count);
+            }
+            live.counter = None;
+        }
+        Ok(())
+    }
+
     /// Gives each agreement in memory the open record it counts into.
     /// Returns those records by agreement key, and the records no
     /// agreement in memory took.
@@ -759,6 +804,32 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             }
         }
         (open, records.into_values().collect())
+    }
+
+    /// The count a counter record was closed with, `None` when it is
+    /// not closed or no longer on the chain.
+    async fn closed_count(&self, counter: EntityKey) -> Result<Option<u64>, ReconcileError> {
+        let query = Query::kind(KIND_COUNTER)
+            .creator(self.identity.address)
+            .key(counter);
+        let page = self
+            .reader
+            .query(&query)
+            .await
+            .map_err(ReconcileError::Chain)?;
+        let Some(entity) = page.entities.first() else {
+            return Ok(None);
+        };
+        match Stored::<CounterRecord>::decode(entity) {
+            Ok(stored) if stored.record.state == CounterState::Closed => {
+                Ok(Some(stored.record.count))
+            }
+            Ok(_) => Ok(None),
+            Err(error) => {
+                tracing::warn!(key = %counter, %error, "a counter record does not decode: skipped");
+                Ok(None)
+            }
+        }
     }
 
     /// The offers against this LB's listing, and the acceptances they
@@ -1285,7 +1356,8 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
 
     /// The second batch: a successor for every close that landed. A
     /// close that did not land changes nothing and is made again at
-    /// the next flush.
+    /// the next flush; one that landed without its answer is found
+    /// closed by the next counter reconcile.
     fn end_periods(&self, closing: &[Closing], landed: &Landed, head: u64) -> Batch {
         let mut successors = Batch::new();
         let mut known = self
@@ -1344,7 +1416,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                     tracing::error!(
                         %error,
                         operations = sent.batch.operations().len(),
-                        "a flush batch did not land: its counts are written at the next flush"
+                        "a flush batch was not answered as landed: the next flush writes against what the chain shows"
                     );
                 }
             }
@@ -1357,8 +1429,8 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
 /// names. A batch is one transaction, so every patch in it applied,
 /// and an answer naming fewer is the node or the sidecar changing
 /// shape under us. Said out loud, because what follows from it is
-/// silent: a close taken for lost leaves its count on the provider's
-/// entry, and the period is written and paid a second time.
+/// silent: a close taken for lost gets no successor until the next
+/// counter reconcile finds the record closed, at every period's end.
 fn warn_unnamed_patches(batch: &Batch, result: &BatchResult) {
     let patches = batch
         .operations()
@@ -1369,7 +1441,7 @@ fn warn_unnamed_patches(batch: &Batch, result: &BatchResult) {
         tracing::warn!(
             named = result.patched_entities.len(),
             patches,
-            "the answer to a flush batch does not name every record it patched: a settlement period closed in it may be counted again"
+            "the answer to a flush batch does not name every record it patched: a settlement period closed in it gets its successor a flush late"
         );
     }
 }

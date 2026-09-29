@@ -1719,11 +1719,8 @@ async fn a_flush_over_the_transaction_limit_lands_in_several() {
     assert!(chain.transactions().len() - writes_before >= 2, "split");
 }
 
-/// Pins what happens today, which is wrong (#52): the thirteen the
-/// closed record pays are written into the successor too. The fix
-/// flips the last assertion to four.
 #[tokio::test]
-async fn a_close_whose_answer_was_lost_is_counted_into_the_next_period_too() {
+async fn a_close_whose_answer_was_lost_is_not_counted_into_the_next_period() {
     let chain = FakeChain::new(LB, CHAIN_ID);
     let config = short_periods();
     let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
@@ -1740,22 +1737,28 @@ async fn a_close_whose_answer_was_lost_is_counted_into_the_next_period_too() {
     assert_eq!(closed.state, CounterState::Closed);
     assert_eq!(closed.count, 13, "the period is written and paid");
 
-    // Only the four served since should reach the next period; the
-    // thirteen are paid by the closed record already. Two flushes: the
-    // first finds the agreement without an open record and opens one
-    // at zero, the second writes the entry's count into it.
+    // Only the four served since reach the next period; the thirteen
+    // are paid by the closed record already. Two flushes: the first
+    // finds the record closed, takes its count off the entry and opens
+    // a successor at zero, the second writes the entry's count into it.
     serve(&pool, provider(1), 4);
     agent.flush().await;
+    assert_eq!(
+        served_by(&pool, provider(1)),
+        4,
+        "the closed period left the entry"
+    );
     agent.flush().await;
     let records = counter_records(&chain).await;
+    assert_eq!(records.len(), 2, "the closed record and one successor");
     let successor = records
         .iter()
         .find(|record| record.key != key)
         .expect("a successor was opened");
     assert_eq!(
         counter(&chain, successor.key).await.count,
-        17,
-        "the closed period's count again, with the four: #52"
+        4,
+        "only what came after the close"
     );
     assert_eq!(counter(&chain, key).await.count, 13, "the closed stands");
 }

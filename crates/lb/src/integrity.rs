@@ -476,15 +476,22 @@ impl<R: ChainReader> IntegrityChecker<R> {
         };
         match self.reference.query(&query).await {
             Ok(page) => {
+                let keys: Vec<(EntityKey, u64)> = page
+                    .entities
+                    .iter()
+                    .map(|entity| (entity.key, entity.expires_at))
+                    .collect();
+                tracing::info!(
+                    keys = keys.len(),
+                    head,
+                    last_expiry = keys.iter().map(|(_, expires_at)| *expires_at).max(),
+                    "integrity: the page of live entities was read"
+                );
                 *self
                     .keys
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = KeyPage {
-                    keys: page
-                        .entities
-                        .iter()
-                        .map(|entity| (entity.key, entity.expires_at))
-                        .collect(),
+                    keys,
                     read_at: Some(std::time::Instant::now()),
                 };
             }

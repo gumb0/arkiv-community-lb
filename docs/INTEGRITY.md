@@ -135,7 +135,9 @@ fleet still leaves a record that it was checked. Per provider, a match
 is logged at debug level and a stale or unknown at info; a confirmed
 divergence is the warning-level event below. Until the first page of
 keys has been read after a start, no round can pass, and the log says
-so.
+so. Every read of the page of keys logs one line at info with the
+number of keys and the block at which the last of them expires, since
+the read is a metered call and the line is how its cost is counted.
 
 ## Out of rotation, and back
 

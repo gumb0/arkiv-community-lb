@@ -479,7 +479,12 @@ async fn without_an_integrity_section_nobody_is_checked() {
 #[tokio::test]
 async fn integrity_reads_run_under_the_client_timeout_not_the_probes() {
     let mut fleet = integrity_fleet().await;
-    fleet.config.integrity = Some(INTEGRITY);
+    // Long enough that the round, slowed by the delays, ends before the
+    // next is due, or shutdown would wait for a second round.
+    fleet.config.integrity = Some(Integrity {
+        interval: Duration::from_secs(5),
+        ..INTEGRITY
+    });
     fleet.config.health.probe_timeout = Duration::from_millis(100);
     fleet.config.proxy.attempt_timeout = Duration::from_secs(2);
     for rpc in [&fleet.reference, &fleet.honest, &fleet.liar] {

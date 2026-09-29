@@ -156,7 +156,10 @@ async fn a_wrong_entity_is_a_divergence_after_a_second_look() {
         liar.last_verdict().map(|(v, _)| v),
         Some(Verdict::Divergence)
     );
-    assert_eq!(fleet.providers[0].queries.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        fleet.providers[0].asked_keys.lock().expect("asked").len(),
+        2
+    );
 }
 
 #[tokio::test]
@@ -285,7 +288,13 @@ async fn a_health_quarantined_provider_is_not_asked() {
     fleet.checker.round().await;
     assert!(fleet.providers[0].blocks.load(Ordering::Relaxed) > 0);
     assert_eq!(fleet.providers[1].blocks.load(Ordering::Relaxed), 0);
-    assert_eq!(fleet.providers[1].queries.load(Ordering::Relaxed), 0);
+    assert!(
+        fleet.providers[1]
+            .asked_keys
+            .lock()
+            .expect("asked")
+            .is_empty()
+    );
     assert_eq!(entry(&fleet.pool, 1).last_verdict(), None);
 }
 
@@ -432,4 +441,117 @@ async fn rounds_keep_the_configured_cadence_and_stop_at_shutdown() {
         .await
         .expect("the loop returns at shutdown")
         .expect("no panic");
+}
+
+/// One more entity on the fleet's chain, alive this many seconds.
+fn write_entity(chain: &FakeChain, seconds: u64) -> alloy_primitives::B256 {
+    chain.write_as(
+        Address::ZERO,
+        Agreement {
+            provider: Address::ZERO,
+            offer: alloy_primitives::B256::ZERO,
+            wei_per_call: Wei::new(5),
+            remote_port: 20002,
+        }
+        .encode(),
+        Expiry::Seconds(seconds),
+    )
+}
+
+#[tokio::test]
+async fn an_expired_key_is_never_picked() {
+    let fleet = fleet(1).await;
+    // A second entity that expires soon; the page is read while both
+    // are alive, then the chain moves past the short one's expiry.
+    let short = write_entity(&fleet.chain, 20);
+    fleet.checker.round().await;
+    let expires_at = fleet.chain.entity(short).expect("stored").expires_at;
+    fleet.chain.advance(expires_at + 1 - fleet.chain.head());
+    fleet.providers[0]
+        .height
+        .store(fleet.chain.head(), Ordering::Relaxed);
+    for _ in 0..10 {
+        fleet.checker.round().await;
+    }
+    let asked = fleet.providers[0].asked_keys.lock().expect("asked").clone();
+    assert_eq!(asked.len(), 11, "one key per round");
+    assert!(
+        asked[1..].iter().all(|key| *key != short),
+        "the expired key was picked from the old page"
+    );
+}
+
+#[tokio::test]
+async fn a_page_with_no_live_key_left_skips_the_round() {
+    let chain = FakeChain::new(Address::ZERO, CHAIN_ID);
+    chain.advance(200);
+    let only = write_entity(&chain, 20);
+    let (addr, rpc) = rpc_provider_on(&chain).await;
+    rpc.height.store(chain.head(), Ordering::Relaxed);
+    let pool = Arc::new(
+        Pool::new(&[config::Provider {
+            id: "p0".into(),
+            url: format!("http://{addr}"),
+        }])
+        .expect("url parses"),
+    );
+    pool.snapshot()[0].set_health(true);
+    let checker = checker(&pool, &chain, &Arc::new(AtomicBool::new(true)));
+    checker.round().await;
+    let provider = pool.snapshot()[0].clone();
+    let judged_at = provider.last_verdict().map(|(_, height)| height);
+    assert!(judged_at.is_some(), "the first round judged");
+
+    let expires_at = chain.entity(only).expect("stored").expires_at;
+    chain.advance(expires_at + 1 - chain.head());
+    rpc.height.store(chain.head(), Ordering::Relaxed);
+    checker.round().await;
+    assert_eq!(
+        provider.last_verdict().map(|(_, height)| height),
+        judged_at,
+        "nobody judged: the verdict is the first round's"
+    );
+    assert_eq!(rpc.blocks.load(Ordering::Relaxed), 1, "no provider asked");
+}
+
+#[tokio::test]
+async fn the_page_of_keys_is_read_once_per_interval() {
+    let fleet = fleet(1).await;
+    let interval = Duration::from_millis(200);
+    let checker = checker(&fleet.pool, &fleet.chain, &fleet.ready).with_key_page_interval(interval);
+    for _ in 0..3 {
+        checker.round().await;
+    }
+    assert_eq!(fleet.chain.unpinned_reads(), 1, "three rounds, one page");
+    tokio::time::sleep(interval + interval / 4).await;
+    checker.round().await;
+    assert_eq!(fleet.chain.unpinned_reads(), 2, "read again once it is old");
+}
+
+#[tokio::test]
+async fn a_page_read_that_fails_keeps_the_page_and_is_tried_again() {
+    let fleet = fleet(1).await;
+    let interval = Duration::from_millis(100);
+    let checker = checker(&fleet.pool, &fleet.chain, &fleet.ready).with_key_page_interval(interval);
+    checker.round().await;
+    assert_eq!(fleet.chain.unpinned_reads(), 1);
+
+    // The page is due again, and the reference cannot answer queries:
+    // the round goes on with the page it has.
+    tokio::time::sleep(interval + interval / 4).await;
+    fleet.chain.fail_queries("queries down");
+    checker.round().await;
+    let asked = fleet.providers[0].asked_keys.lock().expect("asked").len();
+    assert_eq!(asked, 2, "the provider was still asked, from the old page");
+    assert_eq!(
+        fleet.chain.unpinned_reads(),
+        1,
+        "the failed read is not a read"
+    );
+
+    // Healed: the next round reads the page again rather than waiting
+    // out another interval.
+    fleet.chain.heal();
+    checker.round().await;
+    assert_eq!(fleet.chain.unpinned_reads(), 2, "tried again at once");
 }

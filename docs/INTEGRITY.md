@@ -30,7 +30,7 @@ reference                        LB                          provider
     │─── the whole block ────────►│─── the block at H ───────────►│  2. every provider,
     │                             │◄── its block at H ────────────│     compared whole
     │                             │                               │
-    │◄── a page of live keys ─────│                               │  3. once an hour
+    │◄── a page of live keys ─────│                               │  3. once a day
     │─── keys ───────────────────►│   one picked at random        │
     │                             │─── arkiv_query by key ───────►│  4. no block given,
     │                             │◄── the entity, at block B ────│     as a client asks
@@ -82,7 +82,7 @@ fleet, and every reference call is metered.
 
 ## Where the key comes from
 
-Once an hour the LB reads one page of live entities from the reference,
+Once a day the LB reads one page of live entities from the reference,
 every writer's records and not only its own, and each round picks a key
 from that page at random. The page carries each entity's expiry, so a
 round skips a key whose entity has expired since the page was read and
@@ -90,7 +90,7 @@ picks another.
 
 Known weakness: the page a node returns for the same query is in the
 node's own order, so a stable set of long-lived entities can make the
-same page come back every hour, and a provider could in time learn which
+same page come back every day, and a provider could in time learn which
 entities are sampled. The fix, when it matters, is to walk a random
 number of pages before taking one. It is not done today.
 

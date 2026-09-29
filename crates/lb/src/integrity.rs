@@ -55,6 +55,12 @@ use crate::{
 /// Provider reads in flight at once, the probe sweep's bound.
 const CONCURRENT_READS: usize = 16;
 
+/// How often the page of keys to sample from is read again. A page
+/// read costs the reference as much as a sample, a page goes stale
+/// only as its entities expire, which the pick already skips, and two
+/// hundred keys hold long-lived records enough for a day.
+const KEY_PAGE_INTERVAL: Duration = Duration::from_secs(24 * 3600);
+
 /// The integrity checker: one round every interval over the providers
 /// whose health is fine, each round two reads per provider compared
 /// against the reference, and one verdict per provider recorded on its
@@ -74,11 +80,15 @@ pub struct IntegrityChecker<R> {
     attempt_timeout: Duration,
     /// The Monitor's: the first round waits for the boot window.
     ready: Arc<AtomicBool>,
-    /// Keys to sample from: a page of live entities read from the
-    /// reference. Written by the round only, and rounds run one after
-    /// another, so a check and a later store never race; the mutex is
-    /// there because the checker is shared behind `&self`.
-    keys: Mutex<Vec<EntityKey>>,
+    /// Keys to sample from, each with its entity's expiry: a page of
+    /// live entities read from the reference, and when it was read.
+    /// Written by the round only, and rounds run one after another, so
+    /// a check and a later store never race; the mutex is there because
+    /// the checker is shared behind `&self`.
+    keys: Mutex<KeyPage>,
+    /// How long a page is kept before it is read again: a day, unless
+    /// a test shortens it.
+    key_page_interval: Duration,
 }
 
 /// One provider's verdict from one look, and the read that disagreed
@@ -102,6 +112,14 @@ impl Read {
             Self::Entity => "entity",
         }
     }
+}
+
+/// The keys to sample from and when the page was read; `read_at` is
+/// `None` before the first read.
+#[derive(Default)]
+struct KeyPage {
+    keys: Vec<(EntityKey, u64)>,
+    read_at: Option<std::time::Instant>,
 }
 
 /// What a provider answered, before the reference is asked.
@@ -132,8 +150,16 @@ impl<R: ChainReader> IntegrityChecker<R> {
             lag_tolerance,
             attempt_timeout,
             ready,
-            keys: Mutex::new(Vec::new()),
+            keys: Mutex::new(KeyPage::default()),
+            key_page_interval: KEY_PAGE_INTERVAL,
         }
+    }
+
+    /// The page of keys read again this often instead of daily. For
+    /// tests, which cannot wait a day.
+    pub fn with_key_page_interval(mut self, interval: Duration) -> Self {
+        self.key_page_interval = interval;
+        self
     }
 
     /// Rounds until shutdown: the first as soon as the boot window
@@ -184,11 +210,11 @@ impl<R: ChainReader> IntegrityChecker<R> {
             );
             return;
         };
-        self.load_keys_if_empty(head).await;
-        let Some(key) = self.pick_key() else {
+        self.load_keys_if_due(head).await;
+        let Some(key) = self.pick_key(head) else {
             tracing::info!(
                 providers = providers.len(),
-                "integrity round: no keys to sample yet, nobody is judged"
+                "integrity round: no live key to sample, nobody is judged"
             );
             return;
         };
@@ -288,15 +314,18 @@ impl<R: ChainReader> IntegrityChecker<R> {
     }
 
     /// Reads one page of live entities from the reference and keeps
-    /// their keys, when there are none yet. The lock is never held
-    /// across the read.
-    async fn load_keys_if_empty(&self, head: u64) {
-        if !self
+    /// their keys and expiries, at the first round and then once the
+    /// page is a day old. A read that fails keeps the
+    /// page as it was and is tried again at the next round. The lock is
+    /// never held across the read.
+    async fn load_keys_if_due(&self, head: u64) {
+        let due = self
             .keys
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty()
-        {
+            .read_at
+            .is_none_or(|at| at.elapsed() >= self.key_page_interval);
+        if !due {
             return;
         }
         let query = Query {
@@ -308,8 +337,14 @@ impl<R: ChainReader> IntegrityChecker<R> {
                 *self
                     .keys
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    page.entities.iter().map(|entity| entity.key).collect();
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = KeyPage {
+                    keys: page
+                        .entities
+                        .iter()
+                        .map(|entity| (entity.key, entity.expires_at))
+                        .collect(),
+                    read_at: Some(std::time::Instant::now()),
+                };
             }
             Err(error) => {
                 tracing::warn!(%error, "integrity: the page of live entities could not be read");
@@ -317,17 +352,26 @@ impl<R: ChainReader> IntegrityChecker<R> {
         }
     }
 
-    /// One key to read this round, at random from the page: the pick
-    /// only has to be one a provider cannot predict.
-    fn pick_key(&self) -> Option<EntityKey> {
-        let keys = self
+    /// One key to read this round, at random among the page's keys
+    /// whose entities are still alive at the head: the pick only has
+    /// to be one a provider cannot predict. Sampling an expired key
+    /// would not be wrong, only useless, since both sides would answer
+    /// that there is no such entity.
+    fn pick_key(&self, head: u64) -> Option<EntityKey> {
+        let page = self
             .keys
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if keys.is_empty() {
+        let alive: Vec<EntityKey> = page
+            .keys
+            .iter()
+            .filter(|(_, expires_at)| *expires_at > head)
+            .map(|(key, _)| *key)
+            .collect();
+        if alive.is_empty() {
             return None;
         }
-        Some(keys[rand::random_range(0..keys.len())])
+        Some(alive[rand::random_range(0..alive.len())])
     }
 
     /// Every provider read at once, then the reference once per block

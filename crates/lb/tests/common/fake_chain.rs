@@ -42,6 +42,9 @@ struct State {
     sidecar_down_message: Option<String>,
     /// When set, every read fails with this message.
     reference_down: Option<String>,
+    /// When set, only queries fail with this message; the head and the
+    /// blocks still answer.
+    queries_down: Option<String>,
     /// When set, the next write lands but is answered as unresolved,
     /// the sidecar's 504: the caller never learns it landed.
     unresolved_next: bool,
@@ -51,6 +54,9 @@ struct State {
     /// The block of every query answered at a pinned block, in order:
     /// the reads a round pays for, and where it pinned them.
     pinned_at: Vec<u64>,
+    /// Queries answered at the head, the other reads a round pays for:
+    /// the page of keys.
+    unpinned_reads: u64,
 }
 
 /// A stored entity, as a test sees it.
@@ -100,9 +106,11 @@ impl FakeChain {
             sidecar_down_after: None,
             sidecar_down_message: None,
             reference_down: None,
+            queries_down: None,
             unresolved_next: false,
             operation_limit: usize::MAX,
             pinned_at: Vec::new(),
+            unpinned_reads: 0,
         })))
     }
 
@@ -161,6 +169,11 @@ impl FakeChain {
         self.state().pinned_at.clone()
     }
 
+    /// How many queries were answered at the head so far.
+    pub fn unpinned_reads(&self) -> u64 {
+        self.state().unpinned_reads
+    }
+
     /// Every write and the identity fail with this message, until `heal`.
     pub fn fail_sidecar(&self, message: &str) {
         self.fail_sidecar_after(0, message);
@@ -169,6 +182,12 @@ impl FakeChain {
     /// Every read fails with this message, until `heal`.
     pub fn fail_reference(&self, message: &str) {
         self.state().reference_down = Some(message.to_owned());
+    }
+
+    /// Queries fail with this message while the head and the blocks
+    /// still answer, until `heal`.
+    pub fn fail_queries(&self, message: &str) {
+        self.state().queries_down = Some(message.to_owned());
     }
 
     /// The next write lands, but its answer is a 504: the write is
@@ -189,6 +208,7 @@ impl FakeChain {
         state.sidecar_down_after = None;
         state.sidecar_down_message = None;
         state.reference_down = None;
+        state.queries_down = None;
         state.unresolved_next = false;
     }
 }
@@ -369,8 +389,15 @@ impl ChainReader for FakeChain {
     async fn query(&self, query: &Query) -> Result<Page, ReadError> {
         let mut state = self.state();
         state.reference()?;
-        if let Some(block) = query.at_block {
-            state.pinned_at.push(block);
+        if let Some(message) = &state.queries_down {
+            return Err(ReadError::Rpc {
+                code: -32000,
+                message: message.clone(),
+            });
+        }
+        match query.at_block {
+            Some(block) => state.pinned_at.push(block),
+            None => state.unpinned_reads += 1,
         }
         let mut entities = state.matching(query);
         let more = entities.len() as u64 > PAGE_LIMIT;

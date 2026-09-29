@@ -45,9 +45,10 @@ pub struct FakeProvider {
     /// own that nothing else writes to; one made on a shared chain
     /// serves what the reference and the other providers see.
     chain: FakeChain,
-    /// Block reads and entity reads answered, the integrity reads.
+    /// Block reads answered, one of the two integrity reads.
     pub blocks: AtomicU64,
-    pub queries: AtomicU64,
+    /// The key of every entity read, the other one, in order.
+    pub asked_keys: std::sync::Mutex<Vec<B256>>,
     /// Lies, while the switch is on. A wrong block: every block
     /// answered with another hash. A wrong entity: every entity
     /// answered with an altered payload. Every, not one: a lie that
@@ -79,7 +80,7 @@ async fn serve(chain: FakeChain) -> (SocketAddr, Arc<FakeProvider>) {
         authorization: std::sync::Mutex::new(None),
         chain,
         blocks: AtomicU64::new(0),
-        queries: AtomicU64::new(0),
+        asked_keys: std::sync::Mutex::new(Vec::new()),
         lie_block: AtomicBool::new(false),
         lie_entity: AtomicBool::new(false),
         delay_ms: AtomicU64::new(0),
@@ -161,7 +162,6 @@ impl FakeProvider {
     /// `arkiv_query` by `$key`: the chain's entity if it is alive at
     /// this provider's height, answered at that height.
     async fn query(&self, params: &Value) -> Value {
-        self.queries.fetch_add(1, Ordering::Relaxed);
         self.delay().await;
         let text = params[0].as_str().expect("a query text");
         let key = text
@@ -170,6 +170,7 @@ impl FakeProvider {
             .and_then(|rest| rest.split(')').next())
             .and_then(|hex| B256::from_str(hex).ok())
             .expect("a query by $key");
+        self.asked_keys.lock().expect("asked keys").push(key);
         let height = self.height.load(Ordering::Relaxed);
         let data: Vec<Value> = self
             .chain

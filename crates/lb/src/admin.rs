@@ -271,6 +271,10 @@ struct NodeView {
     served: u64,
     transport_failures: u64,
     last_probe_ms: Option<u64>,
+    /// The last integrity verdict and the height it was given at;
+    /// null before any round has judged the provider.
+    integrity_verdict: Option<&'static str>,
+    integrity_height: Option<u64>,
 }
 
 impl From<&Provider> for NodeView {
@@ -294,6 +298,8 @@ impl From<&Provider> for NodeView {
             served: provider.served.load(Ordering::Relaxed),
             transport_failures: provider.transport_failures.load(Ordering::Relaxed),
             last_probe_ms: provider.last_probe_ms(),
+            integrity_verdict: provider.last_verdict().map(|(verdict, _)| verdict.as_str()),
+            integrity_height: provider.last_verdict().map(|(_, height)| height),
         }
     }
 }

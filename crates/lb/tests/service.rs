@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use lb::{
     config::{Config, Provider},
+    integrity::Verdict,
     jsonrpc::NO_HEALTHY_PROVIDER,
     pool::HealthSignal,
 };
@@ -210,7 +211,9 @@ async fn nodes_is_a_current_view_of_the_pool() {
             "last_height": null,
             "served": 0,
             "transport_failures": 0,
-            "last_probe_ms": null
+            "last_probe_ms": null,
+            "integrity_verdict": null,
+            "integrity_height": null
         }])
     );
 
@@ -241,6 +244,7 @@ async fn nodes_is_a_current_view_of_the_pool() {
     provider.record_served();
     provider.record_served();
     provider.record_transport_failure();
+    provider.record_integrity(Verdict::Divergence, 1_204_000);
 
     let current: serde_json::Value = client
         .get(format!("{admin}/nodes"))
@@ -255,12 +259,13 @@ async fn nodes_is_a_current_view_of_the_pool() {
     assert_eq!(node["source"], "static");
     assert_eq!(node["url"], "http://127.0.0.1:18545/");
     assert_eq!(node["agreement_id"], serde_json::Value::Null);
-    assert_eq!(node["eligible"], true);
     assert_eq!(
-        node["ineligibility_reason"],
-        serde_json::Value::Null,
-        "an eligible provider has no reason to be out"
+        node["eligible"], false,
+        "healthy, but found serving wrong data"
     );
+    assert_eq!(node["ineligibility_reason"], "integrity");
+    assert_eq!(node["integrity_verdict"], "divergence");
+    assert_eq!(node["integrity_height"], 1_204_000);
     assert_eq!(node["chain_verified"], false);
     assert_eq!(node["health_streak"], 3);
     assert_eq!(node["last_height"], 0, "genesis height is not 'unknown'");

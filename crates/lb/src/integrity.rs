@@ -91,27 +91,107 @@ pub struct IntegrityChecker<R> {
     key_page_interval: Duration,
 }
 
-/// One provider's verdict from one look, and the read that disagreed
-/// when it is a divergence.
+/// One provider's verdict from one look, and the two answers that
+/// disagreed when it is a divergence.
 struct Finding {
     provider: Arc<Provider>,
     verdict: Verdict,
-    disagreed: Option<Read>,
+    evidence: Option<Evidence>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Read {
-    Block,
-    Entity,
+/// What the reference and the provider answered where they differed:
+/// the evidence a confirmed divergence is logged with.
+enum Evidence {
+    Block {
+        reference: Box<BlockFields>,
+        provider: Box<BlockFields>,
+    },
+    Entity {
+        key: EntityKey,
+        /// The block the provider answered at, and the reference was
+        /// pinned to.
+        at: u64,
+        reference: Vec<ArkivEntity>,
+        provider: Vec<ArkivEntity>,
+    },
 }
 
-impl Read {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Block => "block",
-            Self::Entity => "entity",
-        }
+/// The fields of two blocks that differ, each with both values, as a
+/// log field: a divergence can be in any compared field, and the ones
+/// that agree would say nothing.
+fn block_differences(reference: &BlockFields, provider: &BlockFields) -> String {
+    let mut differing = Vec::new();
+    let mut field = |name: &str, ours: &dyn std::fmt::Display, theirs: &dyn std::fmt::Display| {
+        differing.push(format!("{name} reference={ours} provider={theirs}"));
+    };
+    if reference.hash != provider.hash {
+        field("hash", &reference.hash, &provider.hash);
     }
+    if reference.parent_hash != provider.parent_hash {
+        field("parentHash", &reference.parent_hash, &provider.parent_hash);
+    }
+    if reference.state_root != provider.state_root {
+        field("stateRoot", &reference.state_root, &provider.state_root);
+    }
+    if reference.transactions_root != provider.transactions_root {
+        field(
+            "transactionsRoot",
+            &reference.transactions_root,
+            &provider.transactions_root,
+        );
+    }
+    if reference.receipts_root != provider.receipts_root {
+        field(
+            "receiptsRoot",
+            &reference.receipts_root,
+            &provider.receipts_root,
+        );
+    }
+    if reference.transactions != provider.transactions {
+        let (ours, theirs) = (&reference.transactions, &provider.transactions);
+        let first = ours
+            .iter()
+            .zip(theirs)
+            .position(|(a, b)| a != b)
+            .unwrap_or(ours.len().min(theirs.len()));
+        differing.push(format!(
+            "transactions reference={} provider={} first difference at {first}",
+            ours.len(),
+            theirs.len()
+        ));
+    }
+    differing.join("; ")
+}
+
+/// Entity rows as a log field: every attribute in full, the payload as
+/// its hash, since a payload can be large and a hash says whether two
+/// differ. No rows is the answer "no such entity".
+fn describe(rows: &[ArkivEntity]) -> String {
+    if rows.is_empty() {
+        return "no such entity".to_owned();
+    }
+    rows.iter()
+        .map(|row| {
+            let attributes: Vec<String> = row
+                .attributes
+                .iter()
+                .map(|attribute| {
+                    format!(
+                        "{}:{}={}",
+                        attribute.name, attribute.type_tag, attribute.value
+                    )
+                })
+                .collect();
+            format!(
+                "creator {:#x} expires {} attributes [{}] payload hash {:#x}",
+                row.creator,
+                row.expires_at,
+                attributes.join(", "),
+                alloy_primitives::keccak256(&row.payload)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// The keys to sample from and when the page was read; `read_at` is
@@ -125,6 +205,8 @@ struct KeyPage {
 /// What a provider answered, before the reference is asked.
 struct Answers {
     provider: Arc<Provider>,
+    /// The key it was asked for.
+    key: EntityKey,
     block: Result<Option<BlockFields>, ()>,
     /// The rows a query by key answered, one or none from an honest
     /// node, kept as answered so the comparison is exactly what the two
@@ -269,13 +351,43 @@ impl<R: ChainReader> IntegrityChecker<R> {
                 Verdict::Stale | Verdict::Unknown => {
                     tracing::info!(provider = %provider.id, height, verdict = verdict.as_str(), "integrity");
                 }
-                Verdict::Divergence => {
-                    let check = finding
-                        .disagreed
-                        .expect("a divergence names the read that disagreed")
-                        .as_str();
-                    tracing::warn!(provider = %provider.id, height, check, "integrity: divergence confirmed");
-                }
+                // The evidence is the event: both answers side by side,
+                // held at the moment of the verdict and logged whole.
+                Verdict::Divergence => match finding
+                    .evidence
+                    .as_ref()
+                    .expect("a divergence carries the answers that differed")
+                {
+                    Evidence::Block {
+                        reference,
+                        provider: served,
+                    } => tracing::warn!(
+                        provider = %provider.id,
+                        agreement = provider.agreement_id().map(|id| format!("{id:#x}")),
+                        height,
+                        check = "block",
+                        reference_hash = %reference.hash,
+                        provider_hash = %served.hash,
+                        differing = block_differences(reference, served),
+                        "integrity: divergence confirmed"
+                    ),
+                    Evidence::Entity {
+                        key,
+                        at,
+                        reference,
+                        provider: served,
+                    } => tracing::warn!(
+                        provider = %provider.id,
+                        agreement = provider.agreement_id().map(|id| format!("{id:#x}")),
+                        height,
+                        check = "entity",
+                        key = %key,
+                        at,
+                        reference = describe(reference),
+                        served = describe(served),
+                        "integrity: divergence confirmed"
+                    ),
+                },
             }
             counts[verdict as usize] += 1;
             provider.record_integrity(verdict, height);
@@ -419,11 +531,11 @@ impl<R: ChainReader> IntegrityChecker<R> {
         answers
             .into_iter()
             .map(|answer| {
-                let (verdict, disagreed) = self.judge(&answer, finalized, head, &pinned);
+                let (verdict, evidence) = self.judge(&answer, finalized, head, &pinned);
                 Finding {
                     provider: answer.provider,
                     verdict,
-                    disagreed,
+                    evidence,
                 }
             })
             .collect()
@@ -452,14 +564,15 @@ impl<R: ChainReader> IntegrityChecker<R> {
             });
         Answers {
             provider,
+            key,
             block,
             rows,
         }
     }
 
     /// The outcome from what the provider and the reference answered.
-    /// One look's verdict, and the read that disagreed when it is a
-    /// divergence. Only both reads answered and agreed is a match;
+    /// One look's verdict, and the two answers that differed when it is
+    /// a divergence. Only both reads answered and agreed is a match;
     /// stale wins over unknown, since it says something.
     fn judge(
         &self,
@@ -467,14 +580,20 @@ impl<R: ChainReader> IntegrityChecker<R> {
         finalized: &BlockFields,
         head: u64,
         pinned: &HashMap<u64, Result<Vec<ArkivEntity>, ()>>,
-    ) -> (Verdict, Option<Read>) {
+    ) -> (Verdict, Option<Evidence>) {
         let block = match &answer.block {
             Err(()) => return (Verdict::Unknown, None),
             Ok(None) => return (Verdict::Stale, None),
             Ok(Some(block)) => block,
         };
         if block != finalized {
-            return (Verdict::Divergence, Some(Read::Block));
+            return (
+                Verdict::Divergence,
+                Some(Evidence::Block {
+                    reference: Box::new(finalized.clone()),
+                    provider: Box::new(block.clone()),
+                }),
+            );
         }
         let (rows, at) = match &answer.rows {
             Err(()) => return (Verdict::Unknown, None),
@@ -490,8 +609,102 @@ impl<R: ChainReader> IntegrityChecker<R> {
         }
         match pinned.get(at) {
             Some(Ok(reference)) if reference == rows => (Verdict::Match, None),
-            Some(Ok(_)) => (Verdict::Divergence, Some(Read::Entity)),
+            Some(Ok(reference)) => (
+                Verdict::Divergence,
+                Some(Evidence::Entity {
+                    key: answer.key,
+                    at: *at,
+                    reference: reference.clone(),
+                    provider: rows.clone(),
+                }),
+            ),
             _ => (Verdict::Unknown, None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chain::records::ArkivAttribute;
+    use alloy_primitives::B256;
+
+    #[test]
+    fn block_evidence_names_only_the_fields_that_differ() {
+        let reference = BlockFields {
+            number: 7,
+            hash: B256::repeat_byte(0x01),
+            parent_hash: B256::repeat_byte(0x02),
+            state_root: B256::repeat_byte(0x03),
+            transactions_root: B256::repeat_byte(0x04),
+            receipts_root: B256::repeat_byte(0x05),
+            transactions: vec![B256::repeat_byte(0x10), B256::repeat_byte(0x11)],
+        };
+        let mut provider = reference.clone();
+        provider.receipts_root = B256::repeat_byte(0x55);
+        provider.transactions[1] = B256::repeat_byte(0x99);
+        let differing = block_differences(&reference, &provider);
+        assert!(
+            differing.contains("receiptsRoot reference=0x0505"),
+            "{differing}"
+        );
+        assert!(differing.contains("provider=0x5555"), "{differing}");
+        assert!(
+            differing.contains("transactions reference=2 provider=2 first difference at 1"),
+            "{differing}"
+        );
+        assert!(
+            !differing.contains("stateRoot"),
+            "an equal field is not named: {differing}"
+        );
+        assert!(!differing.contains("hash reference"), "{differing}");
+    }
+
+    #[test]
+    fn a_transaction_list_cut_short_differs_where_it_ends() {
+        let reference = BlockFields {
+            number: 7,
+            hash: B256::repeat_byte(0x01),
+            parent_hash: B256::repeat_byte(0x02),
+            state_root: B256::repeat_byte(0x03),
+            transactions_root: B256::repeat_byte(0x04),
+            receipts_root: B256::repeat_byte(0x05),
+            transactions: vec![B256::repeat_byte(0x10), B256::repeat_byte(0x11)],
+        };
+        let mut provider = reference.clone();
+        provider.transactions.pop();
+        assert_eq!(
+            block_differences(&reference, &provider),
+            "transactions reference=2 provider=1 first difference at 1"
+        );
+        assert_eq!(block_differences(&reference, &reference), "");
+    }
+
+    #[test]
+    fn evidence_names_every_attribute_and_hashes_the_payload() {
+        let row = ArkivEntity {
+            key: EntityKey::repeat_byte(0x11),
+            creator: crate::chain::records::Address::repeat_byte(0x22),
+            created_at: 5,
+            expires_at: 900,
+            payload: vec![1, 2, 3].into(),
+            attributes: vec![ArkivAttribute {
+                name: "kind".into(),
+                type_tag: "str".into(),
+                value: serde_json::json!("rpc.offer"),
+            }],
+        };
+        let described = describe(std::slice::from_ref(&row));
+        assert!(described.contains("kind:str=\"rpc.offer\""), "{described}");
+        assert!(described.contains("expires 900"), "{described}");
+        assert!(
+            described.contains(&format!("{:#x}", alloy_primitives::keccak256([1u8, 2, 3]))),
+            "{described}"
+        );
+        assert!(
+            !described.contains("[1, 2, 3]"),
+            "the payload itself is not logged"
+        );
+        assert_eq!(describe(&[]), "no such entity");
     }
 }

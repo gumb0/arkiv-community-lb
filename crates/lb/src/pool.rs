@@ -274,6 +274,15 @@ impl Provider {
             .store(source as u8, Ordering::Relaxed);
     }
 
+    /// The agreement this provider serves under, if it came from the
+    /// marketplace.
+    pub fn agreement_id(&self) -> Option<EntityKey> {
+        match &self.source {
+            Source::Static => None,
+            Source::Marketplace { agreement_id, .. } => Some(*agreement_id),
+        }
+    }
+
     /// In rotation: both gates let it through.
     pub fn eligible(&self) -> bool {
         self.eligibility.load(Ordering::Relaxed) == ALL_GATES

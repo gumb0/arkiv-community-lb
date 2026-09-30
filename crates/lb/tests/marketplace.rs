@@ -2538,6 +2538,61 @@ async fn a_provider_whose_probes_never_pass_is_left_to_its_window() {
     assert_eq!(fleet.chain.transactions().len(), writes_before);
 }
 
+#[tokio::test]
+async fn a_failed_extend_is_tried_again_at_the_next_admission() {
+    let fleet = admitting(Duration::from_secs(7200)).await;
+    let stored = fleet.agent.agreement(fleet.key).expect("known");
+    let before = expires_at(&fleet.chain, fleet.key);
+    set_health(&fleet.pool, provider(1), true);
+
+    // The sidecar is down when the probes pass: the extend fails and
+    // memory keeps the record on its accept window.
+    fleet.chain.fail_sidecar("sidecar down");
+    fleet.agent.clone().admitted(&stored);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(expires_at(&fleet.chain, fleet.key), before);
+    assert_eq!(
+        fleet.agent.agreement(fleet.key).expect("known").expires_at,
+        before
+    );
+
+    // So the next admission, a reconnect, tries again.
+    fleet.chain.heal();
+    fleet.agent.clone().admitted(&stored);
+    wait_for("the reconnect extends", || {
+        expires_at(&fleet.chain, fleet.key) > before
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_record_gone_during_the_wait_is_not_extended() {
+    let fleet = admitting(Duration::from_secs(7200)).await;
+    let stored = fleet.agent.agreement(fleet.key).expect("known");
+    fleet.agent.clone().admitted(&stored);
+    let entry = fleet.pool.snapshot()[0].clone();
+
+    // The record expires while the probes are still failing, and a
+    // poll drops it from memory and the pool.
+    fleet.chain.advance(blocks(7200) + 1);
+    fleet.agent.discovery_poll().await;
+    assert!(fleet.pool.snapshot().is_empty(), "dropped from the pool");
+
+    // The probes pass on the entry the task still holds: no extend of
+    // a gone record is attempted.
+    entry.set_health(true);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !fleet
+            .chain
+            .transactions()
+            .iter()
+            .any(|transaction| matches!(transaction, Transaction::Extend(_))),
+        "{:?}",
+        fleet.chain.transactions()
+    );
+}
+
 /// An agent with the integrity checker, holding one agreement whose
 /// provider is a fake node on the agreement's port, serving the chain
 /// at its head, and the entry the agreement names, healthy.
@@ -2628,4 +2683,21 @@ async fn a_newcomer_serving_wrong_data_is_out_and_not_extended() {
     // slot frees in hours, not days.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(fleet.chain.transactions().len(), writes_before);
+}
+
+#[tokio::test]
+async fn a_check_that_judges_nothing_does_not_cost_the_extend() {
+    let fleet = checked().await;
+    // The reference's queries fail: no key to sample, nobody judged.
+    fleet.chain.fail_queries("reference down");
+    let stored = fleet.agent.agreement(fleet.key).expect("known");
+    let writes_before = fleet.chain.transactions().len();
+    fleet.agent.clone().admitted(&stored);
+    wait_for("the record is extended", || {
+        fleet.chain.transactions().len() > writes_before
+    })
+    .await;
+    let entry = fleet.pool.snapshot()[0].clone();
+    assert_eq!(entry.last_verdict(), None, "not judged");
+    assert!(entry.eligible());
 }

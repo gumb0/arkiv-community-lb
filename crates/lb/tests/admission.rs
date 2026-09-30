@@ -210,6 +210,16 @@ const LB: Address = Address::repeat_byte(0x11);
 /// fake chain, holding one agreement with `provider` at `port`.
 async fn service_with(provider: &Signer, port: u16) -> (lb::service::Service, B256) {
     let chain = FakeChain::new(LB, 1337);
+    service_on(&chain, provider, port, |_| {}).await
+}
+
+/// The same over a given chain, with the config tuned before the start.
+async fn service_on(
+    chain: &FakeChain,
+    provider: &Signer,
+    port: u16,
+    tune: impl FnOnce(&mut lb::config::Config),
+) -> (lb::service::Service, B256) {
     let key = chain.write_as(
         LB,
         Agreement {
@@ -242,7 +252,8 @@ async fn service_with(provider: &Signer, port: u16) -> (lb::service::Service, B2
         flush_interval: Duration::from_secs(24 * 3600),
         gas_warn_below: Wei::new(1),
     });
-    let service = lb::service::start_with(config, Some((chain.clone(), chain)))
+    tune(&mut config);
+    let service = lb::service::start_with(config, Some((chain.clone(), chain.clone())))
         .await
         .expect("starts");
     (service, key)
@@ -328,6 +339,87 @@ async fn an_admitted_proxy_makes_the_next_probe_due_at_once() {
     assert!(
         *entry.next_probe() <= std::time::Instant::now(),
         "the proxy is up: probe now"
+    );
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_admitted_proxy_is_extended_once_its_probes_pass() {
+    let provider = Signer::new(1);
+    let chain = FakeChain::new(LB, 1337);
+    let (service, key) = service_on(&chain, &provider, 20003, |_| {}).await;
+    let entry = service.pool.snapshot()[0].clone();
+    let before = chain.entity(key).expect("stored").expires_at;
+    let writes_before = chain.transactions().len();
+
+    // Healthy at login already: a login is not a tunnel, nothing runs.
+    entry.set_health(true);
+    callback(&service, "Login", login(&provider, key)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(chain.transactions().len(), writes_before);
+
+    callback(&service, "NewProxy", new_proxy(&provider, key, 20003)).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while chain.entity(key).expect("stored").expires_at == before {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the record was not extended"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_newcomer_serving_wrong_data_is_out_and_kept_on_its_window() {
+    use common::fake_provider::rpc_provider_on;
+    use lb::integrity::Verdict;
+    use std::sync::atomic::Ordering;
+
+    let provider = Signer::new(1);
+    let chain = FakeChain::new(LB, 1337);
+    chain.advance(200);
+    // The reference and the node are both fakes over the chain, the
+    // node on the agreement's port and lying about entities.
+    let (reference, reference_rpc) = rpc_provider_on(&chain).await;
+    let (node_addr, node) = rpc_provider_on(&chain).await;
+    for rpc in [&reference_rpc, &node] {
+        rpc.height.store(chain.head(), Ordering::Relaxed);
+    }
+    node.lie_entity.store(true, Ordering::Relaxed);
+    let (service, key) = service_on(&chain, &provider, node_addr.port(), |config| {
+        config.reference = Some(format!("http://{reference}"));
+        config.integrity = Some(lb::config::Integrity {
+            interval: Duration::from_secs(3600),
+            confirm_after: Duration::from_millis(50),
+        });
+    })
+    .await;
+    let entry = service.pool.snapshot()[0].clone();
+    let before = chain.entity(key).expect("stored").expires_at;
+
+    callback(
+        &service,
+        "NewProxy",
+        new_proxy(&provider, key, node_addr.port()),
+    )
+    .await;
+    entry.set_health(true);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while entry.last_verdict().map(|(verdict, _)| verdict) != Some(Verdict::Divergence) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no divergence recorded: {:?}",
+            entry.last_verdict()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(!entry.eligible(), "out of rotation");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        chain.entity(key).expect("stored").expires_at,
+        before,
+        "not extended: the liar keeps its accept window and nothing more"
     );
     service.shutdown().await;
 }

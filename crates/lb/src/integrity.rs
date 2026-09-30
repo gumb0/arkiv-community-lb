@@ -32,6 +32,8 @@ impl Verdict {
 
 use std::{
     collections::HashMap,
+    future::Future,
+    pin::Pin,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -60,6 +62,23 @@ const CONCURRENT_READS: usize = 16;
 /// only as its entities expire, which the pick already skips, and two
 /// hundred keys hold long-lived records enough for a day.
 const KEY_PAGE_INTERVAL: Duration = Duration::from_secs(24 * 3600);
+
+/// One provider checked on demand, the way a round checks the fleet:
+/// what the marketplace agent holds to check a newcomer at its
+/// admission, without the checker's reference type in its signature.
+pub trait IntegrityCheck: Send + Sync {
+    /// The future comes boxed: a trait object cannot return the unnamed
+    /// type an `async fn` would, and one allocation per admission is
+    /// nothing.
+    fn check(&self, provider: Arc<Provider>) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+}
+
+impl<R: ChainReader + 'static> IntegrityCheck for IntegrityChecker<R> {
+    fn check(&self, provider: Arc<Provider>) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Pinned because a future must not move once polled.
+        Box::pin(self.round_over(vec![provider]))
+    }
+}
 
 /// The integrity checker: one round every interval over the providers
 /// whose health is fine, each round two reads per provider compared
@@ -247,7 +266,7 @@ impl<R: ChainReader> IntegrityChecker<R> {
     /// Rounds until shutdown: the first as soon as the boot window
     /// closes, so a restart, which forgets the verdicts, does not serve
     /// a known liar for a whole interval; then every interval.
-    pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
+    pub async fn run(self: Arc<Self>, mut shutdown: watch::Receiver<bool>) {
         let mut waiting = tokio::time::interval(Duration::from_millis(200));
         loop {
             tokio::select! {
@@ -281,6 +300,12 @@ impl<R: ChainReader> IntegrityChecker<R> {
             .filter(|provider| provider.healthy())
             .cloned()
             .collect();
+        self.round_over(providers).await;
+    }
+
+    /// A round over the given providers: the whole healthy fleet on the
+    /// timer, one newcomer at its admission.
+    async fn round_over(&self, providers: Vec<Arc<Provider>>) {
         if providers.is_empty() {
             tracing::info!("integrity round: no healthy provider to check");
             return;

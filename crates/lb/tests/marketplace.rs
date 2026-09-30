@@ -9,7 +9,10 @@ use std::{
 };
 
 use alloy_primitives::Address;
-use common::fake_chain::{FakeChain, Transaction, blocks};
+use common::{
+    fake_chain::{FakeChain, Transaction, blocks},
+    fake_provider::rpc_provider_on,
+};
 use lb::chain::reader::Query;
 use lb::{
     chain::{
@@ -22,6 +25,7 @@ use lb::{
         writer::{Delete, Expiry},
     },
     config::Marketplace,
+    integrity::{IntegrityChecker, Verdict},
     marketplace::{
         admission::Agreements,
         agent::{Agent, OpenCounter, StartError},
@@ -2530,6 +2534,98 @@ async fn a_provider_whose_probes_never_pass_is_left_to_its_window() {
     // is an ordinary readmission, extended by the refresh, not here.
     tokio::time::sleep(Duration::from_millis(500)).await;
     set_health(&fleet.pool, provider(1), true);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(fleet.chain.transactions().len(), writes_before);
+}
+
+/// An agent with the integrity checker, holding one agreement whose
+/// provider is a fake node on the agreement's port, serving the chain
+/// at its head, and the entry the agreement names, healthy.
+struct Checked {
+    chain: FakeChain,
+    pool: Arc<Pool>,
+    agent: Arc<FakeAgent>,
+    key: alloy_primitives::B256,
+    node: Arc<common::fake_provider::FakeProvider>,
+}
+
+async fn checked() -> Checked {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    chain.advance(200);
+    let config = marketplace();
+    let (addr, node) = rpc_provider_on(&chain).await;
+    node.height.store(chain.head(), Ordering::Relaxed);
+    let key = seed_agreement(&chain, provider(1), addr.port(), 7200);
+    let pool = Arc::new(Pool::new(&[]).expect("pool"));
+    let checker = Arc::new(IntegrityChecker::new(
+        pool.clone(),
+        reqwest::Client::new(),
+        chain.clone(),
+        lb::config::Integrity {
+            interval: Duration::from_secs(3600),
+            confirm_after: Duration::from_millis(50),
+        },
+        30,
+        Duration::from_millis(500),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    ));
+    let agent = Arc::new(
+        start(&chain, &config, &pool)
+            .await
+            .expect("starts")
+            .with_integrity(checker),
+    );
+    set_health(&pool, provider(1), true);
+    Checked {
+        chain,
+        pool,
+        agent,
+        key,
+        node,
+    }
+}
+
+#[tokio::test]
+async fn a_newcomer_is_checked_before_its_record_is_extended() {
+    let fleet = checked().await;
+    let stored = fleet.agent.agreement(fleet.key).expect("known");
+    let writes_before = fleet.chain.transactions().len();
+    fleet.agent.clone().admitted(&stored);
+    wait_for("the record is extended", || {
+        fleet.chain.transactions().len() > writes_before
+    })
+    .await;
+    let entry = fleet.pool.snapshot()[0].clone();
+    assert_eq!(
+        entry.last_verdict().map(|(verdict, _)| verdict),
+        Some(Verdict::Match),
+        "judged at its admission, not at a round"
+    );
+    assert!(
+        fleet.node.blocks.load(Ordering::Relaxed) > 0,
+        "the node was read"
+    );
+    assert_eq!(
+        fleet.chain.transactions()[writes_before..],
+        [Transaction::Extend(fleet.key)]
+    );
+}
+
+#[tokio::test]
+async fn a_newcomer_serving_wrong_data_is_out_and_not_extended() {
+    let fleet = checked().await;
+    fleet.node.lie_entity.store(true, Ordering::Relaxed);
+    let stored = fleet.agent.agreement(fleet.key).expect("known");
+    let writes_before = fleet.chain.transactions().len();
+    fleet.agent.clone().admitted(&stored);
+    let entry = fleet.pool.snapshot()[0].clone();
+    wait_for("the divergence is confirmed", || {
+        entry.last_verdict().map(|(verdict, _)| verdict) == Some(Verdict::Divergence)
+    })
+    .await;
+    assert!(!entry.eligible(), "out of rotation");
+    // The record keeps its accept window: no extend, so the liar's
+    // slot frees in hours, not days.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(fleet.chain.transactions().len(), writes_before);
 }

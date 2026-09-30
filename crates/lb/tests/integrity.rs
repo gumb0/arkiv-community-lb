@@ -318,7 +318,7 @@ async fn a_diverged_provider_stays_out_through_probes_and_returns_on_a_match() {
 async fn the_first_round_runs_when_the_boot_window_closes() {
     let fleet = fleet(1).await;
     fleet.ready.store(false, Ordering::Relaxed);
-    let checker = checker(&fleet.pool, &fleet.chain, &fleet.ready);
+    let checker = Arc::new(checker(&fleet.pool, &fleet.chain, &fleet.ready));
     let (_stop, shutdown) = watch::channel(false);
     tokio::spawn(checker.run(shutdown));
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -426,7 +426,7 @@ async fn rounds_keep_the_configured_cadence_and_stop_at_shutdown() {
         fleet.ready.clone(),
     );
     let (stop, shutdown) = watch::channel(false);
-    let task = tokio::spawn(checker.run(shutdown));
+    let task = tokio::spawn(Arc::new(checker).run(shutdown));
     let window = interval * 10;
     tokio::time::sleep(window).await;
     let rounds = fleet.providers[0].blocks.load(Ordering::Relaxed);

@@ -32,6 +32,7 @@ use crate::{
         },
     },
     config,
+    integrity::IntegrityCheck,
     marketplace::admission::Agreements,
     pool::{Pool, Provider, marketplace_id},
 };
@@ -136,6 +137,9 @@ pub struct Agent<R, W> {
     /// The live agreements, by key: the slot state, and the counter
     /// record each one counts into.
     agreements: Mutex<KnownAgreements>,
+    /// The integrity checker, when the checks are configured: a
+    /// newcomer is checked at its admission, before its extend.
+    integrity: Option<Arc<dyn IntegrityCheck>>,
 }
 
 /// How often an admission looks at the entry while it waits for the
@@ -203,6 +207,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             identity,
             listing_key: EntityKey::ZERO,
             agreements: Mutex::new(HashMap::new()),
+            integrity: None,
         };
         // The two reconciles only read and can refuse the start; the
         // listing writes. This order keeps a refused start from writing
@@ -247,6 +252,12 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             listing_key,
             ..agent
         })
+    }
+
+    /// With the integrity checker, for the check at admission.
+    pub fn with_integrity(mut self, integrity: Arc<dyn IntegrityCheck>) -> Self {
+        self.integrity = Some(integrity);
+        self
     }
 
     pub fn identity(&self) -> &Identity {
@@ -365,7 +376,8 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     }
 
     /// The steps after a provider's tunnel is admitted, in order: its
-    /// probes pass, then its agreement is extended.
+    /// probes pass, it is checked for integrity, then its agreement is
+    /// extended.
     async fn admission(self: Arc<Self>, provider: Arc<Provider>, agreement: EntityKey) {
         // The Monitor does the probing; this only waits for its verdict,
         // at most the accept window: a node that never answers is left
@@ -382,9 +394,24 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             }
             tokio::time::sleep(ADMISSION_POLL).await;
         }
+        // Checked now rather than at the next round, so a liar
+        // serves for the seconds, not for an interval.
+        // Only a divergence stops the extend, unknown verdict doesn't
+        // (so a reference outage does not punish a newcomer)
+        if let Some(integrity) = &self.integrity {
+            integrity.check(provider.clone()).await;
+            if provider.serving_wrong_data() {
+                tracing::info!(
+                    provider = %provider.id,
+                    agreement = %agreement,
+                    "admission: serving wrong data, the agreement record is not extended"
+                );
+                return;
+            }
+        }
         // Checked again after the wait: a second admission of the same
-        // provider may have extended the record by now, or a poll may
-        // have dropped it from memory because it expired, and extending
+        // provider may have extended the record by now, or a discovery poll
+        // may have dropped it from memory because it expired, and extending
         // a gone record would fail.
         if !self.on_accept_window(agreement) {
             return;

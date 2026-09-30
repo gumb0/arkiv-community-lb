@@ -130,7 +130,11 @@ shared tunnel password.
 Once the tunnel is up, the LB probes the node like any other provider,
 starting at once: its probes were failing and backing off while the
 tunnel was not there, and an admitted tunnel ends the wait. After the
-probes pass, the provider is in rotation and serves traffic.
+probes pass, the provider is in rotation and serves traffic, and with
+the integrity checks configured it is checked at that moment rather
+than at the next round ([INTEGRITY.md](INTEGRITY.md)). A provider
+found serving wrong data is out of rotation seconds later, and its
+record is not extended.
 
 ## Staying under agreement
 
@@ -149,7 +153,9 @@ record's expiry to three days from then. Nothing else decides who stays.
   extended at that moment, not at the next hourly refresh: its record
   lived only for the accept window until then, and the hourly timer is
   not aligned to it. Only a record still on its accept window, so a
-  tunnel that reconnects after the extend is no write.
+  tunnel that reconnects after the extend is no write; and only after
+  the integrity check at admission, so a provider found serving wrong
+  data keeps its accept window and nothing more.
 - If the LB itself is down, nothing is refreshed, and every record
   survives up to three days. A restart of the LB never costs a provider
   its agreement.

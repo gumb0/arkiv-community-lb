@@ -106,10 +106,12 @@ first-class concern, not an add-on.
   the providers that are eligible at that moment, and nothing else
   decides who stays. One extend outside the refresh, on a task of its
   own per admitted tunnel: a provider whose admitted tunnel has just
-  passed its probes gets its record extended at once, since the record
-  lives only for the accept window until then; only a record still on
-  that window, told by its life, so a tunnel that reconnects after the
-  extend is no write. The
+  passed its probes, and the integrity check that follows when the
+  checks are configured, gets its record extended at once, since the
+  record lives only for the accept window until then; only a record
+  still on that window, told by its life, so a tunnel that reconnects
+  after the extend is no write, and not a provider found serving wrong
+  data. The
   tunnel server's admission callback is a route on the admin listener
   that reads the agent's agreements (`docs/TUNNELING.md`). The counts
   reach the chain at the flush, on its own interval. A counter record

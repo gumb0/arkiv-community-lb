@@ -76,11 +76,14 @@ lies to clients about an entity lies to the check.
 One key serves the whole fleet each round, and the reference is asked
 once per block the providers answered at, not once per provider. The
 fleet answers at one or two blocks, since one provider is at most a
-block ahead of the rest, so a round costs the reference one block read
-and one or two entity reads whatever the size of the fleet, and every
-reference call is metered. The reference is not asked at a block it
-does not have yet, nor at one further behind its head than the lag
-tolerance: those answers are unknown or stale before any comparison.
+block ahead of the rest, so a round costs the reference one block read,
+two reads of its head and one or two entity reads whatever the size of
+the fleet, and every reference call is metered. The head is read again
+after the providers have answered, since blocks land while they do, and
+the block a provider answered at is judged against that. The reference
+is not asked at a block it does not have even then, nor at one further
+behind its head than the lag tolerance: those answers are unknown or
+stale before any comparison.
 
 ## Where the key comes from
 

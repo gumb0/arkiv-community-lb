@@ -326,8 +326,8 @@ impl<R: ChainReader> IntegrityChecker<R> {
             return;
         };
 
-        let mut findings = self.check(&providers, &finalized, head, key).await;
-        self.confirm(&mut findings, &finalized, head, key).await;
+        let mut findings = self.check(&providers, &finalized, key).await;
+        self.confirm(&mut findings, &finalized, key).await;
         self.record(&findings, finalized.number);
     }
 
@@ -335,13 +335,7 @@ impl<R: ChainReader> IntegrityChecker<R> {
     /// reorganisation of the tip has resolved by then, a liar has not.
     /// The second look is the finding, whatever it said: a confirmed
     /// divergence is logged with the answers the verdict rests on.
-    async fn confirm(
-        &self,
-        findings: &mut [Finding],
-        finalized: &BlockFields,
-        head: u64,
-        key: EntityKey,
-    ) {
+    async fn confirm(&self, findings: &mut [Finding], finalized: &BlockFields, key: EntityKey) {
         let doubtful: Vec<Arc<Provider>> = findings
             .iter()
             .filter(|finding| finding.verdict == Verdict::Divergence)
@@ -351,7 +345,7 @@ impl<R: ChainReader> IntegrityChecker<R> {
             return;
         }
         tokio::time::sleep(self.config.confirm_after).await;
-        for second in self.check(&doubtful, finalized, head, key).await {
+        for second in self.check(&doubtful, finalized, key).await {
             let first = findings
                 .iter_mut()
                 .find(|finding| Arc::ptr_eq(&finding.provider, &second.provider))
@@ -523,13 +517,13 @@ impl<R: ChainReader> IntegrityChecker<R> {
         Some(alive[rand::random_range(0..alive.len())])
     }
 
-    /// Every provider read at once, then the reference once per block
-    /// the providers answered the entity at, then the comparison.
+    /// Every provider read at once, then the reference's head, then the
+    /// reference once per block the providers answered the entity at,
+    /// then the comparison.
     async fn check(
         &self,
         providers: &[Arc<Provider>],
         finalized: &BlockFields,
-        head: u64,
         key: EntityKey,
     ) -> Vec<Finding> {
         let answers: Vec<Answers> = futures::stream::iter(providers.iter().cloned())
@@ -537,6 +531,26 @@ impl<R: ChainReader> IntegrityChecker<R> {
             .buffer_unordered(CONCURRENT_READS)
             .collect()
             .await;
+
+        // The head is read after the providers answered, not before: a
+        // block lands every two seconds, and the second look comes
+        // after a wait of many, so a head from before the reads would
+        // leave every answer past it unknown, a divergence's second
+        // look first of all.
+        let head = match self.reference.block_number().await {
+            Ok(head) => head,
+            Err(error) => {
+                tracing::warn!(%error, "integrity: the reference's head could not be read, nobody is judged");
+                return answers
+                    .into_iter()
+                    .map(|answer| Finding {
+                        provider: answer.provider,
+                        verdict: Verdict::Unknown,
+                        evidence: None,
+                    })
+                    .collect();
+            }
+        };
 
         // The reference pinned at each distinct block, read once. Not
         // for a block the reference does not have yet, nor for one

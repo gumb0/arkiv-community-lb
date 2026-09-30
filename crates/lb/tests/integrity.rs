@@ -227,6 +227,49 @@ async fn a_dead_reference_judges_nobody() {
 }
 
 #[tokio::test]
+async fn a_divergence_is_confirmed_while_the_chain_moves_on() {
+    let fleet = fleet(1).await;
+    fleet.providers[0].lie_entity.store(true, Ordering::Relaxed);
+    // Blocks land during the wait before the second look, and the
+    // provider follows them, as any live node does.
+    let (chain, provider) = (fleet.chain.clone(), fleet.providers[0].clone());
+    tokio::spawn(async move {
+        tokio::time::sleep(CONFIRM_AFTER / 3).await;
+        chain.advance(5);
+        provider.height.store(chain.head(), Ordering::Relaxed);
+    });
+    fleet.checker.round().await;
+    assert_eq!(
+        entry(&fleet.pool, 0).last_verdict().map(|(v, _)| v),
+        Some(Verdict::Divergence),
+        "the second look is judged against the head as it is then"
+    );
+}
+
+#[tokio::test]
+async fn a_block_landing_during_the_reads_is_not_an_unknown() {
+    let fleet = fleet(1).await;
+    // The provider answers slowly, and a block lands while it does.
+    fleet.providers[0].delay_ms.store(200, Ordering::Relaxed);
+    let (chain, provider) = (fleet.chain.clone(), fleet.providers[0].clone());
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        chain.advance(1);
+        provider.height.store(chain.head(), Ordering::Relaxed);
+    });
+    fleet.checker.round().await;
+    assert_eq!(
+        entry(&fleet.pool, 0).last_verdict().map(|(v, _)| v),
+        Some(Verdict::Match)
+    );
+    assert_eq!(
+        fleet.chain.pinned_at(),
+        vec![fleet.chain.head()],
+        "pinned at the block the provider answered at, the new head"
+    );
+}
+
+#[tokio::test]
 async fn a_provider_a_block_ahead_of_the_reference_is_unknown_this_round() {
     let fleet = fleet(1).await;
     fleet.providers[0]

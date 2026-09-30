@@ -62,7 +62,10 @@ not operator-chosen.
   LB binary over real dev-node containers — boot, load distribution,
   method denial, admin forward to a quarantined node, kill and
   recovery under load. `rig all` runs every scenario; `rig load` is a
-  standalone load generator pointable at any endpoint. Runs locally
+  standalone load generator pointable at any endpoint; `rig relay`
+  stands in front of any node and relays it honestly, or with
+  `--lie entity` alters the entities it serves, to watch the integrity
+  checks catch a provider. Runs locally
   and as an on-demand CI workflow. The testing approach across the
   repository is [docs/TESTING.md](docs/TESTING.md).
 

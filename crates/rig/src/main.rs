@@ -4,6 +4,8 @@
 //! `scripts/dev-node.sh`, renders a config for them, boots `arkiv-lb`,
 //! waits until it reports ready, and tears everything down again.
 //! `rig boot` is that and nothing more — the smallest scenario.
+//! `rig relay` is not a scenario: it runs the relay alone, in front of
+//! any node.
 
 use std::{
     future::Future,
@@ -18,6 +20,7 @@ use std::{
 
 mod fleet;
 mod load;
+mod relay;
 
 use fleet::Fleet;
 
@@ -52,6 +55,7 @@ async fn main() {
         // The load command owns its Ctrl-C instead: the workers stop,
         // and the report still covers everything sent so far.
         Some("load") => load_command(std::env::args().skip(2)).await,
+        Some("relay") => relay_command(std::env::args().skip(2)).await,
         Some(name) if SCENARIOS.contains(&name) => cancel_on_ctrl_c(scenario(name)).await,
         _ => usage(),
     }
@@ -95,7 +99,7 @@ async fn all() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--concurrency N] [--duration SECONDS]",
+        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--concurrency N] [--duration SECONDS]\n       rig relay --listen <host:port> --upstream <url> [--lie entity]",
         SCENARIOS.join(" | ")
     );
     std::process::exit(2);
@@ -136,6 +140,36 @@ async fn load_command(mut args: impl Iterator<Item = String>) {
     if stats.failed > 0 {
         std::process::exit(1);
     }
+}
+
+async fn relay_command(mut args: impl Iterator<Item = String>) {
+    let (mut listen, mut upstream, mut lie) = (None, None, None);
+    while let Some(flag) = args.next() {
+        let value = args.next().unwrap_or_else(|| usage());
+        match (flag.as_str(), value.as_str()) {
+            ("--listen", _) => {
+                listen = Some(
+                    value
+                        .parse::<std::net::SocketAddr>()
+                        .unwrap_or_else(|_| usage()),
+                )
+            }
+            ("--upstream", _) => upstream = Some(value.parse().unwrap_or_else(|_| usage())),
+            ("--lie", "entity") => lie = Some(relay::Lie::Entity),
+            _ => usage(),
+        }
+    }
+    let (Some(listen), Some(upstream)) = (listen, upstream) else {
+        usage()
+    };
+    let listener = tokio::net::TcpListener::bind(listen)
+        .await
+        .unwrap_or_else(|error| panic!("cannot listen on {listen}: {error}"));
+    match lie {
+        Some(lie) => println!("rig: relay {listen} -> {upstream}, lying: {lie:?}"),
+        None => println!("rig: relay {listen} -> {upstream}, honest"),
+    }
+    relay::serve(listener, upstream, lie).await;
 }
 
 fn report(stats: &load::Stats, elapsed: Duration) {

@@ -402,7 +402,7 @@ impl Provider {
                 provider = %self.id,
                 eligible = now,
                 source = %source,
-                "health flip"
+                "eligibility flip"
             );
         }
     }

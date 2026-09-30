@@ -215,7 +215,7 @@ Symptom, then where to look.
   reference is the suspect, not the nodes: it is on another network or
   far ahead. Check `ARKIV_RPC_URL`.
 - **`boot window closed with no provider admitted` at start, with no
-  `health flip` lines.** Nothing passed its first probes: check the
+  `eligibility flip` lines.** Nothing passed its first probes: check the
   tunnels and `health.chain_id`, then the reference as above.
 - **`reference unanswered: chain head lag goes unchecked`.** Not an
   outage: serving continues, only lag verdicts stop. The line appears

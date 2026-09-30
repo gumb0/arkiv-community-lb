@@ -199,6 +199,9 @@ async fn a_provider_behind_the_chain_is_stale_and_left_to_the_probes() {
         .height
         .store(finalized - 10, Ordering::Relaxed);
     let provider = entry(&fleet.pool, 0);
+    // Its probes report the same low head, so it is behind the chain,
+    // not answering from behind its own head.
+    provider.record_height(finalized - 10);
     let streak = provider.health_streak.load(Ordering::Relaxed);
     fleet.checker.round().await;
     assert!(provider.eligible(), "stale is not lying");
@@ -210,6 +213,46 @@ async fn a_provider_behind_the_chain_is_stale_and_left_to_the_probes() {
         provider.health_streak.load(Ordering::Relaxed),
         streak,
         "no health tick from a round"
+    );
+}
+
+#[tokio::test]
+async fn a_provider_hiding_the_block_its_head_is_past_is_a_divergence() {
+    let fleet = fleet(1).await;
+    // Probed at the chain's head, so it has the finalized block, but
+    // answers that it has none.
+    let provider = entry(&fleet.pool, 0);
+    provider.record_height(fleet.chain.head());
+    fleet.providers[0]
+        .hide_blocks
+        .store(true, Ordering::Relaxed);
+    fleet.checker.round().await;
+    assert!(!provider.eligible());
+    assert_eq!(
+        provider.last_verdict().map(|(v, _)| v),
+        Some(Verdict::Divergence)
+    );
+}
+
+#[tokio::test]
+async fn a_provider_answering_the_entity_far_behind_its_own_head_is_a_divergence() {
+    let fleet = fleet(1).await;
+    let provider = entry(&fleet.pool, 0);
+    provider.record_height(fleet.chain.head());
+    // The block is served, but the entity is answered at a block
+    // further behind its own head than the lag tolerance.
+    fleet.providers[0]
+        .entity_blocks_behind
+        .store(LAG_TOLERANCE + 5, Ordering::Relaxed);
+    fleet.checker.round().await;
+    assert!(!provider.eligible());
+    assert_eq!(
+        provider.last_verdict().map(|(v, _)| v),
+        Some(Verdict::Divergence)
+    );
+    assert!(
+        fleet.chain.pinned_at().is_empty(),
+        "no metered read for an answer judged by the provider's own head"
     );
 }
 
@@ -412,8 +455,9 @@ async fn a_provider_with_the_block_but_answering_far_back_is_stale() {
     fleet.providers[0]
         .height
         .store(fleet.chain.head() - behind, Ordering::Relaxed);
-    fleet.checker.round().await;
     let provider = entry(&fleet.pool, 0);
+    provider.record_height(fleet.chain.head() - behind);
+    fleet.checker.round().await;
     // Staleness is ignored by the integrity round; it is the Monitor's
     // probes' job to detect it.
     assert!(provider.eligible());

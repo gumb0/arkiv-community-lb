@@ -118,6 +118,12 @@ Each provider gets one of four verdicts per round.
   and takes it out of rotation until it catches up. The round only logs
   the verdict. The distance check matters because a provider stuck in
   the past would otherwise agree with the reference at its own old block.
+  Stale is measured against the provider's own head, as its probes last
+  reported it, not only against the reference: a provider whose head was
+  past the finalized height and has no block there, or that answers the
+  entity further behind its own head than the lag tolerance, is not
+  behind the chain. That is a divergence, or stale would be a verdict a
+  provider can choose and never be judged.
 - **divergence** — the block differs, or the entity differs. The round
   does not act on the first mismatch. It waits `confirm_after`, asks both
   sides again the same way, and only a second mismatch counts. The wait
@@ -217,6 +223,11 @@ work. Two fields, documented in `config.example.toml`:
   The checks reach a provider the way clients do, so it cannot tell them
   apart by origin, but a provider that lies at random will be caught only
   as often as the sampled read lands on a lie.
+- **A provider that fails the round's reads on purpose.** A read that
+  errors or times out is unknown, never a verdict, since liveness is the
+  health check's job. A provider that answers its probes and errors on
+  everything else is never judged here; it errors on clients too, which
+  only replaying client requests would show.
 
 ## Future improvements
 

@@ -57,6 +57,12 @@ pub struct FakeProvider {
     /// has needed a provider honest about some keys and not others.
     pub lie_block: AtomicBool,
     pub lie_entity: AtomicBool,
+    /// Null for every block, whatever its height: a way to be stale at
+    /// will while the probes see a head at the chain's.
+    pub hide_blocks: AtomicBool,
+    /// Entity reads answered this many blocks behind its height, while
+    /// its probes see the height itself; zero answers at the height.
+    pub entity_blocks_behind: AtomicU64,
     /// Block and entity reads held back this long, to time them out
     /// while the probes, which have the shorter timeout, stay quick.
     pub delay_ms: AtomicU64,
@@ -84,6 +90,8 @@ async fn serve(chain: FakeChain) -> (SocketAddr, Arc<FakeProvider>) {
         asked_keys: std::sync::Mutex::new(Vec::new()),
         lie_block: AtomicBool::new(false),
         lie_entity: AtomicBool::new(false),
+        hide_blocks: AtomicBool::new(false),
+        entity_blocks_behind: AtomicU64::new(0),
         delay_ms: AtomicU64::new(0),
     });
     let state = rpc.clone();
@@ -146,7 +154,7 @@ impl FakeProvider {
             Some(hex) => parse_hex(hex),
             None => panic!("a block tag or number"),
         };
-        if number > height {
+        if number > height || self.hide_blocks.load(Ordering::Relaxed) {
             return Value::Null;
         }
         let Some(mut block) = self
@@ -172,7 +180,10 @@ impl FakeProvider {
         let text = params[0].as_str().expect("a query text");
         let at = match params[1]["atBlock"].as_str() {
             Some(hex) => parse_hex(hex),
-            None => self.height.load(Ordering::Relaxed),
+            None => self
+                .height
+                .load(Ordering::Relaxed)
+                .saturating_sub(self.entity_blocks_behind.load(Ordering::Relaxed)),
         };
         let entities = if let Some(key) = argument(text, "$key = key(") {
             let key = B256::from_str(key).expect("a key");

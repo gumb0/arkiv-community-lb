@@ -123,14 +123,17 @@ struct Finding {
 enum Evidence {
     Block {
         reference: Box<BlockFields>,
-        provider: Box<BlockFields>,
+        /// `None` when the provider answered that it has no such block.
+        provider: Option<Box<BlockFields>>,
     },
     Entity {
         key: EntityKey,
         /// The block the provider answered at, and the reference was
         /// pinned to.
         at: u64,
-        reference: Vec<ArkivEntity>,
+        /// `None` when the reference was not asked: the answer was too
+        /// far behind the provider's own head.
+        reference: Option<Vec<ArkivEntity>>,
         provider: Vec<ArkivEntity>,
     },
 }
@@ -382,10 +385,14 @@ impl<R: ChainReader> IntegrityChecker<R> {
                         provider = %provider.id,
                         agreement = provider.agreement_id().map(|id| format!("{id:#x}")),
                         height,
+                        probed_head = provider.last_height(),
                         check = "block",
                         reference_hash = %reference.hash,
-                        provider_hash = %served.hash,
-                        differing = block_differences(reference, served),
+                        provider_hash = served.as_ref().map(|block| format!("{:#x}", block.hash)),
+                        differing = match served {
+                            Some(served) => block_differences(reference, served),
+                            None => "no such block".to_owned(),
+                        },
                         "integrity: divergence confirmed"
                     ),
                     Evidence::Entity {
@@ -397,10 +404,13 @@ impl<R: ChainReader> IntegrityChecker<R> {
                         provider = %provider.id,
                         agreement = provider.agreement_id().map(|id| format!("{id:#x}")),
                         height,
+                        probed_head = provider.last_height(),
                         check = "entity",
                         key = %key,
                         at,
-                        reference = describe(reference),
+                        reference = reference
+                            .as_deref()
+                            .map_or_else(|| "not read".to_owned(), describe),
                         served = describe(served),
                         "integrity: divergence confirmed"
                     ),
@@ -632,9 +642,26 @@ impl<R: ChainReader> IntegrityChecker<R> {
         head: u64,
         pinned: &HashMap<u64, Result<Vec<ArkivEntity>, ()>>,
     ) -> (Verdict, Option<Evidence>) {
+        let probed = answer.provider.last_height();
         let block = match &answer.block {
             Err(()) => return (Verdict::Unknown, None),
-            Ok(None) => return (Verdict::Stale, None),
+            Ok(None) => {
+                return match probed {
+                    // Its probes reported a head at or past the
+                    // finalized height, and it says it has no block
+                    // there: it refused a block older than its own head.
+                    // This is not lag. Counted as stale, it would let a
+                    // provider avoid ever being judged.
+                    Some(probed) if probed >= finalized.number => (
+                        Verdict::Divergence,
+                        Some(Evidence::Block {
+                            reference: Box::new(finalized.clone()),
+                            provider: None,
+                        }),
+                    ),
+                    _ => (Verdict::Stale, None),
+                };
+            }
             Ok(Some(block)) => block,
         };
         if block != finalized {
@@ -642,7 +669,7 @@ impl<R: ChainReader> IntegrityChecker<R> {
                 Verdict::Divergence,
                 Some(Evidence::Block {
                     reference: Box::new(finalized.clone()),
-                    provider: Box::new(block.clone()),
+                    provider: Some(Box::new(block.clone())),
                 }),
             );
         }
@@ -650,6 +677,22 @@ impl<R: ChainReader> IntegrityChecker<R> {
             Err(()) => return (Verdict::Unknown, None),
             Ok(answer) => answer,
         };
+        // It answered the entity at a block further behind its own
+        // probed head than the lag tolerance: an old answer from a node
+        // that has newer blocks, not lag.
+        if let Some(probed) = probed
+            && at.saturating_add(self.lag_tolerance) < probed
+        {
+            return (
+                Verdict::Divergence,
+                Some(Evidence::Entity {
+                    key: answer.key,
+                    at: *at,
+                    reference: None,
+                    provider: rows.clone(),
+                }),
+            );
+        }
         if at.saturating_add(self.lag_tolerance) < head {
             return (Verdict::Stale, None);
         }
@@ -665,7 +708,7 @@ impl<R: ChainReader> IntegrityChecker<R> {
                 Some(Evidence::Entity {
                     key: answer.key,
                     at: *at,
-                    reference: reference.clone(),
+                    reference: Some(reference.clone()),
                     provider: rows.clone(),
                 }),
             ),

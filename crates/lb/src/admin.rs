@@ -24,7 +24,7 @@ use crate::{
     forwarder::{Forwarder, Outcome},
     jsonrpc,
     marketplace::admission::{Agreements, Op, Token, decide_admission},
-    pool::{Pool, Provider, Source, marketplace_id},
+    pool::{Pool, Provider, Source},
     proxy,
 };
 
@@ -171,16 +171,11 @@ async fn admission(
                 client = who,
                 "tunnel admitted"
             );
-            // The proxy is what carries traffic, so the probe is asked
-            // for once it is registered, not at login.
-            if let Op::NewProxy { .. } = op
-                && let Some(provider) = state
-                    .pool
-                    .snapshot()
-                    .iter()
-                    .find(|provider| provider.id == marketplace_id(stored.record.provider))
-            {
-                provider.schedule_probe_now();
+            // frps calls back at the client's login and again when it
+            // registers its proxy; only the proxy carries traffic, so
+            // the steps that follow start at the second.
+            if let Op::NewProxy { .. } = op {
+                agreements.clone().admitted(&stored);
             }
             Json(json!({ "unchange": true })).into_response()
         }

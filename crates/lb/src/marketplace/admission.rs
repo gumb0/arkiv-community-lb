@@ -5,7 +5,7 @@
 //! agreement assigns. The decision is a pure function; the route that
 //! speaks frps's wire format is in `admin.rs`.
 
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use alloy_primitives::Signature;
 
@@ -60,6 +60,9 @@ impl fmt::Display for Rejection {
 /// tests whatever stands in for it.
 pub trait Agreements: Send + Sync {
     fn agreement(&self, key: EntityKey) -> Option<Stored<Agreement>>;
+    /// The tunnel of this agreement's provider was admitted: the steps
+    /// that follow run, on their own task.
+    fn admitted(self: Arc<Self>, agreement: &Stored<Agreement>);
 }
 
 /// The message a provider signs for its token: the agreement id under

@@ -339,6 +339,7 @@ pub trait ChainWriter: Send + Sync {
     fn create(&self, create: &Create) -> impl Future<Output = Result<Created, WriteError>> + Send;
     fn patch(&self, patch: &Patch) -> impl Future<Output = Result<Written, WriteError>> + Send;
     fn delete(&self, delete: &Delete) -> impl Future<Output = Result<Written, WriteError>> + Send;
+    fn extend(&self, extend: &Extend) -> impl Future<Output = Result<Extended, WriteError>> + Send;
     fn execute_batch(
         &self,
         batch: &Batch,
@@ -499,6 +500,10 @@ impl ChainWriter for Writer {
 
     async fn delete(&self, delete: &Delete) -> Result<Written, WriteError> {
         Writer::delete(self, delete).await
+    }
+
+    async fn extend(&self, extend: &Extend) -> Result<Extended, WriteError> {
+        Writer::extend(self, extend).await
     }
 
     async fn execute_batch(&self, batch: &Batch) -> Result<BatchResult, WriteError> {

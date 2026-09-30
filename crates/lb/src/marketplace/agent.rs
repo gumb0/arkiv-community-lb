@@ -1,10 +1,13 @@
 //! The marketplace agent: the LB's state on the chain, read back into
 //! memory and kept there, and offers turned into agreements. The chain
 //! is the authority; what is here is a cache of it, rebuilt at every
-//! start and reconciled at every poll. One task, and every chain write
-//! of the LB goes through it: the acceptances at the discovery poll,
-//! and the refresh that keeps the listing and the eligible providers'
-//! agreement records alive.
+//! start and reconciled at every poll. One task for the writes on a
+//! timer: the acceptances at the discovery poll, the refresh that
+//! keeps the listing and the eligible providers' agreement records
+//! alive, the flush. One more write on its own task, the extend a
+//! provider is owed once its admitted tunnel has passed the probes;
+//! the sidecar sends one transaction at a time, so it waits behind a
+//! refresh at most.
 
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
@@ -135,9 +138,34 @@ pub struct Agent<R, W> {
     agreements: Mutex<KnownAgreements>,
 }
 
-impl<R: ChainReader, W: ChainWriter> Agreements for Agent<R, W> {
+/// How often an admission looks at the entry while it waits for the
+/// Monitor's probes to pass.
+const ADMISSION_POLL: Duration = Duration::from_millis(200);
+
+impl<R: ChainReader + 'static, W: ChainWriter + 'static> Agreements for Agent<R, W> {
     fn agreement(&self, key: EntityKey) -> Option<Stored<Agreement>> {
         Agent::agreement(self, key)
+    }
+
+    fn admitted(self: Arc<Self>, agreement: &Stored<Agreement>) {
+        let Some(provider) = self
+            .pool
+            .snapshot()
+            .iter()
+            .find(|provider| provider.id == marketplace_id(agreement.record.provider))
+            .cloned()
+        else {
+            return;
+        };
+        // A reconnect is a probe due at once, as the first admission
+        // was; the steps that follow are for a record still on its
+        // accept window, so a tunnel that reconnects after the extend
+        // starts nothing and cannot make the LB write.
+        provider.schedule_probe_now();
+        if !self.on_accept_window(agreement.key) {
+            return;
+        }
+        tokio::spawn(self.admission(provider, agreement.key));
     }
 }
 
@@ -314,6 +342,85 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 tracing::warn!(%error, "the open counter records are left as memory has them");
             }
             self.discover_offers(head).await;
+        }
+    }
+
+    /// Whether an agreement's record was never extended, as memory
+    /// knows it: its life, expiry less creation, is shorter than
+    /// `agreement_life`, which an extend sets from the moment it lands.
+    /// An accepted record lives for the accept window, shorter by
+    /// configuration; its creation block is an estimate until the
+    /// reconcile reads it back, a few blocks early at most. A record
+    /// memory does not hold is not on any window.
+    fn on_accept_window(&self, key: EntityKey) -> bool {
+        self.agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .is_some_and(|live| {
+                let record = &live.agreement;
+                record.expires_at.saturating_sub(record.created_at)
+                    < blocks(self.config.agreement_life)
+            })
+    }
+
+    /// The steps after a provider's tunnel is admitted, in order: its
+    /// probes pass, then its agreement is extended.
+    async fn admission(self: Arc<Self>, provider: Arc<Provider>, agreement: EntityKey) {
+        // The Monitor does the probing; this only waits for its verdict,
+        // at most the accept window: a node that never answers is left
+        // to expire with its record.
+        let deadline = std::time::Instant::now() + self.config.accept_window;
+        while !provider.healthy() {
+            if std::time::Instant::now() >= deadline {
+                tracing::info!(
+                    provider = %provider.id,
+                    agreement = %agreement,
+                    "admission: the probes did not pass within the accept window"
+                );
+                return;
+            }
+            tokio::time::sleep(ADMISSION_POLL).await;
+        }
+        // Checked again after the wait: a second admission of the same
+        // provider may have extended the record by now, or a poll may
+        // have dropped it from memory because it expired, and extending
+        // a gone record would fail.
+        if !self.on_accept_window(agreement) {
+            return;
+        }
+        tracing::info!(
+            provider = %provider.id,
+            agreement = %agreement,
+            "admission: the probes passed, the agreement record is extended"
+        );
+        // Extended now rather than at the hourly refresh: the record
+        // lives only for the accept window until then, and the refresh
+        // is not aligned to it, so a provider that turns healthy late
+        // in its window would expire first.
+        let extend = Extend {
+            entity_key: agreement,
+            expires: Expiry::Seconds(self.config.agreement_life.as_secs()),
+        };
+        match self.writer.extend(&extend).await {
+            // Memory learns the expiry from the answer, not at the next
+            // poll: until then it would still show the record on its
+            // accept window.
+            Ok(extended) => {
+                if let Some(live) = self
+                    .agreements
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_mut(&agreement)
+                {
+                    live.agreement.expires_at = extended.expires_at;
+                }
+            }
+            Err(error) => tracing::error!(
+                %error,
+                agreement = %agreement,
+                "an extend at admission did not land: the next refresh extends it"
+            ),
         }
     }
 

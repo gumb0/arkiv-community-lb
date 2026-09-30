@@ -13,8 +13,8 @@ use lb::chain::{
     reader::{BlockAt, BlockFields, Condition, PAGE_LIMIT, Page, Query, ReadError},
     records::{Address, ArkivAttribute, ArkivEntity, Attributes, EncodedRecord, EntityKey},
     writer::{
-        Batch, BatchResult, Create, Created, Delete, ErrorLink, Expiry, Identity, Operation, Patch,
-        WriteError, Written,
+        Batch, BatchResult, Create, Created, Delete, ErrorLink, Expiry, Extend, Extended, Identity,
+        Operation, Patch, WriteError, Written,
     },
 };
 
@@ -77,6 +77,7 @@ pub enum Transaction {
     Create(EntityKey),
     Patch(EntityKey),
     Delete(EntityKey),
+    Extend(EntityKey),
     Batch(BatchLog),
 }
 
@@ -504,6 +505,20 @@ impl ChainWriter for FakeChain {
         Ok(Written {
             entity_key: delete.entity_key,
             tx_hash,
+        })
+    }
+
+    async fn extend(&self, extend: &Extend) -> Result<Extended, WriteError> {
+        let mut state = self.state();
+        state.sidecar()?;
+        let index = state.position(extend.entity_key)?;
+        let expires_at = state.expires_at(extend.expires);
+        state.entities[index].expires_at = expires_at;
+        let tx_hash = state.transaction(Transaction::Extend(extend.entity_key));
+        Ok(Extended {
+            entity_key: extend.entity_key,
+            tx_hash,
+            expires_at,
         })
     }
 

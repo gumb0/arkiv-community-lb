@@ -98,12 +98,18 @@ first-class concern, not an add-on.
   never fabricate them. The client-facing table is `docs/ENDPOINT.md`; the
   architecture note is `docs/PROXY.md`.
 - **The marketplace agent is one task**, with a timer per loop, and every
-  chain write of the LB goes through it, so the sidecar never has two of
-  the LB's writes queued behind each other. Its memory is a cache of the
-  chain, rebuilt at start and reconciled at every discovery poll; the
-  chain decides which agreements exist. One rule keeps them alive: the
-  refresh extends the listing and the records of the providers that are
-  eligible at that moment, and nothing else decides who stays. The
+  chain write of the LB on a timer goes through it, so the sidecar never
+  has two of the LB's timed writes queued behind each other. Its memory
+  is a cache of the chain, rebuilt at start and reconciled at every
+  discovery poll; the chain decides which agreements exist. One rule
+  keeps them alive: the refresh extends the listing and the records of
+  the providers that are eligible at that moment, and nothing else
+  decides who stays. One extend outside the refresh, on a task of its
+  own per admitted tunnel: a provider whose admitted tunnel has just
+  passed its probes gets its record extended at once, since the record
+  lives only for the accept window until then; only a record still on
+  that window, told by its life, so a tunnel that reconnects after the
+  extend is no write. The
   tunnel server's admission callback is a route on the admin listener
   that reads the agent's agreements (`docs/TUNNELING.md`). The counts
   reach the chain at the flush, on its own interval. A counter record

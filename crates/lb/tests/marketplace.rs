@@ -22,7 +22,10 @@ use lb::{
         writer::{Delete, Expiry},
     },
     config::Marketplace,
-    marketplace::agent::{Agent, OpenCounter, StartError},
+    marketplace::{
+        admission::Agreements,
+        agent::{Agent, OpenCounter, StartError},
+    },
     pool::{Pool, Source},
 };
 
@@ -2407,4 +2410,126 @@ async fn the_running_agent_accepts_an_offer_posted_after_start() {
     assert_eq!(nodes[0]["id"], format!("{:#x}", provider(1)));
     assert_eq!(nodes[0]["url"], "http://127.0.0.1:20000/");
     service.shutdown().await;
+}
+
+/// An agent holding one agreement whose provider was accepted and
+/// never extended, and the pool entry the agreement names.
+struct Admitting {
+    chain: FakeChain,
+    config: Marketplace,
+    pool: Arc<Pool>,
+    agent: Arc<FakeAgent>,
+    key: alloy_primitives::B256,
+}
+
+async fn admitting(accept_window: Duration) -> Admitting {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let mut config = marketplace();
+    config.accept_window = accept_window;
+    let key = seed_agreement(&chain, provider(1), 20000, 7200);
+    let pool = Arc::new(Pool::new(&[]).expect("pool"));
+    let agent = Arc::new(start(&chain, &config, &pool).await.expect("starts"));
+    Admitting {
+        chain,
+        config,
+        pool,
+        agent,
+        key,
+    }
+}
+
+#[tokio::test]
+async fn an_admitted_provider_is_extended_once_its_probes_pass() {
+    let fleet = admitting(Duration::from_secs(7200)).await;
+    let stored = fleet.agent.agreement(fleet.key).expect("known");
+    let writes_before = fleet.chain.transactions().len();
+    fleet.agent.clone().admitted(&stored);
+
+    // Nothing until the probes pass.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(fleet.chain.transactions().len(), writes_before);
+
+    fleet.chain.advance(100);
+    set_health(&fleet.pool, provider(1), true);
+    wait_for("the record is extended at the flip", || {
+        fleet.chain.transactions().len() > writes_before
+    })
+    .await;
+    assert_eq!(
+        fleet.chain.transactions()[writes_before..],
+        [Transaction::Extend(fleet.key)],
+        "the agreement, nothing else"
+    );
+    assert_eq!(
+        expires_at(&fleet.chain, fleet.key),
+        fleet.chain.head() + fleet.config.agreement_life.as_secs() / 2,
+        "to agreement_life, like a refresh"
+    );
+}
+
+#[tokio::test]
+async fn a_tunnel_that_reconnects_after_the_extend_is_no_write() {
+    let fleet = admitting(Duration::from_secs(7200)).await;
+    let stored = fleet.agent.agreement(fleet.key).expect("known");
+    set_health(&fleet.pool, provider(1), true);
+    let writes_before = fleet.chain.transactions().len();
+    fleet.agent.clone().admitted(&stored);
+    wait_for("the first admission extends", || {
+        fleet.chain.transactions().len() > writes_before
+    })
+    .await;
+    let after_extend = fleet.chain.transactions().len();
+
+    let entry = fleet.pool.snapshot()[0].clone();
+    // The probe backed off, as after a tunnel outage.
+    *entry.next_probe() = std::time::Instant::now() + Duration::from_secs(300);
+    // Memory learned the new expiry from the extend's answer, before
+    // any poll.
+    let stored = fleet.agent.agreement(fleet.key).expect("known");
+    assert_eq!(stored.expires_at, expires_at(&fleet.chain, fleet.key));
+    // Reconnected twice more: the probe is due again, nothing is
+    // written again.
+    fleet.agent.clone().admitted(&stored);
+    fleet.agent.clone().admitted(&stored);
+    assert!(*entry.next_probe() <= std::time::Instant::now());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(fleet.chain.transactions().len(), after_extend);
+}
+
+#[tokio::test]
+async fn two_admissions_during_the_wait_write_once() {
+    let fleet = admitting(Duration::from_secs(7200)).await;
+    let stored = fleet.agent.agreement(fleet.key).expect("known");
+    let writes_before = fleet.chain.transactions().len();
+    // A tunnel that reconnects before its probes passed: two sequences
+    // wait, and the second finds the record extended.
+    fleet.agent.clone().admitted(&stored);
+    fleet.agent.clone().admitted(&stored);
+
+    set_health(&fleet.pool, provider(1), true);
+    wait_for("the record is extended", || {
+        fleet.chain.transactions().len() > writes_before
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        fleet.chain.transactions()[writes_before..],
+        [Transaction::Extend(fleet.key)],
+        "one extend"
+    );
+}
+
+#[tokio::test]
+async fn a_provider_whose_probes_never_pass_is_left_to_its_window() {
+    let fleet = admitting(Duration::from_millis(200)).await;
+    let stored = fleet.agent.agreement(fleet.key).expect("known");
+    let writes_before = fleet.chain.transactions().len();
+    fleet.agent.clone().admitted(&stored);
+
+    // The window runs out with the probes failing; a flip after that
+    // is an ordinary readmission, extended by the refresh, not here.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    set_health(&fleet.pool, provider(1), true);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(fleet.chain.transactions().len(), writes_before);
 }

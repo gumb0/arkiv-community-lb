@@ -9,7 +9,7 @@ use std::{
 };
 
 use alloy_primitives::Address;
-use common::fake_chain::{FakeChain, Transaction};
+use common::fake_chain::{FakeChain, Transaction, blocks};
 use lb::chain::reader::Query;
 use lb::{
     chain::{
@@ -162,7 +162,7 @@ async fn a_first_start_writes_the_listing_and_reloads_nothing() {
     assert_eq!(listing.creator, LB);
     assert_eq!(
         listing.expires_at,
-        chain.head() + config.listing_life.as_secs() / 2,
+        chain.head() + blocks(config.listing_life.as_secs()),
         "the listing lives one listing life"
     );
     let page = chain
@@ -517,7 +517,7 @@ async fn an_offer_becomes_an_agreement_and_a_counter_record() {
     assert_eq!(agreement.record.remote_port, 20000, "the first port");
     assert_eq!(
         agreement.expires_at,
-        chain.head() + config.accept_window.as_secs() / 2,
+        chain.head() + blocks(config.accept_window.as_secs()),
         "the accept window"
     );
     let members = pool.snapshot();
@@ -537,7 +537,7 @@ async fn an_offer_becomes_an_agreement_and_a_counter_record() {
     assert_eq!(counter.record.closed_block, None);
     assert_eq!(
         counter.expires_at,
-        chain.head() + config.counter_record_life.as_secs() / 2
+        chain.head() + blocks(config.counter_record_life.as_secs())
     );
     assert_eq!(
         agent.open_counters()[&agreement.key],
@@ -614,7 +614,7 @@ async fn an_expired_offer_is_not_accepted() {
     let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
     post(&chain, provider(1), &offer_for(&agent, &chain), 3600);
-    chain.advance(3600 / 2);
+    chain.advance(blocks(3600));
     let writes_before = chain.transactions().len();
 
     agent.discovery_poll().await;
@@ -714,7 +714,7 @@ async fn the_cap_full_waits_and_a_freed_slot_goes_to_the_oldest_offer() {
     // The first agreement ends (never refreshed: its accept window
     // runs out) while the second is still alive. The oldest waiting
     // offer takes the freed slot, in the same poll.
-    chain.advance(config.accept_window.as_secs() / 2 - 100);
+    chain.advance(blocks(config.accept_window.as_secs()) - 100);
     let fourth = post(&chain, provider(4), &offer, DAY);
     agent.discovery_poll().await;
     let accepted: Vec<_> = agent.agreements().iter().map(|a| a.record.offer).collect();
@@ -1017,7 +1017,7 @@ async fn an_agreement_adopted_at_a_poll_learns_its_open_record() {
     assert_eq!(pool.snapshot()[0].served.load(Ordering::Relaxed), 7);
 
     // Gone from the chain: gone from the agent's records too.
-    chain.advance(3600 / 2);
+    chain.advance(blocks(3600));
     agent.discovery_poll().await;
     assert!(agent.open_counters().is_empty());
 }
@@ -1258,7 +1258,7 @@ async fn an_agreement_without_a_record_gets_a_fresh_one_at_zero() {
     assert_eq!(record.record.wei_per_call, RATE);
     assert_eq!(
         record.expires_at,
-        chain.head() + config.counter_record_life.as_secs() / 2
+        chain.head() + blocks(config.counter_record_life.as_secs())
     );
 
     // The record is remembered at the next read, and the next flush
@@ -2007,17 +2007,17 @@ async fn a_refresh_extends_the_listing_and_the_eligible_providers_only() {
     let head = chain.head();
     assert_eq!(
         expires_at(&chain, agent.listing_key()),
-        head + config.listing_life.as_secs() / 2,
+        head + blocks(config.listing_life.as_secs()),
         "the listing, to listing_life"
     );
     assert_eq!(
         expires_at(&chain, eligible),
-        head + config.agreement_life.as_secs() / 2,
+        head + blocks(config.agreement_life.as_secs()),
         "the eligible provider, to agreement_life"
     );
     assert_eq!(
         expires_at(&chain, ghost),
-        1 + 3600 / 2,
+        1 + blocks(3600),
         "the ghost keeps its accept window"
     );
 }
@@ -2046,12 +2046,12 @@ async fn a_refresh_over_the_transaction_limit_lands_in_several() {
     for key in &keys {
         assert_eq!(
             expires_at(&chain, *key),
-            head + config.agreement_life.as_secs() / 2
+            head + blocks(config.agreement_life.as_secs())
         );
     }
     assert_eq!(
         expires_at(&chain, agent.listing_key()),
-        head + config.listing_life.as_secs() / 2
+        head + blocks(config.listing_life.as_secs())
     );
     assert!(chain.transactions().len() - writes_before >= 2);
 }
@@ -2067,7 +2067,7 @@ async fn an_idle_lb_keeps_its_listing_alive() {
     agent.refresh().await;
     assert_eq!(
         expires_at(&chain, agent.listing_key()),
-        chain.head() + config.listing_life.as_secs() / 2
+        chain.head() + blocks(config.listing_life.as_secs())
     );
 }
 
@@ -2114,7 +2114,7 @@ async fn a_record_memory_knows_expired_is_left_out_of_the_refresh() {
     agent.refresh().await;
     assert_eq!(
         expires_at(&chain, live),
-        chain.head() + config.agreement_life.as_secs() / 2,
+        chain.head() + blocks(config.agreement_life.as_secs()),
         "the live one is refreshed"
     );
     assert_eq!(
@@ -2141,7 +2141,7 @@ async fn the_reconcile_learns_a_refreshed_expiry() {
     agent.refresh().await;
     let refreshed = expires_at(&chain, key);
     agent.discovery_poll().await;
-    chain.advance(config.accept_window.as_secs() / 2 + 1);
+    chain.advance(blocks(config.accept_window.as_secs()) + 1);
     agent.refresh().await;
     assert!(
         expires_at(&chain, key) > refreshed,
@@ -2462,7 +2462,7 @@ async fn an_admitted_provider_is_extended_once_its_probes_pass() {
     );
     assert_eq!(
         expires_at(&fleet.chain, fleet.key),
-        fleet.chain.head() + fleet.config.agreement_life.as_secs() / 2,
+        fleet.chain.head() + blocks(fleet.config.agreement_life.as_secs()),
         "to agreement_life, like a refresh"
     );
 }

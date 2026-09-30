@@ -92,6 +92,11 @@ pub struct BatchLog {
 
 const SECONDS_PER_BLOCK: u64 = 2;
 
+/// A lifetime in blocks, as the chain stores it.
+pub fn blocks(seconds: u64) -> u64 {
+    seconds / SECONDS_PER_BLOCK
+}
+
 impl FakeChain {
     /// A chain at head 1 whose writer signs as `address`, holding one GLM.
     pub fn new(address: Address, chain_id: u64) -> Self {
@@ -223,7 +228,7 @@ impl State {
     fn expires_at(&self, expires: Expiry) -> u64 {
         match expires {
             Expiry::Permanent => u64::MAX,
-            Expiry::Seconds(seconds) => self.head + seconds / SECONDS_PER_BLOCK,
+            Expiry::Seconds(seconds) => self.head + blocks(seconds),
         }
     }
 

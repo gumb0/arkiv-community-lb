@@ -61,7 +61,8 @@ not operator-chosen.
 - **The test rig** (`crates/rig/`): scenarios that drive the shipped
   LB binary over real dev-node containers — boot, load distribution,
   method denial, admin forward to a quarantined node, kill and
-  recovery under load. `rig all` runs every scenario; `rig load` is a
+  recovery under load, a provider lying about entities taken out by
+  the integrity checks. `rig all` runs every scenario; `rig load` is a
   standalone load generator pointable at any endpoint; `rig relay`
   stands in front of any node and relays it honestly, or with
   `--lie entity` alters the entities it serves, to watch the integrity

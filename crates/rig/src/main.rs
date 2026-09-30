@@ -21,8 +21,10 @@ use std::{
 mod fleet;
 mod load;
 mod relay;
+mod writer;
 
 use fleet::Fleet;
+use writer::Writer;
 
 /// Dev-node host ports start here: away from the script's own 8645
 /// default, so a leftover manual dev node never collides with the rig.
@@ -33,6 +35,9 @@ const NODES: usize = 3;
 // on a dev machine they may be real forwarded ports.
 const LB_PUBLIC: &str = "127.0.0.1:18700";
 const LB_ADMIN: &str = "127.0.0.1:18701";
+/// The writer sidecar's port in the scenarios that run it: its own, so
+/// a sidecar left running on the default port does not take the writes.
+const WRITER_PORT: u16 = 18702;
 
 /// Boot cover: image pulls are done by then (the script waits out its
 /// own 60 s), and admission needs flip_after probe rounds on top.
@@ -40,12 +45,13 @@ const READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Scenario order for `rig all`: quick smokes first, the acceptance
 /// scenario last.
-const SCENARIOS: [&str; 5] = [
+const SCENARIOS: [&str; 6] = [
     "boot",
     "distribution",
     "denylist",
     "forward-to-node",
     "kill-recover",
+    "wrong-entity",
 ];
 
 #[tokio::main]
@@ -83,6 +89,7 @@ async fn scenario(name: &str) {
         "distribution" => distribution().await,
         "forward-to-node" => forward_to_node().await,
         "kill-recover" => kill_recover().await,
+        "wrong-entity" => wrong_entity().await,
         _ => unreachable!("scenario {name} is listed but not dispatched"),
     }
 }
@@ -237,7 +244,7 @@ async fn start_stack() -> Stack {
     println!("rig: fleet of {NODES} up, chain id {chain_id}");
 
     let config = render_config(&root, &fleet, chain_id);
-    let mut lb = Lb::spawn(&root, &config);
+    let mut lb = Lb::spawn(&root, &config, None);
     wait_ready(&mut lb).await;
     Stack { lb, fleet }
 }
@@ -541,8 +548,8 @@ struct Lb {
 impl Lb {
     /// Runs the binary the workspace build produced — the same one that
     /// ships — with its output to a log file, so scenario output stays
-    /// readable.
-    fn spawn(root: &Path, config: &Path) -> Self {
+    /// readable. `reference` is the Arkiv endpoint it reads, if any.
+    fn spawn(root: &Path, config: &Path, reference: Option<&str>) -> Self {
         // The LB binary next to the rig's own: whatever profile built
         // the rig built the LB it drives, so a release rig tests the
         // release binary — the artifact that actually ships.
@@ -557,12 +564,17 @@ impl Lb {
         let log = root.join("target/rig/lb.log");
         let out = std::fs::File::create(&log).expect("create lb.log");
         let err = out.try_clone().expect("clone log handle");
-        let child = Command::new(&binary)
-            .arg(config)
-            // The machine's own Arkiv endpoint must not leak into the
-            // run: the rig decides the reference, and it decides none.
+        let mut command = Command::new(&binary);
+        command.arg(config);
+        // The machine's own Arkiv endpoint must not leak into the run:
+        // the rig decides the reference.
+        command
             .env_remove("ARKIV_RPC_URL")
-            .env_remove("ARKIV_API_KEY")
+            .env_remove("ARKIV_API_KEY");
+        if let Some(reference) = reference {
+            command.env("ARKIV_RPC_URL", reference);
+        }
+        let child = command
             .stdout(Stdio::from(out))
             .stderr(Stdio::from(err))
             .spawn()
@@ -621,4 +633,146 @@ async fn wait_ready(lb: &mut Lb) {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     println!("rig: ready in {:.1}s", started.elapsed().as_secs_f32());
+}
+
+/// Relays running as tasks of the rig; aborted on drop, so a scenario
+/// that ends, however it ends, leaves no listener behind.
+struct Relays(Vec<tokio::task::JoinHandle<()>>);
+
+impl Drop for Relays {
+    fn drop(&mut self) {
+        for relay in &self.0 {
+            relay.abort();
+        }
+    }
+}
+
+/// A relay in front of `upstream` on a free loopback port; its URL.
+async fn start_relay(relays: &mut Relays, upstream: &str, lie: Option<relay::Lie>) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a relay");
+    let url = format!("http://{}", listener.local_addr().expect("relay address"));
+    let upstream = upstream.parse().expect("the node's url parses");
+    relays
+        .0
+        .push(tokio::spawn(relay::serve(listener, upstream, lie)));
+    url
+}
+
+/// The integrity scenario: three providers serving one dev chain
+/// through relays, one of them lying about entities. The liar is taken
+/// out with the evidence in the log, the honest two are matched and
+/// carry the traffic.
+async fn wrong_entity() {
+    let root = workspace_root();
+    // One chain behind every provider: they agree on data, so a
+    // difference is one the LB has to explain.
+    let fleet = Fleet::start(&root, 1, BASE_PORT);
+    let chain_id = fleet.chain_id();
+    let node = &fleet.nodes()[0].url;
+    // The marketplace writes the LB's listing at start through the
+    // sidecar: the live entity the integrity round samples, on a chain
+    // that has no other.
+    let writer = Writer::start(&root, node, WRITER_PORT).await;
+    let mut relays = Relays(Vec::new());
+    let providers = [
+        ("honest-0", start_relay(&mut relays, node, None).await),
+        ("honest-1", start_relay(&mut relays, node, None).await),
+        (
+            "liar",
+            start_relay(&mut relays, node, Some(relay::Lie::Entity)).await,
+        ),
+    ];
+    println!("rig: one dev chain behind 3 relays, one lying about entities");
+
+    let config = render_integrity_config(&root, &providers, chain_id, &writer.url);
+    let mut lb = Lb::spawn(&root, &config, Some(node));
+    wait_ready(&mut lb).await;
+
+    let started = Instant::now();
+    wait_nodes(
+        "the liar's divergence is confirmed",
+        Duration::from_secs(90),
+        |nodes| provider(nodes, "liar")["integrity_verdict"] == "divergence",
+    )
+    .await;
+    println!(
+        "rig: divergence confirmed {:.1}s after ready",
+        started.elapsed().as_secs_f32()
+    );
+    let nodes = fetch_nodes().await;
+    let liar = provider(&nodes, "liar");
+    assert_eq!(liar["eligible"], false, "out of rotation: {liar}");
+    assert_eq!(liar["ineligibility_reason"], "integrity", "{liar}");
+    for id in ["honest-0", "honest-1"] {
+        let honest = provider(&nodes, id);
+        assert_eq!(honest["integrity_verdict"], "match", "{honest}");
+        assert_eq!(honest["eligible"], true, "{honest}");
+    }
+    let log = std::fs::read_to_string(&lb.log).expect("read lb.log");
+    assert!(
+        log.lines()
+            .any(|line| line.contains("divergence confirmed") && line.contains("liar")),
+        "the evidence event is in {}",
+        lb.log.display()
+    );
+
+    // The public endpoint serves through the honest two only.
+    let served_before = provider(&nodes, "liar")["served"].clone();
+    let stats = load::run(
+        &format!("http://{LB_PUBLIC}"),
+        4,
+        Duration::from_secs(3),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await;
+    assert_eq!(stats.failed, 0, "clients see nothing of the liar");
+    assert!(stats.ok > 0, "the load ran");
+    let nodes = fetch_nodes().await;
+    assert_eq!(
+        provider(&nodes, "liar")["served"],
+        served_before,
+        "no traffic to the liar"
+    );
+
+    // Torn down in this order: the LB before the providers and the
+    // sidecar it talks to, the chain last.
+    drop(lb);
+    drop(relays);
+    drop(writer);
+    drop(fleet);
+    println!("rig: ok");
+}
+
+/// The config for the integrity scenario: the providers as static
+/// entries, the marketplace so the LB writes its listing through the
+/// sidecar, and integrity rounds fast enough to watch.
+fn render_integrity_config(
+    root: &Path,
+    providers: &[(&str, String)],
+    chain_id: u64,
+    writer_url: &str,
+) -> PathBuf {
+    let dir = root.join("target/rig");
+    std::fs::create_dir_all(&dir).expect("create target/rig");
+    let mut config = format!(
+        "# Rendered by the rig — do not edit.\n\
+         [listen]\npublic = \"{LB_PUBLIC}\"\nadmin = \"{LB_ADMIN}\"\n\n\
+         [health]\nchain_id = {chain_id}\n\n\
+         [marketplace]\nwriter_url = \"{writer_url}\"\n\
+         wei_per_call = \"1000000000000000\"\ntunnel_server = \"127.0.0.1:7000\"\n\n\
+         [integrity]\n\
+         # Blocks are 250 ms on the dev node, so the lag tolerance of 30\n\
+         # blocks is ~7 s: a 2 s confirm stays well inside it.\n\
+         interval = \"5s\"\nconfirm_after = \"2s\"\n"
+    );
+    for (id, url) in providers {
+        config.push_str(&format!(
+            "\n[[providers]]\nid = \"{id}\"\nurl = \"{url}\"\n"
+        ));
+    }
+    let path = dir.join("config.toml");
+    std::fs::write(&path, config).expect("write rig config");
+    path
 }

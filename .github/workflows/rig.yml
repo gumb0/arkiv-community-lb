@@ -15,5 +15,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Log in to ghcr.io
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+      # The scenarios with the marketplace run the writer sidecar.
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: npm, cache-dependency-path: writer/package-lock.json }
+      - run: npm ci
+        working-directory: writer
       - run: cargo build --workspace
       - run: cargo run -p rig -- all

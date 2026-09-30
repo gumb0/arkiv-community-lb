@@ -79,9 +79,39 @@ The scenarios, each also runnable alone (`cargo run -p rig -- <name>`):
 - `kill-recover` — a provider dies under load: zero failed client
   requests, quarantine visible in `/nodes`, and readmission after it
   returns.
+- `wrong-entity` — one provider serves entities that are not the
+  chain's: it is taken out of rotation with a divergence verdict, the
+  evidence event is in the LB's log, the honest providers are matched,
+  and the public endpoint serves through them only.
 
-The rig observes only through the admin API — what it asserts is what
-an operator can see.
+The rig observes through the admin API and the LB's log — what it
+asserts is what an operator can see.
+
+### One chain, and a provider that lies
+
+The first five scenarios run over N independent dev chains, which is
+enough for routing, health and failover: they compare counts and
+liveness, never data. `wrong-entity` needs providers that agree on
+data, so it runs **one dev node behind N relays**: each relay is a
+provider with its own URL, the dev node itself is the reference, and a
+difference between two providers is one the LB has to explain.
+
+The relay is `rig relay`, a JSON-RPC relay that passes everything
+through, or with `--lie entity` adds a byte to the payload of every
+entity answered to a query by key and changes nothing else, so the
+probes see an honest node and only the integrity round can notice. In
+the scenario the relays run inside the rig; the same command runs
+alone in front of any node:
+
+```
+rig relay --listen <host:port> --upstream <url> [--lie entity]
+```
+
+A fresh dev chain holds no entities, and a round samples one. So the
+scenario configures the marketplace, and the LB writes its listing on
+start through the writer sidecar, which the rig runs from `writer/`
+with the dev chain's prefunded test key, as `scripts/chain-smoke.sh`
+does. That needs Node and `npm ci` in `writer/`.
 
 `rig load` is the load generator as its own command:
 `rig load --target <url> [--concurrency N] [--duration SECONDS]`.

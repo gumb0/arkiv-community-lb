@@ -41,8 +41,11 @@ them:
   edits it; nobody else on the box can read it. There is no example
   file: create it with the key's text, and keep the key funded (see Day
   to day)
-- `tunnel/frps.toml` — the tunnel server config. It holds no secret:
-  the LB admits each tunnel by a signature, not by a shared token
+
+The tunnel server's config, `tunnel/frps.toml`, is tracked as it is:
+it holds no secret, since the LB admits each tunnel by a signature,
+and nothing that differs between boxes. Its admission route must
+match `listen.admin` in `config.toml`.
 
 ## First deployment
 
@@ -59,8 +62,6 @@ them:
      LB's on-chain identity: the address it derives to is what the
      provider tooling ships, so a new key is a new LB. Fund it before
      the first start: the first thing the LB does is write its listing.
-   - `cp tunnel/frps.example.toml tunnel/frps.toml`. Nothing to fill
-     in.
    - `cp config.example.toml config.toml` — set `health.chain_id` to
      the network's chain id (a wrong value quarantines every
      provider). Under `[marketplace]`, set `wei_per_call` (the price)

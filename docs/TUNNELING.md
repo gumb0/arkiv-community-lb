@@ -109,12 +109,13 @@ The rejection texts are listed in
 
 ## Server config
 
-`tunnel/frps.example.toml`. Points that matter: the control port is the
+`tunnel/frps.toml`, tracked as it is: it holds no secret and nothing
+that differs between boxes. Points that matter: the control port is the
 only firewall opening; forwarded provider ports bind to loopback
 (the LB is their only client); the admission hook points at the LB's
 admin listener on the same host, and there is no shared token.
 
-The server runs from the repo's compose stack: copy the example to
-`tunnel/frps.toml`, `docker compose up -d`. The image
+The server runs from the repo's compose stack with the rest,
+`docker compose up -d`. The image
 is built locally from the pinned release, checksum verified — same as
 the client in the node distribution.

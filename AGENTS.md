@@ -141,8 +141,9 @@ first-class concern, not an add-on.
   checksum verified in the Dockerfile; our own service (the LB) from
   source under the pinned toolchain, with digest-pinned base images.
 - Secrets and machine-local configuration stay untracked; the committed
-  reference is an `.example` file beside them (`tunnel/frps.example.toml`,
-  `.env.example`, `config.example.toml`).
+  reference is an `.example` file beside them (`.env.example`,
+  `config.example.toml`). A config with nothing machine-local in it is
+  tracked as it is (`tunnel/frps.toml`).
 - **`config.example.toml` is the single place config fields are
   documented** — every value there is the code's default, a test keeps it
   parsing, and the Rust structs carry no field doc comments. The LB reads

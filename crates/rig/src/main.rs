@@ -46,7 +46,7 @@ const READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Scenario order for `rig all`: quick smokes first, the acceptance
 /// scenario last.
-const SCENARIOS: [&str; 9] = [
+const SCENARIOS: [&str; 10] = [
     "boot",
     "distribution",
     "denylist",
@@ -55,6 +55,7 @@ const SCENARIOS: [&str; 9] = [
     "wrong-entity",
     "wrong-block",
     "frozen-head",
+    "reference-down",
     "offer-accepted",
 ];
 
@@ -96,6 +97,7 @@ async fn scenario(name: &str) {
         "wrong-entity" => liar(relay::Lie::Entity, "entity").await,
         "wrong-block" => liar(relay::Lie::Block, "block").await,
         "frozen-head" => frozen_head().await,
+        "reference-down" => reference_down().await,
         "offer-accepted" => offer_accepted().await,
         _ => unreachable!("scenario {name} is listed but not dispatched"),
     }
@@ -1119,6 +1121,101 @@ async fn frozen_head() {
 
     drop(lb);
     drop(stuck);
+    drop(relays);
+    drop(writer);
+    drop(fleet);
+    println!("rig: ok");
+}
+
+/// The reference taken away judges nobody: no verdict changes, every
+/// provider stays in rotation, and the rounds resume when it is back.
+async fn reference_down() {
+    let root = workspace_root();
+    let fleet = Fleet::start(&root, 1, BASE_PORT);
+    let chain_id = fleet.chain_id();
+    let node = &fleet.nodes()[0].url;
+    let writer = Writer::start(&root, node, WRITER_PORT).await;
+    let mut relays = Servers(Vec::new());
+    let providers = [
+        ("honest-0", start_relay(&mut relays, node, None).await),
+        ("honest-1", start_relay(&mut relays, node, None).await),
+    ];
+    // The reference through a relay of its own, so it can go away
+    // while the providers, on the same node, stay.
+    let mut reference = Relay::start(node, None).await;
+    println!("rig: one dev chain behind 2 relays, and a third as the reference");
+
+    let config = render_marketplace_config(
+        &root,
+        &providers,
+        chain_id,
+        &writer.url,
+        "ref_height_interval = \"0s\"\n",
+        "",
+        "[integrity]\ninterval = \"5s\"\nconfirm_after = \"2s\"\n",
+    );
+    let mut lb = Lb::spawn(&root, &config, Some(&reference.url));
+    wait_ready(&mut lb).await;
+    wait_nodes(
+        "the first round matched everyone",
+        Duration::from_secs(60),
+        |nodes| {
+            ["honest-0", "honest-1"]
+                .iter()
+                .all(|id| provider(nodes, id)["integrity_verdict"] == "match")
+        },
+    )
+    .await;
+    let judged_at =
+        |nodes: &serde_json::Value| provider(nodes, "honest-0")["integrity_height"].as_u64();
+    let before = judged_at(&fetch_nodes().await);
+
+    // Gone: nothing answers on the reference's port.
+    reference.stop().await;
+    println!("rig: the reference taken away");
+    let gone = Instant::now();
+    // Three rounds' worth without it: each says it judged nobody.
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    let nodes = fetch_nodes().await;
+    for id in ["honest-0", "honest-1"] {
+        let node = provider(&nodes, id);
+        assert_eq!(node["eligible"], true, "{node}");
+        assert_eq!(
+            node["integrity_verdict"], "match",
+            "the last verdict stands: {node}"
+        );
+    }
+    assert_eq!(
+        judged_at(&nodes),
+        before,
+        "no round judged while the reference was gone"
+    );
+    let log = std::fs::read_to_string(&lb.log).expect("read lb.log");
+    assert!(
+        log.contains("the reference could not be read, nobody is judged"),
+        "the rounds said so, in {}",
+        lb.log.display()
+    );
+    println!(
+        "rig: {:.0}s without the reference, nobody judged, everyone serving",
+        gone.elapsed().as_secs_f32()
+    );
+
+    // Back: the next round judges again, at a later height.
+    reference.restart(None).await;
+    wait_nodes(
+        "a round judged again once the reference is back",
+        Duration::from_secs(60),
+        |nodes| judged_at(nodes) > before,
+    )
+    .await;
+    let nodes = fetch_nodes().await;
+    for id in ["honest-0", "honest-1"] {
+        assert_eq!(provider(&nodes, id)["integrity_verdict"], "match");
+    }
+
+    drop(lb);
+    drop(reference);
     drop(relays);
     drop(writer);
     drop(fleet);

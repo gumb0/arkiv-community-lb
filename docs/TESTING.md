@@ -88,6 +88,9 @@ The scenarios, each also runnable alone (`cargo run -p rig -- <name>`):
 - `frozen-head` — a provider stuck behind the chain leaves rotation on
   the lag path, with no integrity verdict against it, and is readmitted
   once it catches up.
+- `reference-down` — the reference taken away judges nobody: every
+  verdict stands, every provider keeps serving, and the rounds judge
+  again once it is back.
 - `offer-accepted` — the provider tooling from `arkiv-community-node`
   posts an offer; the LB parses it and accepts it; the tooling's
   `status` parses the agreement and the counter record the LB wrote,

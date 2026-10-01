@@ -58,6 +58,18 @@ impl Writer {
         writer
     }
 
+    /// The address the sidecar signs with: the LB's own, the creator of
+    /// its records.
+    pub async fn address(&self) -> String {
+        let identity: serde_json::Value = reqwest::get(format!("{}identity", self.url))
+            .await
+            .expect("the sidecar answers /identity")
+            .json()
+            .await
+            .expect("/identity is json");
+        identity["address"].as_str().expect("an address").to_owned()
+    }
+
     async fn wait_identity(&mut self, log: &Path) {
         let started = Instant::now();
         let url = format!("{}identity", self.url);

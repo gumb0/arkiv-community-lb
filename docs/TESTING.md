@@ -83,6 +83,9 @@ The scenarios, each also runnable alone (`cargo run -p rig -- <name>`):
   chain's: it is taken out of rotation with a divergence verdict, the
   evidence event is in the LB's log, the honest providers are matched,
   and the public endpoint serves through them only.
+- `offer-accepted` — the provider tooling from `arkiv-community-node`
+  posts an offer; the LB parses it and accepts it; the tooling's
+  `status` parses the agreement and the counter record the LB wrote.
 
 The rig observes through the admin API and the LB's log — what it
 asserts is what an operator can see.
@@ -112,6 +115,21 @@ scenario configures the marketplace, and the LB writes its listing on
 start through the writer sidecar, which the rig runs from `writer/`
 with the dev chain's prefunded test key, as `scripts/chain-smoke.sh`
 does. That needs Node and `npm ci` in `writer/`.
+
+### The offer, accepted: the records between the two codebases
+
+The LB and the provider tooling share no code: each encodes the
+records from [ENTITIES.md](ENTITIES.md) on its own. `offer-accepted` holds
+them to it with both sides as they ship. It runs the tooling's CLI
+from a checkout of `arkiv-community-node` at `../node` (or wherever
+`RIG_NODE_DIR` says), with `npm ci` run in its `marketplace/`, outside
+the container it normally runs in. What the container would give it,
+the rig gives instead: the node's address (the dev node), a key file
+for the dev chain's second prefunded account, the LB's address (the
+sidecar's), and the two beacon API paths an offer's specs are read
+from, which a dev node has no consensus client to answer. The tunnel
+is not part of it: the tooling stops at the agreement, and the tunnel
+is exercised by every provider that connects.
 
 `rig load` is the load generator as its own command:
 `rig load --target <url> [--concurrency N] [--duration SECONDS]`.

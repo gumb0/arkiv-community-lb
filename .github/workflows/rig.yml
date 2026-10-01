@@ -20,5 +20,12 @@ jobs:
         with: { node-version: 22, cache: npm, cache-dependency-path: writer/package-lock.json }
       - run: npm ci
         working-directory: writer
+      # offer-accepted runs the provider tooling from the companion
+      # repo; the rig finds it through RIG_NODE_DIR.
+      - uses: actions/checkout@v5
+        with: { repository: gumb0/arkiv-community-node, path: node }
+      - run: npm ci
+        working-directory: node/marketplace
       - run: cargo build --workspace
       - run: cargo run -p rig -- all
+        env: { RIG_NODE_DIR: "${{ github.workspace }}/node" }

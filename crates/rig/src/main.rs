@@ -20,6 +20,7 @@ use std::{
 
 mod fleet;
 mod load;
+mod provider;
 mod relay;
 mod writer;
 
@@ -45,13 +46,14 @@ const READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Scenario order for `rig all`: quick smokes first, the acceptance
 /// scenario last.
-const SCENARIOS: [&str; 6] = [
+const SCENARIOS: [&str; 7] = [
     "boot",
     "distribution",
     "denylist",
     "forward-to-node",
     "kill-recover",
     "wrong-entity",
+    "offer-accepted",
 ];
 
 #[tokio::main]
@@ -90,6 +92,7 @@ async fn scenario(name: &str) {
         "forward-to-node" => forward_to_node().await,
         "kill-recover" => kill_recover().await,
         "wrong-entity" => wrong_entity().await,
+        "offer-accepted" => offer_accepted().await,
         _ => unreachable!("scenario {name} is listed but not dispatched"),
     }
 }
@@ -635,11 +638,12 @@ async fn wait_ready(lb: &mut Lb) {
     println!("rig: ready in {:.1}s", started.elapsed().as_secs_f32());
 }
 
-/// Relays running as tasks of the rig; aborted on drop, so a scenario
-/// that ends, however it ends, leaves no listener behind.
-struct Relays(Vec<tokio::task::JoinHandle<()>>);
+/// Servers the rig runs as its own tasks, the relays and the beacon
+/// stand-in; aborted on drop, so a scenario that ends, however it
+/// ends, leaves no listener behind.
+struct Servers(Vec<tokio::task::JoinHandle<()>>);
 
-impl Drop for Relays {
+impl Drop for Servers {
     fn drop(&mut self) {
         for relay in &self.0 {
             relay.abort();
@@ -648,13 +652,13 @@ impl Drop for Relays {
 }
 
 /// A relay in front of `upstream` on a free loopback port; its URL.
-async fn start_relay(relays: &mut Relays, upstream: &str, lie: Option<relay::Lie>) -> String {
+async fn start_relay(servers: &mut Servers, upstream: &str, lie: Option<relay::Lie>) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind a relay");
     let url = format!("http://{}", listener.local_addr().expect("relay address"));
     let upstream = upstream.parse().expect("the node's url parses");
-    relays
+    servers
         .0
         .push(tokio::spawn(relay::serve(listener, upstream, lie)));
     url
@@ -675,7 +679,7 @@ async fn wrong_entity() {
     // sidecar: the live entity the integrity round samples, on a chain
     // that has no other.
     let writer = Writer::start(&root, node, WRITER_PORT).await;
-    let mut relays = Relays(Vec::new());
+    let mut relays = Servers(Vec::new());
     let providers = [
         ("honest-0", start_relay(&mut relays, node, None).await),
         ("honest-1", start_relay(&mut relays, node, None).await),
@@ -686,7 +690,17 @@ async fn wrong_entity() {
     ];
     println!("rig: one dev chain behind 3 relays, one lying about entities");
 
-    let config = render_integrity_config(&root, &providers, chain_id, &writer.url);
+    let config = render_marketplace_config(
+        &root,
+        &providers,
+        chain_id,
+        &writer.url,
+        "",
+        "[integrity]\n\
+         # Blocks are 250 ms on the dev node, so the lag tolerance of 30\n\
+         # blocks is ~7 s: a 2 s confirm stays well inside it.\n\
+         interval = \"5s\"\nconfirm_after = \"2s\"\n",
+    );
     let mut lb = Lb::spawn(&root, &config, Some(node));
     wait_ready(&mut lb).await;
 
@@ -745,14 +759,16 @@ async fn wrong_entity() {
     println!("rig: ok");
 }
 
-/// The config for the integrity scenario: the providers as static
-/// entries, the marketplace so the LB writes its listing through the
-/// sidecar, and integrity rounds fast enough to watch.
-fn render_integrity_config(
+/// A config with the marketplace on, pointed at the sidecar: the
+/// providers as static entries, `marketplace` added to its section,
+/// and `rest` after it.
+fn render_marketplace_config(
     root: &Path,
     providers: &[(&str, String)],
     chain_id: u64,
     writer_url: &str,
+    marketplace: &str,
+    rest: &str,
 ) -> PathBuf {
     let dir = root.join("target/rig");
     std::fs::create_dir_all(&dir).expect("create target/rig");
@@ -761,11 +777,8 @@ fn render_integrity_config(
          [listen]\npublic = \"{LB_PUBLIC}\"\nadmin = \"{LB_ADMIN}\"\n\n\
          [health]\nchain_id = {chain_id}\n\n\
          [marketplace]\nwriter_url = \"{writer_url}\"\n\
-         wei_per_call = \"1000000000000000\"\ntunnel_server = \"127.0.0.1:7000\"\n\n\
-         [integrity]\n\
-         # Blocks are 250 ms on the dev node, so the lag tolerance of 30\n\
-         # blocks is ~7 s: a 2 s confirm stays well inside it.\n\
-         interval = \"5s\"\nconfirm_after = \"2s\"\n"
+         wei_per_call = \"1000000000000000\"\ntunnel_server = \"127.0.0.1:7000\"\n\
+         {marketplace}\n{rest}"
     );
     for (id, url) in providers {
         config.push_str(&format!(
@@ -775,4 +788,99 @@ fn render_integrity_config(
     let path = dir.join("config.toml");
     std::fs::write(&path, config).expect("write rig config");
     path
+}
+
+/// The provider tooling from
+/// arkiv-community-node posts an offer, the LB parses it and accepts
+/// it, and the tooling parses the agreement the LB wrote. The two
+/// codebases share no code, only the record specs, so this is where
+/// drift between them shows.
+async fn offer_accepted() {
+    let root = workspace_root();
+    let fleet = Fleet::start(&root, 1, BASE_PORT);
+    let chain_id = fleet.chain_id();
+    let node = &fleet.nodes()[0].url;
+    let writer = Writer::start(&root, node, WRITER_PORT).await;
+    let lb_address = writer.address().await;
+
+    // Discovery every 2 s rather than 5 min, so the acceptance follows
+    // the offer at once.
+    let config = render_marketplace_config(
+        &root,
+        &[],
+        chain_id,
+        &writer.url,
+        "discovery_interval = \"2s\"\n",
+        "",
+    );
+    let mut lb = Lb::spawn(&root, &config, Some(node));
+    wait_ready(&mut lb).await;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the beacon");
+    let beacon_url = format!("http://{}", listener.local_addr().expect("beacon address"));
+    let beacon = Servers(vec![tokio::spawn(provider::serve_beacon(listener))]);
+    let tooling = provider::Tooling::prepare(&root, node, &beacon_url, &lb_address);
+
+    // The offer: the tooling reads the LB's listing and posts against it.
+    let posted = tooling.run("post-offer");
+    let printed = provider::text(&posted);
+    println!("{printed}");
+    assert!(posted.status.success(), "post-offer failed");
+    assert!(printed.contains("Posted: offer"), "{printed}");
+
+    // The LB parses the offer and writes an agreement.
+    wait_nodes("the offer is accepted", Duration::from_secs(60), |nodes| {
+        nodes.as_array().is_some_and(|nodes| {
+            nodes
+                .iter()
+                .any(|node| node["id"] == provider::PROVIDER_ADDRESS)
+        })
+    })
+    .await;
+    let nodes = fetch_nodes().await;
+    let accepted = provider(&nodes, provider::PROVIDER_ADDRESS);
+    assert_eq!(accepted["source"], "marketplace", "{accepted}");
+    let agreement = accepted["agreement_id"]
+        .as_str()
+        .expect("an agreement id")
+        .to_lowercase();
+    let port = accepted["url"]
+        .as_str()
+        .and_then(|url| url.trim_end_matches('/').rsplit(':').next())
+        .expect("a tunnel port")
+        .to_owned();
+    println!("rig: accepted, agreement {agreement} on port {port}");
+
+    // The tooling parses the agreement the LB wrote, and the counter
+    // record it opens for it, which is a second write after the
+    // agreement and can land a moment later.
+    let started = Instant::now();
+    let printed = loop {
+        let status = tooling.run("status");
+        let printed = provider::text(&status);
+        assert!(status.status.success(), "status failed: {printed}");
+        if printed.contains("Counting: 0 requests since block") {
+            break printed;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "the tooling never read the counter record the LB wrote: {printed}"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    };
+    println!("{printed}");
+    assert!(
+        printed
+            .to_lowercase()
+            .contains(&format!("agreement: {agreement}, tunnel port {port},")),
+        "the tooling reads the agreement the LB wrote: {printed}"
+    );
+
+    drop(lb);
+    drop(beacon);
+    drop(writer);
+    drop(fleet);
+    println!("rig: ok");
 }

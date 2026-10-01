@@ -226,12 +226,13 @@ Symptom, then where to look.
   `/nodes` says why for each, as above.
 - **The LB exits at start.** A config error names the field. A config
   the container cannot read is the file-permission rule above.
-- **After a crash** (a kill, an out-of-memory stop, a host reboot):
-  compose starts the LB again, and nothing is to be done by hand. It
-  reads its agreements and their open counter records back from the
-  chain, so each provider's count resumes from what the last flush
-  wrote; the tunnel clients reconnect on their own, with no
-  re-onboarding, and `/nodes` fills in within the boot window. What is
+- **After a crash** (the process killed, an out-of-memory stop, a host
+  reboot): Docker starts the LB again, and nothing is to be done by
+  hand. Started again, the LB reads its agreements and their open
+  counter records back from the chain, so each provider's count
+  resumes from what the last flush wrote; the tunnel clients reconnect
+  on their own, with no re-onboarding, and `/nodes` fills in within
+  the boot window. What is
   lost is the counting since the last flush, daily by default: a
   deliberate stop writes the counts first, a crash cannot. A flush
   that landed but whose answer the crash cut off is read back like any

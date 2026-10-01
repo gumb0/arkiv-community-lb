@@ -85,6 +85,9 @@ The scenarios, each also runnable alone (`cargo run -p rig -- <name>`):
   and the public endpoint serves through them only.
 - `wrong-block` — the same with a provider serving blocks whose hash
   is not the chain's; the evidence names the block read.
+- `frozen-head` — a provider stuck behind the chain leaves rotation on
+  the lag path, with no integrity verdict against it, and is readmitted
+  once it catches up.
 - `offer-accepted` — the provider tooling from `arkiv-community-node`
   posts an offer; the LB parses it and accepts it; the tooling's
   `status` parses the agreement and the counter record the LB wrote,
@@ -106,13 +109,15 @@ difference between two providers is one the LB has to explain.
 The relay is `rig relay`, a JSON-RPC relay that passes everything
 through, or lies in one way: `--lie entity` adds a byte to the payload
 of every entity answered to a query by key, `--lie block` changes the
-hash of every block answered to `eth_getBlockByNumber`. Nothing else
-changes, so the probes see an honest node and only the integrity
-round can notice. In the scenarios the relays run inside the rig; the
+hash of every block answered to `eth_getBlockByNumber`, and with either
+nothing else changes, so the probes see an honest node and only the
+integrity round can notice; `--lie frozen-head` keeps answering the
+first head it saw to `eth_blockNumber`, so the probes see a node stuck
+behind the chain. In the scenarios the relays run inside the rig; the
 same command runs alone in front of any node:
 
 ```
-rig relay --listen <host:port> --upstream <url> [--lie entity|block]
+rig relay --listen <host:port> --upstream <url> [--lie entity|block|frozen-head]
 ```
 
 A fresh dev chain holds no entities, and a round samples one. So the

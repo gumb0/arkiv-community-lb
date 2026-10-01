@@ -4,6 +4,8 @@
 //! a live provider can be made to lie on demand. A test counterparty,
 //! never a shipped component.
 
+use std::sync::{Arc, Mutex};
+
 use axum::{
     Router,
     body::Bytes,
@@ -24,15 +26,21 @@ pub enum Lie {
     /// Every block answered to `eth_getBlockByNumber` comes back with
     /// another hash.
     Block,
+    /// `eth_blockNumber` keeps answering the first head the relay saw:
+    /// the provider looks stuck behind the chain to the probes, which
+    /// is lag, not lying.
+    FrozenHead,
 }
 
 /// Relays every request on `listener` to `upstream` until the process
 /// ends.
 pub async fn serve(listener: TcpListener, upstream: reqwest::Url, lie: Option<Lie>) {
     let client = reqwest::Client::new();
+    // The head the frozen-head lie keeps answering, once it has one.
+    let frozen = Arc::new(Mutex::new(None));
     let app = Router::new().fallback(move |body: Bytes| {
-        let (client, upstream) = (client.clone(), upstream.clone());
-        async move { relay(&client, upstream, body, lie).await }
+        let (client, upstream, frozen) = (client.clone(), upstream.clone(), frozen.clone());
+        async move { relay(&client, upstream, body, lie, &frozen).await }
     });
     axum::serve(listener, app).await.expect("relay serves");
 }
@@ -42,6 +50,7 @@ async fn relay(
     upstream: reqwest::Url,
     body: Bytes,
     lie: Option<Lie>,
+    frozen: &Mutex<Option<Value>>,
 ) -> Response {
     // Only the body goes on: the node needs no header of the caller's.
     let answer = match client
@@ -61,7 +70,7 @@ async fn relay(
         return StatusCode::BAD_GATEWAY.into_response();
     };
     let bytes = match lie {
-        Some(lie) if status.is_success() => altered(&body, bytes, lie),
+        Some(lie) if status.is_success() => altered(&body, bytes, lie, frozen),
         None | Some(_) => bytes,
     };
     (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
@@ -71,7 +80,7 @@ async fn relay(
 /// changes, as it came otherwise. A batch, a body that is not JSON,
 /// every other method, and an answer with nothing to alter pass
 /// through untouched.
-fn altered(request: &Bytes, answer: Bytes, lie: Lie) -> Bytes {
+fn altered(request: &Bytes, answer: Bytes, lie: Lie, frozen: &Mutex<Option<Value>>) -> Bytes {
     let Ok(request) = serde_json::from_slice::<Value>(request) else {
         return answer;
     };
@@ -81,6 +90,7 @@ fn altered(request: &Bytes, answer: Bytes, lie: Lie) -> Bytes {
     let altered = match lie {
         Lie::Entity => alter_entities(&request, &mut parsed),
         Lie::Block => alter_block(&request, &mut parsed),
+        Lie::FrozenHead => freeze_head(&request, &mut parsed, frozen),
     };
     if !altered {
         return answer;
@@ -127,6 +137,27 @@ fn alter_block(request: &Value, answer: &mut Value) -> bool {
     true
 }
 
+/// Answers `eth_blockNumber` with the first head seen, kept in
+/// `frozen`; returns whether the answer was replaced.
+fn freeze_head(request: &Value, answer: &mut Value, frozen: &Mutex<Option<Value>>) -> bool {
+    if request["method"] != "eth_blockNumber" || answer["result"].is_null() {
+        return false;
+    }
+    let mut frozen = frozen
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match &*frozen {
+        Some(head) => {
+            answer["result"] = head.clone();
+            true
+        }
+        None => {
+            *frozen = Some(answer["result"].clone());
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +193,27 @@ mod tests {
             assert!(!alter_entities(&request, &mut answer), "{request}");
             assert_eq!(answer, self::tests::answer());
         }
+    }
+
+    #[test]
+    fn the_head_stays_where_the_relay_first_saw_it() {
+        let frozen = Mutex::new(None);
+        let request = json!({"method": "eth_blockNumber", "params": []});
+        let mut first = json!({"jsonrpc": "2.0", "id": 1, "result": "0x10"});
+        assert!(
+            !freeze_head(&request, &mut first, &frozen),
+            "the first answer passes"
+        );
+        let mut later = json!({"jsonrpc": "2.0", "id": 1, "result": "0x20"});
+        assert!(freeze_head(&request, &mut later, &frozen));
+        assert_eq!(later["result"], "0x10");
+        let mut other = json!({"jsonrpc": "2.0", "id": 1, "result": "0x1"});
+        assert!(!freeze_head(
+            &json!({"method": "eth_chainId"}),
+            &mut other,
+            &frozen
+        ));
+        assert_eq!(other["result"], "0x1");
     }
 
     #[test]

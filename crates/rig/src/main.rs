@@ -46,7 +46,7 @@ const READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Scenario order for `rig all`: quick smokes first, the acceptance
 /// scenario last.
-const SCENARIOS: [&str; 8] = [
+const SCENARIOS: [&str; 9] = [
     "boot",
     "distribution",
     "denylist",
@@ -54,6 +54,7 @@ const SCENARIOS: [&str; 8] = [
     "kill-recover",
     "wrong-entity",
     "wrong-block",
+    "frozen-head",
     "offer-accepted",
 ];
 
@@ -94,6 +95,7 @@ async fn scenario(name: &str) {
         "kill-recover" => kill_recover().await,
         "wrong-entity" => liar(relay::Lie::Entity, "entity").await,
         "wrong-block" => liar(relay::Lie::Block, "block").await,
+        "frozen-head" => frozen_head().await,
         "offer-accepted" => offer_accepted().await,
         _ => unreachable!("scenario {name} is listed but not dispatched"),
     }
@@ -111,7 +113,7 @@ async fn all() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--concurrency N] [--duration SECONDS]\n       rig relay --listen <host:port> --upstream <url> [--lie entity|block]",
+        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--concurrency N] [--duration SECONDS]\n       rig relay --listen <host:port> --upstream <url> [--lie entity|block|frozen-head]",
         SCENARIOS.join(" | ")
     );
     std::process::exit(2);
@@ -169,6 +171,7 @@ async fn relay_command(mut args: impl Iterator<Item = String>) {
             ("--upstream", _) => upstream = Some(value.parse().unwrap_or_else(|_| usage())),
             ("--lie", "entity") => lie = Some(relay::Lie::Entity),
             ("--lie", "block") => lie = Some(relay::Lie::Block),
+            ("--lie", "frozen-head") => lie = Some(relay::Lie::FrozenHead),
             _ => usage(),
         }
     }
@@ -651,23 +654,81 @@ struct Servers(Vec<tokio::task::JoinHandle<()>>);
 
 impl Drop for Servers {
     fn drop(&mut self) {
-        for relay in &self.0 {
-            relay.abort();
+        for server in &self.0 {
+            server.abort();
         }
     }
 }
 
-/// A relay in front of `upstream` on a free loopback port; its URL.
+/// A relay in front of `upstream` on a free loopback port, among the
+/// scenario's servers; its URL.
 async fn start_relay(servers: &mut Servers, upstream: &str, lie: Option<relay::Lie>) -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    let (url, task) = bind_relay("127.0.0.1:0", upstream, lie).await;
+    servers.0.push(task);
+    url
+}
+
+/// One relay on its own, for a scenario that stops or replaces it
+/// while the LB runs: it keeps its address, so what the LB's config
+/// names stays reachable there. Aborted on drop.
+struct Relay {
+    url: String,
+    upstream: String,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Relay {
+    /// A relay on a free loopback port in front of `upstream`.
+    async fn start(upstream: &str, lie: Option<relay::Lie>) -> Self {
+        let (url, task) = bind_relay("127.0.0.1:0", upstream, lie).await;
+        Self {
+            url,
+            upstream: upstream.to_owned(),
+            task,
+        }
+    }
+
+    /// Stops it and waits until it is gone, so its port is free: a
+    /// drop only asks. Nothing answers at its address until `restart`.
+    /// Stopping a stopped one is nothing: a handle awaited once must
+    /// not be awaited again.
+    async fn stop(&mut self) {
+        if self.task.is_finished() {
+            return;
+        }
+        self.task.abort();
+        let _ = (&mut self.task).await;
+    }
+
+    /// Stopped, and started again at the same address, with `lie`.
+    async fn restart(&mut self, lie: Option<relay::Lie>) {
+        self.stop().await;
+        let listen = self.url.trim_start_matches("http://");
+        let (url, task) = bind_relay(listen, &self.upstream, lie).await;
+        assert_eq!(url, self.url, "the same address again");
+        self.task = task;
+    }
+}
+
+impl Drop for Relay {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// The relay task on the given address, port 0 for any free one, and
+/// its URL.
+async fn bind_relay(
+    listen: &str,
+    upstream: &str,
+    lie: Option<relay::Lie>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind(listen)
         .await
         .expect("bind a relay");
     let url = format!("http://{}", listener.local_addr().expect("relay address"));
     let upstream = upstream.parse().expect("the node's url parses");
-    servers
-        .0
-        .push(tokio::spawn(relay::serve(listener, upstream, lie)));
-    url
+    (url, tokio::spawn(relay::serve(listener, upstream, lie)))
 }
 
 /// The integrity scenarios: three providers serving one dev chain
@@ -698,6 +759,7 @@ async fn liar(lie: relay::Lie, check: &str) {
         &providers,
         chain_id,
         &writer.url,
+        "",
         "",
         "[integrity]\n\
          # Blocks are 250 ms on the dev node, so the lag tolerance of 30\n\
@@ -764,13 +826,14 @@ async fn liar(lie: relay::Lie, check: &str) {
 }
 
 /// A config with the marketplace on, pointed at the sidecar: the
-/// providers as static entries, `marketplace` added to its section,
-/// and `rest` after it.
+/// providers as static entries, `health` added to its section,
+/// `marketplace` to its, and `rest` after them.
 fn render_marketplace_config(
     root: &Path,
     providers: &[(&str, String)],
     chain_id: u64,
     writer_url: &str,
+    health: &str,
     marketplace: &str,
     rest: &str,
 ) -> PathBuf {
@@ -779,7 +842,7 @@ fn render_marketplace_config(
     let mut config = format!(
         "# Rendered by the rig — do not edit.\n\
          [listen]\npublic = \"{LB_PUBLIC}\"\nadmin = \"{LB_ADMIN}\"\n\n\
-         [health]\nchain_id = {chain_id}\n\n\
+         [health]\nchain_id = {chain_id}\n{health}\n\
          [marketplace]\nwriter_url = \"{writer_url}\"\n\
          wei_per_call = \"1000000000000000\"\ntunnel_server = \"127.0.0.1:7000\"\n\
          {marketplace}\n{rest}"
@@ -814,6 +877,7 @@ async fn offer_accepted() {
         &[],
         chain_id,
         &writer.url,
+        "",
         "discovery_interval = \"2s\"\n",
         "",
     );
@@ -967,4 +1031,96 @@ fn new_proxy_body(agreement: &str, token: &str, port: u16) -> serde_json::Value 
         "user": { "user": "", "metas": metas(agreement, token), "run_id": "rig" },
         "proxy_name": format!("node-rpc-{port}"), "proxy_type": "tcp", "remote_port": port,
     })
+}
+
+/// A provider that falls behind the chain is lag, not lying: it leaves
+/// rotation on the lag path with no integrity verdict against it, and
+/// comes back when it catches up.
+async fn frozen_head() {
+    let root = workspace_root();
+    let fleet = Fleet::start(&root, 1, BASE_PORT);
+    let chain_id = fleet.chain_id();
+    let node = &fleet.nodes()[0].url;
+    let writer = Writer::start(&root, node, WRITER_PORT).await;
+    let mut relays = Servers(Vec::new());
+    // The one that will fall behind keeps its address through its
+    // restarts, so the provider's URL stays what the config says.
+    // Honest first: it is in rotation when it gets stuck.
+    let mut stuck = Relay::start(node, None).await;
+    let providers = [
+        ("honest-0", start_relay(&mut relays, node, None).await),
+        ("honest-1", start_relay(&mut relays, node, None).await),
+        ("stuck", stuck.url.clone()),
+    ];
+    println!("rig: one dev chain behind 3 relays");
+
+    // The reference head sampled at every probe round, not every
+    // minute: lag is the distance to that sample, and the chain moves
+    // four blocks a second here.
+    let config = render_marketplace_config(
+        &root,
+        &providers,
+        chain_id,
+        &writer.url,
+        "ref_height_interval = \"0s\"\n",
+        "",
+        "[integrity]\ninterval = \"5s\"\nconfirm_after = \"2s\"\n",
+    );
+    let mut lb = Lb::spawn(&root, &config, Some(node));
+    wait_ready(&mut lb).await;
+    assert_eq!(provider(&fetch_nodes().await, "stuck")["eligible"], true);
+
+    // Stuck: the relay replaced by one that keeps answering the head
+    // of this moment.
+    stuck.restart(Some(relay::Lie::FrozenHead)).await;
+    println!("rig: one provider stuck at the head of this moment");
+    let frozen = Instant::now();
+    wait_nodes(
+        "the stuck provider is out for lag",
+        Duration::from_secs(90),
+        |nodes| provider(nodes, "stuck")["ineligibility_reason"] == "lag",
+    )
+    .await;
+    println!(
+        "rig: out for lag {:.1}s after it got stuck",
+        frozen.elapsed().as_secs_f32()
+    );
+    let nodes = fetch_nodes().await;
+    assert_ne!(
+        provider(&nodes, "stuck")["integrity_verdict"],
+        "divergence",
+        "behind is not lying: {}",
+        provider(&nodes, "stuck")
+    );
+    for id in ["honest-0", "honest-1"] {
+        assert_eq!(
+            provider(&nodes, id)["eligible"],
+            true,
+            "{}",
+            provider(&nodes, id)
+        );
+    }
+
+    // Caught up: the relay replaced by an honest one again.
+    stuck.restart(None).await;
+    let replaced = Instant::now();
+    wait_nodes(
+        "the provider is readmitted once it catches up",
+        Duration::from_secs(90),
+        |nodes| provider(nodes, "stuck")["eligible"] == true,
+    )
+    .await;
+    println!(
+        "rig: readmitted {:.1}s after it caught up",
+        replaced.elapsed().as_secs_f32()
+    );
+    let nodes = fetch_nodes().await;
+    assert_ne!(provider(&nodes, "stuck")["integrity_verdict"], "divergence");
+
+    drop(lb);
+    drop(stuck);
+    drop(relays);
+    drop(writer);
+    drop(fleet);
+    println!("rig: ok");
 }

@@ -259,18 +259,17 @@ found, so a new listing is a new deployment for everyone.
 
 ## What the provider does
 
-Four commands, each a step, and the tunnel client the node already
-runs:
+Four commands of the node tooling's `marketplace.sh`, each a step:
 
-1. `keystore` creates the provider key once.
+1. `create-key` creates the provider key once.
 2. `post-offer` reads the LB listing, shows the rate, and posts the offer
    through the provider's own node. No API key is needed anywhere.
 3. `status` shows the offer, the agreement, the slot count, the open
    counter record, the closed records not yet paid, and the receipts,
    following the pointers from one record to the next.
-4. `tunnel-token` signs the agreement id and writes the id, the token
-   and the assigned port into the node's configuration; the existing
-   setup script renders the tunnel client's config from them.
+4. `start-tunnel` signs the agreement id, writes the id, the token and
+   the assigned port into the node's configuration, and starts the
+   tunnel client, whose config the setup script renders from them.
 
 ## Future improvements
 

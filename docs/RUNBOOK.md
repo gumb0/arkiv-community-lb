@@ -2,7 +2,9 @@
 
 **Scope:** operating the deployed LB host — what runs there, where
 things live, and the day-to-day commands. The architecture is
-[PROXY.md](PROXY.md); the tunnel design is [TUNNELING.md](TUNNELING.md).
+[PROXY.md](PROXY.md); the tunnel design is [TUNNELING.md](TUNNELING.md);
+how providers join and are paid is [MARKETPLACE.md](MARKETPLACE.md);
+the integrity checks are [INTEGRITY.md](INTEGRITY.md).
 
 ## What runs where
 
@@ -16,9 +18,9 @@ networking. Ports:
 - `9545` — the admin API, loopback only (never opened; see below)
 - `8560` — the chain-writer sidecar, loopback only; the LB is its only
   client
-- per-provider tunnel ports (`18545`, `18546`, …) — loopback only,
-  bound there by frps itself; the firewall's default-deny is the
-  second layer
+- tunnel ports, one per marketplace slot from `remote_port_start`
+  (`20000`) up — loopback only, bound there by frps itself; the
+  firewall's default-deny is the second layer
 
 Machine-local files, all untracked with a tracked `.example` beside
 them:
@@ -39,7 +41,8 @@ them:
   edits it; nobody else on the box can read it. There is no example
   file: create it with the key's text, and keep the key funded (see Day
   to day)
-- `tunnel/frps.toml` — the tunnel server config with the shared token
+- `tunnel/frps.toml` — the tunnel server config. It holds no secret:
+  the LB admits each tunnel by a signature, not by a shared token
 
 ## First deployment
 
@@ -54,41 +57,59 @@ them:
      reference endpoint (and `ARKIV_API_KEY` if it is metered).
    - `writer.key` — the sidecar's signing key, as one line. This is the
      LB's on-chain identity: the address it derives to is what the
-     provider tooling ships, so a new key is a new LB.
-   - `cp tunnel/frps.example.toml tunnel/frps.toml`. There is no
-     shared token: the LB admits each provider's tunnel by a signature
-     (`TUNNELING.md`).
-   - `cp config.example.toml config.toml` — set
-     `listen.public = "0.0.0.0:8545"`, set `health.chain_id` to the
-     network's chain id (a wrong value quarantines every provider),
-     and add one block per assigned tunnel port:
-
-     ```toml
-     [[providers]]
-     id = "node-1"
-     url = "http://127.0.0.1:18545"
-     ```
-
-     Providers may be listed before their tunnels exist; they sit
-     ineligible until the node connects. Under `[marketplace]`, set
-     `wei_per_call` (the price) and `tunnel_server` (this box's public
-     address and the frps port); the section's other values are
-     defaults. Delete the whole section for an LB on static providers
-     alone.
+     provider tooling ships, so a new key is a new LB. Fund it before
+     the first start: the first thing the LB does is write its listing.
+   - `cp tunnel/frps.example.toml tunnel/frps.toml`. Nothing to fill
+     in.
+   - `cp config.example.toml config.toml` — set `health.chain_id` to
+     the network's chain id (a wrong value quarantines every
+     provider). Under `[marketplace]`, set `wei_per_call` (the price)
+     and `tunnel_server` (this box's public address and the frps
+     port); the section's other values are defaults. Delete the whole
+     section for an LB on static providers alone. The `[integrity]`
+     section runs the integrity checks; delete it to judge providers
+     by their probes alone.
 4. `docker compose up -d --build` — the first build downloads the base
    images and compiles for a few minutes.
 5. Verify from the box: `curl -s 127.0.0.1:9545/health` and `/nodes`,
-   then `docker compose logs lb`.
+   then `docker compose logs lb`. With the marketplace on, the log has
+   `listing created` once, and a `discovery` line at every poll.
 
 ## Onboarding a provider
 
-Assign the operator a unique remote port and give them three values:
-this box's public address, the token from `tunnel/frps.toml`, and that
-port — their setup renders the rest. Add the matching
-`[[providers]]` entry to `config.toml` and `docker compose restart lb`
-— the config is read once at startup. Admission is automatic: the
-provider turns eligible after its first passing probe rounds, visible
-in `/nodes`.
+With the marketplace on, nothing is done on this box. The operator
+follows "Joining the marketplace" in the
+[arkiv-community-node](https://github.com/gumb0/arkiv-community-node)
+README: a key, an offer, then the tunnel. The LB does the rest, and
+each step leaves a line in `docker compose logs lb`:
+
+1. `offer accepted` — the next discovery poll, at most
+   `discovery_interval` after the offer, writes an agreement with a
+   tunnel port. The provider appears in `/nodes` with `source`
+   `marketplace` and its agreement id, ineligible for `probe`.
+   `offer waits: the cap is full` instead means every slot is taken;
+   the offer is seen again at each poll while it lives.
+2. `tunnel admitted` — the operator ran `start-tunnel` and the tunnel
+   server let the client in. A refused client reads the reason in its
+   own tunnel log; the reasons are under Troubleshooting.
+3. `admission: the probes passed, the agreement record is extended` —
+   the node passed its probes, and the integrity check when
+   `[integrity]` is configured, and is in rotation. From here its
+   agreement is extended at every refresh while it stays eligible.
+
+The operator has `accept_window` from the acceptance to get to step
+3. If the probes have not passed by then, the log says `admission:
+the probes did not pass within the accept window`, the agreement
+expires on its own, and the operator posts a new offer. A node found
+serving wrong data at admission is logged as such and its agreement is
+not extended either.
+
+**A static provider** is a node the LB reaches at its own URL, without
+the tunnel: the tunnel server admits only clients that hold an
+agreement. Add a `[[providers]]` entry with its URL to `config.toml`
+and `docker compose restart lb`; it turns eligible after its first
+passing probes. Static providers are not paid: settle pays agreements
+only.
 
 ## Day to day
 
@@ -98,9 +119,11 @@ in `/nodes`.
   it with `docker compose up -d`; set it back the same way.
 - Admin API from a workstation: the port is loopback-only by design,
   so forward it — `ssh -L 9545:127.0.0.1:9545 <box>` — and read
-  `http://127.0.0.1:9545/nodes` locally. A JSON-RPC request POSTed to
-  `http://127.0.0.1:9545/node/{id}` is forwarded to that one provider,
-  eligibility ignored.
+  `http://127.0.0.1:9545/nodes` locally. It shows each provider's
+  eligibility and the reason when it is out, its counts, and its last
+  integrity verdict with the height it was given at. A JSON-RPC
+  request POSTed to `http://127.0.0.1:9545/node/{id}` is forwarded to
+  that one provider, eligibility ignored.
 - `config.toml` changes: `docker compose restart lb` — the file is
   mounted in and read at startup; no rebuild. With the marketplace on,
   a stop or a restart writes the counts to the chain first and waits
@@ -115,7 +138,43 @@ in `/nodes`.
 - The sidecar's key needs gas for every write, and a dry key stops
   them all: `docker compose logs writer` shows the address at startup,
   and its balance is checked the same way as any account on the
-  network.
+  network. The LB checks it at every refresh and logs `the LB key is
+  low on GLM` while it is under `gas_warn_below`.
+- The reference endpoint is metered, and the LB, the sidecar and a
+  settle run on this box all spend the same key's quota. The LB's
+  reads have three knobs: `discovery_interval` (by far the largest
+  consumer: each poll is several queries), `integrity.interval`, and
+  `health.ref_height_interval`. When the quota runs short, lengthen
+  them in that order. A spent quota answers 429: discovery, lag and
+  integrity checks stop and the refresh cannot write, while serving
+  goes on. Agreements then expire one `agreement_life` after their
+  last refresh.
+- **Lifetimes only grow.** Never lower `agreement_life` or
+  `listing_life` on a running deployment. An expiry can only be moved
+  later, so every extend to a shorter life is refused, and since the
+  refresh is one transaction, the listing and every agreement miss it
+  together: the log says `a refresh did not land` at every refresh,
+  until the old expiries are closer than the new life.
+- **Ending an agreement early.** There is no command for it, and a
+  shorter `agreement_life` does not do it (above). Delete the record
+  through the sidecar, with the agreement id from `/nodes`:
+
+  ```sh
+  curl -s -X POST http://127.0.0.1:8560/delete \
+    -H 'content-type: application/json' \
+    --data '{"entityKey":"0x…"}'
+  ```
+
+  The next discovery poll finds the record gone and frees the slot,
+  and the next flush closes its counter record with the count it
+  holds, so what the provider served is still paid. Ask the operator
+  to stop their tunnel.
+- **A network reset** deletes every record. Before an announced reset,
+  run settle: what was counted and not paid by then cannot be paid
+  after. Once the network is back, set `health.chain_id` if the reset
+  changed it, then `docker compose restart lb`: the LB writes its
+  listing again and waits for offers, and every provider posts a new
+  offer with the key it has.
 - Code updates: `git pull` (or check out a release tag), then
   `docker compose up -d --build` — `--build` is only ever needed here.
 - Reboot safety: Docker's enabled service plus `restart:
@@ -140,7 +199,9 @@ key per invocation rather than leaving it in a file here.
 stack uses, with the settle block filled in: whose records to pay, and
 the payout chain's endpoint, chain id and GLM contract. Every field is
 documented in `.env.example`. The key is not among them — it is given
-per invocation, below.
+per invocation, below. It runs on Node 22 with npm, which the box does
+not have unless you install it: the stack's containers bring their
+own.
 
 **How a run goes.** Rehearse first, always. It reads and prints, signs
 nothing and writes nothing:
@@ -204,13 +265,41 @@ Symptom, then where to look.
 
 - **A provider never turns eligible.** `/nodes` says why in
   `ineligibility_reason`:
-  - `probe` — its probes get no answer. Check the tunnel: the node's
-    `status.sh`, and that its remote port matches the `[[providers]]`
-    entry.
+  - `probe` — its probes get no answer. Check the tunnel: is there a
+    `tunnel admitted` line for it, and what do the operator's
+    `./marketplace.sh status` and `status.sh` say. For a static
+    provider, check its URL.
   - `chain` — it answered `eth_chainId` with another network; the log
     has a `wrong chain` line with both ids. Check `health.chain_id`
     and the node.
   - `lag` — it is behind the reference beyond the tolerance.
+  - `traffic` — client requests to it failed. Only probes bring it
+    back, so it recovers by itself once it answers again.
+  - `integrity` — a round found it serving data that is not the
+    chain's. The `integrity: divergence confirmed` warning holds both
+    answers side by side. It comes back only by passing a later round,
+    never by its probes; its agreement is not refreshed while it is
+    out.
+- **A tunnel client is refused.** The operator's tunnel log has the
+  reason the LB gave:
+  - `no agreement 0x…` — the agreement has expired or was deleted.
+    The operator runs `./marketplace.sh status`, and posts a new offer
+    if the agreement is gone.
+  - `port N requested, agreement assigns M` or `signature was not made
+    by the agreement's provider over this agreement id` — the tunnel
+    settings are from another agreement or another key. The operator
+    runs `./marketplace.sh start-tunnel` again.
+  - Every client refused at once: the LB is down or still starting.
+    The tunnel server cannot reach the admission route and turns
+    everyone away until it answers; the clients retry on their own.
+- **`a refresh did not land`.** The line carries the sidecar's error
+  and the key's balance. A dry key is the usual cause (`the LB key is
+  low on GLM` comes first); a lifetime lowered in `config.toml` is the
+  other (Day to day).
+- **`the offers could not be read: this poll's discovery is
+  skipped`.** The reference failed the query: an outage, or a spent
+  quota (429). Serving is not affected; offers wait for a poll that
+  succeeds.
 - **Every provider ineligible with `source=lag` at once.** The
   reference is the suspect, not the nodes: it is on another network or
   far ahead. Check `ARKIV_RPC_URL`.

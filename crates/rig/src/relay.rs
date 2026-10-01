@@ -13,13 +13,17 @@ use axum::{
 use serde_json::Value;
 use tokio::net::TcpListener;
 
-/// The lie a relay tells, chosen at start.
+/// The lie a relay tells, chosen at start. Either one leaves the
+/// probes' reads alone, so the probes see an honest node and only the
+/// integrity round can notice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lie {
     /// Every entity answered to a query by key comes back with one
-    /// byte added to its payload. Nothing else changes, so the probes
-    /// see an honest node and only the integrity round can notice.
+    /// byte added to its payload.
     Entity,
+    /// Every block answered to `eth_getBlockByNumber` comes back with
+    /// another hash.
+    Block,
 }
 
 /// Relays every request on `listener` to `upstream` until the process
@@ -57,23 +61,28 @@ async fn relay(
         return StatusCode::BAD_GATEWAY.into_response();
     };
     let bytes = match lie {
-        Some(Lie::Entity) if status.is_success() => lie_about_entities(&body, bytes),
-        _ => bytes,
+        Some(lie) if status.is_success() => altered(&body, bytes, lie),
+        None | Some(_) => bytes,
     };
     (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
 }
 
-/// The answer as relayed with the entity lie on: altered when the
-/// request is a query by key, as it came otherwise. A batch, a body
-/// that is not JSON, and every other method pass through untouched.
-fn lie_about_entities(request: &Bytes, answer: Bytes) -> Bytes {
+/// The answer as relayed with a lie on: altered when it is one the lie
+/// changes, as it came otherwise. A batch, a body that is not JSON,
+/// every other method, and an answer with nothing to alter pass
+/// through untouched.
+fn altered(request: &Bytes, answer: Bytes, lie: Lie) -> Bytes {
     let Ok(request) = serde_json::from_slice::<Value>(request) else {
         return answer;
     };
     let Ok(mut parsed) = serde_json::from_slice::<Value>(&answer) else {
         return answer;
     };
-    if !alter(&request, &mut parsed) {
+    let altered = match lie {
+        Lie::Entity => alter_entities(&request, &mut parsed),
+        Lie::Block => alter_block(&request, &mut parsed),
+    };
+    if !altered {
         return answer;
     }
     serde_json::to_vec(&parsed)
@@ -82,8 +91,8 @@ fn lie_about_entities(request: &Bytes, answer: Bytes) -> Bytes {
 }
 
 /// Adds a byte to the payload of every row in the answer to a query by
-/// key; returns whether the request was one.
-fn alter(request: &Value, answer: &mut Value) -> bool {
+/// key; returns whether any row was altered.
+fn alter_entities(request: &Value, answer: &mut Value) -> bool {
     let by_key = request["method"] == "arkiv_query"
         && request["params"][0]
             .as_str()
@@ -91,12 +100,30 @@ fn alter(request: &Value, answer: &mut Value) -> bool {
     if !by_key {
         return false;
     }
-    if let Some(rows) = answer["result"]["data"].as_array_mut() {
-        for row in rows {
-            let payload = row["payload"].as_str().unwrap_or("0x");
-            row["payload"] = Value::String(format!("{payload}00"));
-        }
+    let Some(rows) = answer["result"]["data"].as_array_mut() else {
+        return false;
+    };
+    for row in rows.iter_mut() {
+        let payload = row["payload"].as_str().unwrap_or("0x");
+        row["payload"] = Value::String(format!("{payload}00"));
     }
+    !rows.is_empty()
+}
+
+/// Changes the hash of the block in the answer to `eth_getBlockByNumber`;
+/// returns whether it did. A null answer, a block the node does not
+/// have, stays null.
+fn alter_block(request: &Value, answer: &mut Value) -> bool {
+    if request["method"] != "eth_getBlockByNumber" {
+        return false;
+    }
+    let Some(hash) = answer["result"]["hash"].as_str() else {
+        return false;
+    };
+    // The last hex digit flipped: another hash, still well formed.
+    let (head, last) = hash.split_at(hash.len() - 1);
+    let other = if last == "0" { "1" } else { "0" };
+    answer["result"]["hash"] = Value::String(format!("{head}{other}"));
     true
 }
 
@@ -117,7 +144,7 @@ mod tests {
         let request = json!({"jsonrpc": "2.0", "id": 1, "method": "arkiv_query",
             "params": ["$key = key(0x01)", {}]});
         let mut answer = answer();
-        assert!(alter(&request, &mut answer));
+        assert!(alter_entities(&request, &mut answer));
         assert_eq!(answer["result"]["data"][0]["payload"], "0xabcd00");
         assert_eq!(answer["result"]["blockNumber"], "0x10", "only the payload");
     }
@@ -132,8 +159,27 @@ mod tests {
             json!([{"method": "arkiv_query", "params": ["$key = key(0x01)", {}]}]),
         ] {
             let mut answer = answer();
-            assert!(!alter(&request, &mut answer), "{request}");
+            assert!(!alter_entities(&request, &mut answer), "{request}");
             assert_eq!(answer, self::tests::answer());
         }
+    }
+
+    #[test]
+    fn a_block_gets_another_hash_and_nothing_else_changes() {
+        let request = json!({"method": "eth_getBlockByNumber", "params": ["0x10", false]});
+        let mut answer = json!({"jsonrpc": "2.0", "id": 1, "result": {
+            "number": "0x10", "hash": "0xab10", "stateRoot": "0xcd",
+        }});
+        assert!(alter_block(&request, &mut answer));
+        assert_eq!(answer["result"]["hash"], "0xab11");
+        assert_eq!(answer["result"]["stateRoot"], "0xcd");
+        let mut none = json!({"jsonrpc": "2.0", "id": 1, "result": null});
+        assert!(!alter_block(&request, &mut none), "no block stays no block");
+        let mut other = answer.clone();
+        assert!(!alter_block(
+            &json!({"method": "eth_blockNumber"}),
+            &mut other
+        ));
+        assert_eq!(other, answer);
     }
 }

@@ -83,6 +83,8 @@ The scenarios, each also runnable alone (`cargo run -p rig -- <name>`):
   chain's: it is taken out of rotation with a divergence verdict, the
   evidence event is in the LB's log, the honest providers are matched,
   and the public endpoint serves through them only.
+- `wrong-block` — the same with a provider serving blocks whose hash
+  is not the chain's; the evidence names the block read.
 - `offer-accepted` — the provider tooling from `arkiv-community-node`
   posts an offer; the LB parses it and accepts it; the tooling's
   `status` parses the agreement and the counter record the LB wrote,
@@ -102,14 +104,15 @@ provider with its own URL, the dev node itself is the reference, and a
 difference between two providers is one the LB has to explain.
 
 The relay is `rig relay`, a JSON-RPC relay that passes everything
-through, or with `--lie entity` adds a byte to the payload of every
-entity answered to a query by key and changes nothing else, so the
-probes see an honest node and only the integrity round can notice. In
-the scenario the relays run inside the rig; the same command runs
-alone in front of any node:
+through, or lies in one way: `--lie entity` adds a byte to the payload
+of every entity answered to a query by key, `--lie block` changes the
+hash of every block answered to `eth_getBlockByNumber`. Nothing else
+changes, so the probes see an honest node and only the integrity
+round can notice. In the scenarios the relays run inside the rig; the
+same command runs alone in front of any node:
 
 ```
-rig relay --listen <host:port> --upstream <url> [--lie entity]
+rig relay --listen <host:port> --upstream <url> [--lie entity|block]
 ```
 
 A fresh dev chain holds no entities, and a round samples one. So the

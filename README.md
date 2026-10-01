@@ -61,13 +61,13 @@ not operator-chosen.
 - **The test rig** (`crates/rig/`): scenarios that drive the shipped
   LB binary over real dev-node containers — boot, load distribution,
   method denial, admin forward to a quarantined node, kill and
-  recovery under load, a provider lying about entities taken out by
-  the integrity checks, and the provider tooling's offer accepted and
+  recovery under load, a provider lying about entities or blocks taken
+  out by the integrity checks, and the provider tooling's offer accepted and
   its agreement read back and its tunnel token admitted. `rig all` runs every scenario; `rig load` is a
   standalone load generator pointable at any endpoint; `rig relay`
   stands in front of any node and relays it honestly, or with
-  `--lie entity` alters the entities it serves, to watch the integrity
-  checks catch a provider. Runs locally
+  `--lie entity` or `--lie block` alters the entities or the blocks it
+  serves, to watch the integrity checks catch a provider. Runs locally
   and as an on-demand CI workflow. The testing approach across the
   repository is [docs/TESTING.md](docs/TESTING.md).
 

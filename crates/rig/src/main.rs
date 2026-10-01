@@ -46,13 +46,14 @@ const READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Scenario order for `rig all`: quick smokes first, the acceptance
 /// scenario last.
-const SCENARIOS: [&str; 7] = [
+const SCENARIOS: [&str; 8] = [
     "boot",
     "distribution",
     "denylist",
     "forward-to-node",
     "kill-recover",
     "wrong-entity",
+    "wrong-block",
     "offer-accepted",
 ];
 
@@ -91,7 +92,8 @@ async fn scenario(name: &str) {
         "distribution" => distribution().await,
         "forward-to-node" => forward_to_node().await,
         "kill-recover" => kill_recover().await,
-        "wrong-entity" => wrong_entity().await,
+        "wrong-entity" => liar(relay::Lie::Entity, "entity").await,
+        "wrong-block" => liar(relay::Lie::Block, "block").await,
         "offer-accepted" => offer_accepted().await,
         _ => unreachable!("scenario {name} is listed but not dispatched"),
     }
@@ -109,7 +111,7 @@ async fn all() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--concurrency N] [--duration SECONDS]\n       rig relay --listen <host:port> --upstream <url> [--lie entity]",
+        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--concurrency N] [--duration SECONDS]\n       rig relay --listen <host:port> --upstream <url> [--lie entity|block]",
         SCENARIOS.join(" | ")
     );
     std::process::exit(2);
@@ -166,6 +168,7 @@ async fn relay_command(mut args: impl Iterator<Item = String>) {
             }
             ("--upstream", _) => upstream = Some(value.parse().unwrap_or_else(|_| usage())),
             ("--lie", "entity") => lie = Some(relay::Lie::Entity),
+            ("--lie", "block") => lie = Some(relay::Lie::Block),
             _ => usage(),
         }
     }
@@ -574,6 +577,9 @@ impl Lb {
         command
             .env_remove("ARKIV_RPC_URL")
             .env_remove("ARKIV_API_KEY");
+        // The log goes to a file the scenarios read: no colour codes
+        // between a field's name and its value.
+        command.env("NO_COLOR", "1");
         if let Some(reference) = reference {
             command.env("ARKIV_RPC_URL", reference);
         }
@@ -664,11 +670,11 @@ async fn start_relay(servers: &mut Servers, upstream: &str, lie: Option<relay::L
     url
 }
 
-/// The integrity scenario: three providers serving one dev chain
-/// through relays, one of them lying about entities. The liar is taken
-/// out with the evidence in the log, the honest two are matched and
-/// carry the traffic.
-async fn wrong_entity() {
+/// The integrity scenarios: three providers serving one dev chain
+/// through relays, one of them telling `lie`. The liar is taken out
+/// with the evidence in the log naming `check` as the read that
+/// differed, the honest two are matched and carry the traffic.
+async fn liar(lie: relay::Lie, check: &str) {
     let root = workspace_root();
     // One chain behind every provider: they agree on data, so a
     // difference is one the LB has to explain.
@@ -683,12 +689,9 @@ async fn wrong_entity() {
     let providers = [
         ("honest-0", start_relay(&mut relays, node, None).await),
         ("honest-1", start_relay(&mut relays, node, None).await),
-        (
-            "liar",
-            start_relay(&mut relays, node, Some(relay::Lie::Entity)).await,
-        ),
+        ("liar", start_relay(&mut relays, node, Some(lie)).await),
     ];
-    println!("rig: one dev chain behind 3 relays, one lying about entities");
+    println!("rig: one dev chain behind 3 relays, one lying: {lie:?}");
 
     let config = render_marketplace_config(
         &root,
@@ -726,9 +729,10 @@ async fn wrong_entity() {
     }
     let log = std::fs::read_to_string(&lb.log).expect("read lb.log");
     assert!(
-        log.lines()
-            .any(|line| line.contains("divergence confirmed") && line.contains("liar")),
-        "the evidence event is in {}",
+        log.lines().any(|line| line.contains("divergence confirmed")
+            && line.contains("provider=liar")
+            && line.contains(&format!("check=\"{check}\""))),
+        "the evidence event naming the {check} read is in {}",
         lb.log.display()
     );
 

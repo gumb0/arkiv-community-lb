@@ -28,9 +28,6 @@ Environment:
   DEV_NODE_PORT    host port for JSON-RPC (default 8645)
   DEV_NODE_IMAGE   image (default: the digest-pinned arkiv-reth-dev v0.2.0)
   DEV_NODE_NAME    container name (default arkiv-dev-node)
-
-The image lives in a credentialed registry, so `docker login ghcr.io` with a
-token that can read packages is a prerequisite.
 EOF
 }
 
@@ -65,7 +62,6 @@ start(){
       --http --http.addr 0.0.0.0 --http.api eth,net,web3,txpool \
       --datadir /data >/dev/null; then
     printf 'could not start %s\n' "$IMAGE" >&2
-    printf 'if the pull was denied: docker login ghcr.io -u <github-user>\n' >&2
     exit 1
   fi
 

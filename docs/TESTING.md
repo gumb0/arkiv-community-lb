@@ -153,9 +153,6 @@ It runs the same request loop the scenarios use, against any endpoint
 you point it at; a run with failures exits nonzero and reports the
 first failure's reason.
 
-The dev-node image lives in a credentialed registry, so
-`docker login ghcr.io` is a prerequisite, locally and in CI.
-
 ## Conventions
 
 - **Never paused time with real sockets.** The in-process tests scale

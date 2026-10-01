@@ -85,7 +85,9 @@ The scenarios, each also runnable alone (`cargo run -p rig -- <name>`):
   and the public endpoint serves through them only.
 - `offer-accepted` — the provider tooling from `arkiv-community-node`
   posts an offer; the LB parses it and accepts it; the tooling's
-  `status` parses the agreement and the counter record the LB wrote.
+  `status` parses the agreement and the counter record the LB wrote,
+  and `start-tunnel` signs the tunnel token, which the LB's admission
+  route admits, and refuses altered or for another port.
 
 The rig observes through the admin API and the LB's log — what it
 asserts is what an operator can see.
@@ -119,8 +121,9 @@ does. That needs Node and `npm ci` in `writer/`.
 ### The offer, accepted: the records between the two codebases
 
 The LB and the provider tooling share no code: each encodes the
-records from [ENTITIES.md](ENTITIES.md) on its own. `offer-accepted` holds
-them to it with both sides as they ship. It runs the tooling's CLI
+records from [ENTITIES.md](ENTITIES.md) and the tunnel token's message
+on its own. `offer-accepted` holds them to it with both sides as they
+ship. It runs the tooling's CLI
 from a checkout of `arkiv-community-node` at `../node` (or wherever
 `RIG_NODE_DIR` says), with `npm ci` run in its `marketplace/`, outside
 the container it normally runs in. What the container would give it,
@@ -128,8 +131,10 @@ the rig gives instead: the node's address (the dev node), a key file
 for the dev chain's second prefunded account, the LB's address (the
 sidecar's), and the two beacon API paths an offer's specs are read
 from, which a dev node has no consensus client to answer. The tunnel
-is not part of it: the tooling stops at the agreement, and the tunnel
-is exercised by every provider that connects.
+itself is not part of it: the rig posts the tunnel server's admission
+callbacks with the token the tooling signed, the way frps does, rather
+than running frp, which every provider that connects exercises for
+real. A future rig improvement would run both ends of the tunnel.
 
 `rig load` is the load generator as its own command:
 `rig load --target <url> [--concurrency N] [--duration SECONDS]`.

@@ -63,7 +63,7 @@ not operator-chosen.
   method denial, admin forward to a quarantined node, kill and
   recovery under load, a provider lying about entities taken out by
   the integrity checks, and the provider tooling's offer accepted and
-  its agreement read back. `rig all` runs every scenario; `rig load` is a
+  its agreement read back and its tunnel token admitted. `rig all` runs every scenario; `rig load` is a
   standalone load generator pointable at any endpoint; `rig relay`
   stands in front of any node and relays it honestly, or with
   `--lie entity` alters the entities it serves, to watch the integrity

@@ -790,11 +790,11 @@ fn render_marketplace_config(
     path
 }
 
-/// The provider tooling from
-/// arkiv-community-node posts an offer, the LB parses it and accepts
-/// it, and the tooling parses the agreement the LB wrote. The two
-/// codebases share no code, only the record specs, so this is where
-/// drift between them shows.
+/// The provider tooling from arkiv-community-node posts an offer, the
+/// LB parses it and accepts it, the tooling parses the agreement the LB
+/// wrote and signs its tunnel token, and the LB admits that token. The
+/// two codebases share no code, only the record specs and the token's
+/// message, so this is where drift between them shows.
 async fn offer_accepted() {
     let root = workspace_root();
     let fleet = Fleet::start(&root, 1, BASE_PORT);
@@ -878,9 +878,89 @@ async fn offer_accepted() {
         "the tooling reads the agreement the LB wrote: {printed}"
     );
 
+    // The tooling signs the tunnel token over the agreement it read.
+    let started = tooling.run("start-tunnel");
+    let printed = provider::text(&started);
+    println!("{printed}");
+    assert!(started.status.success(), "start-tunnel failed");
+    let settings = tooling.tunnel_settings();
+    assert_eq!(settings["TUNNEL_AGREEMENT"].to_lowercase(), agreement);
+    assert_eq!(settings["TUNNEL_REMOTE_PORT"], port);
+    let token = settings["TUNNEL_TOKEN"].clone();
+
+    // The tunnel server would carry the token to the LB's admission
+    // route in its callbacks; the rig posts them in its place, the way
+    // frps does, and the LB admits the token the tooling signed.
+    let port: u16 = port.parse().expect("a port number");
+    let login = admission("Login", &login_body(&agreement, &token)).await;
+    assert_eq!(login, serde_json::json!({ "unchange": true }), "login");
+    let proxy = admission("NewProxy", &new_proxy_body(&agreement, &token, port)).await;
+    assert_eq!(proxy, serde_json::json!({ "unchange": true }), "proxy");
+    println!("rig: the token the tooling signed is admitted");
+
+    // The same body with the token's last byte changed is another
+    // signer's; the same token for another port is not the agreement.
+    let mut wrong = token.clone();
+    wrong.replace_range(wrong.len() - 2.., "00");
+    let refused = admission("NewProxy", &new_proxy_body(&agreement, &wrong, port)).await;
+    assert_eq!(refused["reject"], true, "{refused}");
+    assert!(
+        refused["reject_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("not made by the agreement's provider")),
+        "{refused}"
+    );
+    let refused = admission("NewProxy", &new_proxy_body(&agreement, &token, port + 1)).await;
+    assert_eq!(refused["reject"], true, "{refused}");
+    assert!(
+        refused["reject_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("requested, agreement assigns")),
+        "{refused}"
+    );
+
     drop(lb);
     drop(beacon);
     drop(writer);
     drop(fleet);
     println!("rig: ok");
+}
+
+/// One admission callback to the LB, as frps posts it: the op and
+/// version in the query and the body alike; the LB's answer.
+async fn admission(op: &str, content: &serde_json::Value) -> serde_json::Value {
+    client()
+        .post(format!("http://{LB_ADMIN}/admission?op={op}&version=0.1.0"))
+        .json(&serde_json::json!({ "version": "0.1.0", "op": op, "content": content }))
+        .send()
+        .await
+        .expect("the admission route answers")
+        .json()
+        .await
+        .expect("the answer is json")
+}
+
+/// The client's metas, as frpc sends what the tooling wrote.
+fn metas(agreement: &str, token: &str) -> serde_json::Value {
+    serde_json::json!({ "agreement": agreement, "token": token })
+}
+
+/// A login's content, the fields frps v0.61.1 sends; the route decides
+/// on the metas.
+fn login_body(agreement: &str, token: &str) -> serde_json::Value {
+    serde_json::json!({
+        "version": "0.61.1", "os": "linux", "arch": "amd64",
+        "metas": metas(agreement, token), "client_spec": {}, "pool_count": 1,
+        // Where frpc connected from. The route only names the client
+        // by it in the log, so a documentation address stands in.
+        "client_address": "203.0.113.5:53502",
+    })
+}
+
+/// A proxy registration's content, the same way.
+fn new_proxy_body(agreement: &str, token: &str, port: u16) -> serde_json::Value {
+    serde_json::json!({
+        "user": { "user": "", "metas": metas(agreement, token), "run_id": "rig" },
+        "proxy_name": format!("node-rpc-{port}"), "proxy_type": "tcp", "remote_port": port,
+    })
 }

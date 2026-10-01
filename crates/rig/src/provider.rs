@@ -115,6 +115,19 @@ impl Tooling {
     }
 }
 
+impl Tooling {
+    /// The tunnel settings `start-tunnel` wrote, name to value: what
+    /// the wrapper script merges into the node's `.env`.
+    pub fn tunnel_settings(&self) -> std::collections::HashMap<String, String> {
+        std::fs::read_to_string(&self.tunnel_env)
+            .expect("start-tunnel wrote the tunnel settings")
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect()
+    }
+}
+
 /// A command's output as one text, for assertions and failure messages.
 pub fn text(output: &Output) -> String {
     format!(

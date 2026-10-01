@@ -1238,6 +1238,96 @@ async fn a_flush_writes_what_the_provider_served() {
 }
 
 #[tokio::test]
+async fn an_lb_killed_without_its_stop_flush_resumes_from_the_last_flush() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let config = marketplace();
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    serve(&pool, provider(1), 5);
+    agent.flush().await;
+    serve(&pool, provider(1), 3);
+    assert_eq!(served_by(&pool, provider(1)), 18, "three since the flush");
+
+    // The kill: the process is gone with its memory, and the stop
+    // flush a deliberate stop makes never ran.
+    drop(agent);
+    drop(pool);
+
+    // The next process reads the chain: the three are lost, the
+    // fifteen are not, and nothing is counted twice.
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    assert_eq!(
+        served_by(&pool, provider(1)),
+        15,
+        "the last flushed count: not zero, not the count before the kill"
+    );
+    serve(&pool, provider(1), 1);
+    agent.flush().await;
+    assert_eq!(counter(&chain, key).await.count, 16);
+}
+
+#[tokio::test]
+async fn a_flush_whose_answer_was_lost_is_not_counted_twice_by_the_next() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
+    serve(&pool, provider(1), 5);
+
+    // The patch lands and its answer never arrives; the LB runs on.
+    chain.unresolved_next();
+    agent.flush().await;
+    assert_eq!(counter(&chain, key).await.count, 15, "it landed");
+    let writes = chain.transactions().len();
+
+    // A patch carries the entry's total, not what was served since:
+    // the next flush finds the record already saying it and writes
+    // nothing, and after more is served writes the new total.
+    agent.flush().await;
+    assert_eq!(chain.transactions().len(), writes, "nothing to write");
+    assert_eq!(counter(&chain, key).await.count, 15);
+    serve(&pool, provider(1), 2);
+    agent.flush().await;
+    assert_eq!(counter(&chain, key).await.count, 17);
+}
+
+#[tokio::test]
+async fn a_kill_after_a_flush_whose_answer_was_lost_loses_nothing() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let config = marketplace();
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    serve(&pool, provider(1), 5);
+    // The flush lands, but its answer never reaches the LB, and the
+    // process is killed before it could find out.
+    chain.unresolved_next();
+    agent.flush().await;
+    assert_eq!(counter(&chain, key).await.count, 15, "it landed");
+    drop(agent);
+    drop(pool);
+
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    assert_eq!(
+        served_by(&pool, provider(1)),
+        15,
+        "read back from the chain"
+    );
+    agent.flush().await;
+    assert_eq!(
+        counter(&chain, key).await.count,
+        15,
+        "nothing counted twice"
+    );
+}
+
+#[tokio::test]
 async fn an_agreement_without_a_record_gets_a_fresh_one_at_zero() {
     let chain = FakeChain::new(LB, CHAIN_ID);
     let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
@@ -1627,6 +1717,47 @@ async fn a_flush_over_the_transaction_limit_lands_in_several() {
         );
     }
     assert!(chain.transactions().len() - writes_before >= 2, "split");
+}
+
+/// Pins what happens today, which is wrong (#52): the thirteen the
+/// closed record pays are written into the successor too. The fix
+/// flips the last assertion to four.
+#[tokio::test]
+async fn a_close_whose_answer_was_lost_is_counted_into_the_next_period_too() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = short_periods();
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 10, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    serve(&pool, provider(1), 3);
+    chain.advance(20);
+
+    // The close lands, and its answer never reaches the LB.
+    chain.unresolved_next();
+    agent.flush().await;
+    let closed = counter(&chain, key).await;
+    assert_eq!(closed.state, CounterState::Closed);
+    assert_eq!(closed.count, 13, "the period is written and paid");
+
+    // Only the four served since should reach the next period; the
+    // thirteen are paid by the closed record already. Two flushes: the
+    // first finds the agreement without an open record and opens one
+    // at zero, the second writes the entry's count into it.
+    serve(&pool, provider(1), 4);
+    agent.flush().await;
+    agent.flush().await;
+    let records = counter_records(&chain).await;
+    let successor = records
+        .iter()
+        .find(|record| record.key != key)
+        .expect("a successor was opened");
+    assert_eq!(
+        counter(&chain, successor.key).await.count,
+        17,
+        "the closed period's count again, with the four: #52"
+    );
+    assert_eq!(counter(&chain, key).await.count, 13, "the closed stands");
 }
 
 #[tokio::test]

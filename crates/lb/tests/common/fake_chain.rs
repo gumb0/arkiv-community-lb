@@ -597,6 +597,6 @@ impl ChainWriter for FakeChain {
             extended_entities: log.extended.clone(),
         };
         let tx_hash = state.transaction(Transaction::Batch(log));
-        Ok(BatchResult { tx_hash, ..result })
+        state.answer(tx_hash.clone(), BatchResult { tx_hash, ..result })
     }
 }

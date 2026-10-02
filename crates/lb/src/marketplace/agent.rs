@@ -102,12 +102,14 @@ struct Ended {
     served: u64,
 }
 
+/// Open counter records, one per agreement, by agreement key.
+type CountersByAgreement = HashMap<EntityKey, Stored<CounterRecord>>;
+
 /// What the counter reconcile read: the record that counts for each
 /// live agreement, and the ones that count for nobody.
-#[derive(Default)]
 struct Counters {
-    /// By agreement key, the open record the LB counts into.
-    open: HashMap<EntityKey, Stored<CounterRecord>>,
+    /// The open record the LB counts into.
+    open: CountersByAgreement,
     /// An agreement's younger open records: only the oldest counts,
     /// and the flush deletes these.
     duplicates: Vec<EntityKey>,
@@ -644,18 +646,26 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         adopted
     }
 
-    /// Memory against the chain again, for the counter records: every
-    /// open record of this LB, one page, matched to the agreements
-    /// memory holds. The same read at start, at every poll and before
-    /// every flush, so an agreement adopted at a poll finds its record
-    /// the same way a restart does, and a flush writes against what
-    /// the chain has just shown. What the chain does not have is not
-    /// remembered, and the flush opens, closes or deletes what this
-    /// leaves: a record for an agreement without one, a younger
-    /// duplicate, a record whose agreement is gone.
-    ///
-    /// Returns what it read, for the flush to write against.
+    /// Matches this LB's open counter records on the chain to the
+    /// agreements memory holds. Returns what it read, for the flush to
+    /// write against.
     async fn reconcile_counters(&self, head: u64) -> Result<Counters, ReconcileError> {
+        let records = self.read_open_counters(head).await?;
+        let (oldest, duplicates) = Self::oldest_per_agreement(records);
+        let (open, strays) = self.match_to_agreements(oldest);
+        Ok(Counters {
+            open,
+            duplicates,
+            strays,
+        })
+    }
+
+    /// This LB's open counter records. Count then page: a full page
+    /// says nothing about what lies beyond it.
+    async fn read_open_counters(
+        &self,
+        head: u64,
+    ) -> Result<Vec<Stored<CounterRecord>>, ReconcileError> {
         let query = Query::kind(KIND_COUNTER)
             .creator(self.identity.address)
             .attr_str("state", "open")
@@ -685,52 +695,74 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 }
             }
         }
+        Ok(records)
+    }
+
+    /// Splits open counter records into the one each agreement counts
+    /// into, by agreement key, and the keys of the rest.
+    fn oldest_per_agreement(
+        mut records: Vec<Stored<CounterRecord>>,
+    ) -> (CountersByAgreement, Vec<EntityKey>) {
         // Oldest first, so an agreement's first record is the one it
-        // counts into and any other is a younger duplicate. Which is
-        // which is decided here, so what reads this has one record per
-        // agreement. The duplicate is not logged here, since this runs
-        // every poll and the flush says so when it deletes it.
+        // counts into and any other is a younger duplicate.
         records.sort_by_key(creation);
-        let mut counters = Counters::default();
-        let mut by_agreement: HashMap<EntityKey, Stored<CounterRecord>> = HashMap::new();
+        let mut oldest = HashMap::new();
+        let mut duplicates = Vec::new();
         for stored in records {
-            match by_agreement.entry(stored.record.agreement) {
+            match oldest.entry(stored.record.agreement) {
                 Entry::Vacant(slot) => {
                     slot.insert(stored);
                 }
-                Entry::Occupied(_) => counters.duplicates.push(stored.key),
+                // Not logged: this runs every poll, and the flush says so
+                // when it deletes the duplicate.
+                Entry::Occupied(_) => duplicates.push(stored.key),
             }
         }
+        (oldest, duplicates)
+    }
+
+    /// Gives each agreement in memory the open record it counts into.
+    /// Returns those records by agreement key, and the records no
+    /// agreement in memory took.
+    fn match_to_agreements(
+        &self,
+        mut records: CountersByAgreement,
+    ) -> (CountersByAgreement, Vec<Stored<CounterRecord>>) {
+        let mut open = HashMap::new();
         let mut known = self
             .agreements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (key, live) in known.iter_mut() {
-            let Some(stored) = by_agreement.remove(key) else {
-                // Only a record memory held and the chain no longer has
-                // is worth a line: an agreement that never had one is
-                // waiting for the flush, which says so when it opens it.
-                if live.counter.is_some() {
+            let found = records.remove(key);
+            match (&live.counter, &found) {
+                // New to memory: the entry counts on from the count the
+                // record carries, which is this period's so far. Only
+                // then: counting it in twice would bill it twice.
+                (None, Some(stored)) => {
+                    if let Some(entry) = self
+                        .pool
+                        .get(&marketplace_id(live.agreement.record.provider))
+                    {
+                        entry.seed_served(stored.record.count);
+                    }
+                }
+                // Memory held one and the chain no longer has it. An
+                // agreement that never had one is not worth a line: the
+                // flush says so when it opens it.
+                (Some(_), None) => {
                     tracing::warn!(agreement = %key, "the open counter record is gone from the chain: the next flush opens one");
                 }
-                live.counter = None;
-                continue;
-            };
-            // The count the record carries is this period's so far, so
-            // the entry counts on from it. Only when the record was
-            // unknown: counting it in twice would bill it twice.
-            if live.counter.is_none()
-                && let Some(entry) = self
-                    .pool
-                    .get(&marketplace_id(live.agreement.record.provider))
-            {
-                entry.seed_served(stored.record.count);
+                _ => {}
             }
-            live.counter = Some(open_counter(&stored));
-            counters.open.insert(*key, stored);
+            // What the chain shows is what memory holds, and nothing
+            // when the chain shows none.
+            live.counter = found.as_ref().map(open_counter);
+            if let Some(stored) = found {
+                open.insert(*key, stored);
+            }
         }
-        counters.strays = by_agreement.into_values().collect();
-        Ok(counters)
+        (open, records.into_values().collect())
     }
 
     /// The offers against this LB's listing, and the acceptances they

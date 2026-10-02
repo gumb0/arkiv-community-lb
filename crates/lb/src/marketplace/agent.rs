@@ -165,11 +165,11 @@ impl<R: ChainReader + 'static, W: ChainWriter + 'static> Agreements for Agent<R,
             return;
         };
         // A reconnect is a probe due at once, as the first admission
-        // was; the steps that follow are for a record still on its
-        // accept window, so a tunnel that reconnects after the extend
+        // was; the steps that follow are for a record that was never
+        // extended, so a tunnel that reconnects after the extend
         // starts nothing and cannot make the LB write.
         provider.schedule_probe_now();
-        if !self.on_accept_window(agreement.key) {
+        if self.was_extended(agreement.key) {
             return;
         }
         tokio::spawn(self.admission(provider, agreement.key));
@@ -370,22 +370,22 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         }
     }
 
-    /// Whether an agreement's record was never extended, as memory
-    /// knows it: its life, expiry less creation, is shorter than
-    /// `agreement_life`, which an extend sets from the moment it lands.
-    /// An accepted record lives for the accept window, shorter by
-    /// configuration; its creation block is an estimate until the
-    /// reconcile reads it back, a few blocks early at most. A record
-    /// memory does not hold is not on any window.
-    fn on_accept_window(&self, key: EntityKey) -> bool {
+    /// Whether an agreement's record was extended, as memory knows it:
+    /// its life, expiry less creation, is at least `agreement_life`,
+    /// which an extend sets from the moment it lands. An accepted
+    /// record lives `offer_max_lifetime`, shorter by configuration;
+    /// its creation block is an estimate until the reconcile reads it
+    /// back, a few blocks early at most. A record memory does not hold
+    /// counts as extended: there is nothing to extend.
+    fn was_extended(&self, key: EntityKey) -> bool {
         self.agreements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&key)
-            .is_some_and(|live| {
+            .is_none_or(|live| {
                 let record = &live.agreement;
                 record.expires_at.saturating_sub(record.created_at)
-                    < blocks(self.config.agreement_life)
+                    >= blocks(self.config.agreement_life)
             })
     }
 
@@ -394,15 +394,15 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     /// extended.
     async fn admission(self: Arc<Self>, provider: Arc<Provider>, agreement: EntityKey) {
         // The Monitor does the probing; this only waits for its verdict,
-        // at most the accept window: a node that never answers is left
-        // to expire with its record.
-        let deadline = std::time::Instant::now() + self.config.accept_window;
+        // at most as long as a newly accepted record lives: a node that
+        // never answers is left to expire with its record.
+        let deadline = std::time::Instant::now() + self.config.offer_max_lifetime;
         while !provider.healthy() {
             if std::time::Instant::now() >= deadline {
                 tracing::info!(
                     provider = %provider.id,
                     agreement = %agreement,
-                    "admission: the probes did not pass within the accept window"
+                    "admission: the probes did not pass before the agreement record expired"
                 );
                 return;
             }
@@ -427,7 +427,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         // provider may have extended the record by now, or a discovery poll
         // may have dropped it from memory because it expired, and extending
         // a gone record would fail.
-        if !self.on_accept_window(agreement) {
+        if self.was_extended(agreement) {
             return;
         }
         tracing::info!(
@@ -435,18 +435,17 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             agreement = %agreement,
             "admission: the probes passed, the agreement record is extended"
         );
-        // Extended now rather than at the hourly refresh: the record
-        // lives only for the accept window until then, and the refresh
-        // is not aligned to it, so a provider that turns healthy late
-        // in its window would expire first.
+        // Extended now rather than at the hourly refresh: the refresh
+        // is not aligned to the record's first life, so a provider
+        // that turns healthy near the end of it would expire first.
         let extend = Extend {
             entity_key: agreement,
             expires: Expiry::Seconds(self.config.agreement_life.as_secs()),
         };
         match self.writer.extend(&extend).await {
             // Memory learns the expiry from the answer, not at the next
-            // poll: until then it would still show the record on its
-            // accept window.
+            // poll: until then it would still show the record as never
+            // extended.
             Ok(extended) => {
                 if let Some(live) = self
                     .agreements
@@ -968,11 +967,15 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             wei_per_call: self.config.wei_per_call,
             remote_port: port,
         };
+        // The record's first life is `offer_max_lifetime`. The offer
+        // expires within that time, or it would not have been seen, so
+        // the record ends at or after its offer: a provider that never
+        // connects is not accepted a second time from the same offer.
         let created = match self
             .writer
             .create(&Create::new(
                 agreement.encode(),
-                Expiry::Seconds(self.config.accept_window.as_secs()),
+                Expiry::Seconds(self.config.offer_max_lifetime.as_secs()),
             ))
             .await
         {
@@ -1165,7 +1168,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         }
         // Eligibility at this moment is the one rule: an ineligible
         // provider is skipped, so its record expires `agreement_life`
-        // after its last refresh, or at the accept window if it never
+        // after its last refresh, or with its first life if it never
         // passed a probe.
         let mut ineligible = 0;
         let known = self

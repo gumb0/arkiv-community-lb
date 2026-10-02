@@ -163,12 +163,14 @@ record's key is known only once it has landed, so the counter record
 cannot be in the same transaction. An agreement whose counter record
 did not follow gets one at the LB's next daily write.
 
-Lifetime: two hours at creation (the accept window). Every hour, the LB
+Lifetime: two days at creation, the longest an offer can have left
+when it is accepted, so the record ends at or after its offer. Every
+hour, the LB
 refreshes the records of the providers that are healthy at that moment,
 each time setting the expiry to three days from now. A provider that is
 not healthy is skipped, so its record expires three days after its last
 refresh. An accepted provider that never connects is never healthy, so
-its record expires at the end of the accept window.
+its record expires at the end of that first lifetime.
 
 Query, by a provider: `$creator == LB_ADDRESS AND kind ==
 "rpc.agreement" AND provider == <my address>`. Query, by the LB at

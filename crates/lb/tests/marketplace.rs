@@ -44,7 +44,6 @@ fn marketplace() -> Marketplace {
         max_providers: 100,
         remote_port_start: 20000,
         discovery_interval: Duration::from_secs(300),
-        accept_window: Duration::from_secs(7200),
         refresh_interval: Duration::from_secs(3600),
         agreement_life: Duration::from_secs(3 * 24 * 3600),
         listing_life: Duration::from_secs(30 * 24 * 3600),
@@ -521,8 +520,8 @@ async fn an_offer_becomes_an_agreement_and_a_counter_record() {
     assert_eq!(agreement.record.remote_port, 20000, "the first port");
     assert_eq!(
         agreement.expires_at,
-        chain.head() + blocks(config.accept_window.as_secs()),
-        "the accept window"
+        chain.head() + blocks(config.offer_max_lifetime.as_secs()),
+        "its first life: as long as an offer can have left"
     );
     let members = pool.snapshot();
     assert_eq!(members.len(), 1);
@@ -687,21 +686,17 @@ async fn the_cap_full_waits_and_a_freed_slot_goes_to_the_oldest_offer() {
     let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &config, &pool).await.expect("starts");
 
-    // Two slots. The first provider is accepted alone, so its accept
-    // window runs out before the second's. Its offer expires with its
-    // agreement: a live one would be accepted again (issue #21).
-    let first = post(
-        &chain,
-        provider(1),
-        &offer_for(&agent, &chain),
-        config.accept_window.as_secs(),
-    );
+    // Two slots. The first provider is accepted alone, so its record's
+    // first life runs out before the second's. Every offer lives as
+    // long as the LB accepts, so the waiting one is still alive then.
+    let life = config.offer_max_lifetime.as_secs();
+    let first = post(&chain, provider(1), &offer_for(&agent, &chain), life);
     agent.discovery_poll().await;
     chain.advance(100);
     let offer = offer_for(&agent, &chain);
-    let second = post(&chain, provider(2), &offer, DAY);
+    let second = post(&chain, provider(2), &offer, life);
     chain.advance(1);
-    let third = post(&chain, provider(3), &offer, DAY);
+    let third = post(&chain, provider(3), &offer, life);
     agent.discovery_poll().await;
     let accepted: Vec<_> = agent.agreements().iter().map(|a| a.record.offer).collect();
     assert_eq!(accepted.len(), 2);
@@ -715,14 +710,16 @@ async fn the_cap_full_waits_and_a_freed_slot_goes_to_the_oldest_offer() {
     agent.discovery_poll().await;
     assert_eq!(agent.agreements().len(), 2);
 
-    // The first agreement ends (never refreshed: its accept window
-    // runs out) while the second is still alive. The oldest waiting
-    // offer takes the freed slot, in the same poll.
-    chain.advance(blocks(config.accept_window.as_secs()) - 100);
-    let fourth = post(&chain, provider(4), &offer, DAY);
+    // The first agreement ends (never refreshed: its first life runs
+    // out) while the second is still alive. Its offer has ended with
+    // it, so it is not accepted again, and the oldest waiting offer
+    // takes the freed slot, in the same poll.
+    chain.advance(blocks(life) - 100);
+    let fourth = post(&chain, provider(4), &offer, life);
     agent.discovery_poll().await;
     let accepted: Vec<_> = agent.agreements().iter().map(|a| a.record.offer).collect();
     assert_eq!(accepted.len(), 2, "{accepted:?}");
+    assert!(!accepted.contains(&first), "its offer is gone too");
     assert!(accepted.contains(&second), "still alive");
     assert!(
         accepted.contains(&third),
@@ -2156,7 +2153,7 @@ async fn a_refresh_extends_the_listing_and_the_eligible_providers_only() {
     assert_eq!(
         expires_at(&chain, ghost),
         1 + blocks(3600),
-        "the ghost keeps its accept window"
+        "the ghost keeps its first life"
     );
 }
 
@@ -2274,7 +2271,7 @@ async fn a_record_written_under_a_longer_lifetime_is_left_out_until_it_can_move_
         .expect("starts")
         .listing_key();
     let long_lived = seed_agreement(&chain, provider(1), 20000, earlier.agreement_life.as_secs());
-    let fresh = seed_agreement(&chain, provider(2), 20001, earlier.accept_window.as_secs());
+    let fresh = seed_agreement(&chain, provider(2), 20001, 7200);
 
     // Restarted with both lifetimes shortened.
     let mut config = marketplace();
@@ -2326,17 +2323,17 @@ async fn the_reconcile_learns_a_refreshed_expiry() {
     let key = agent.agreements()[0].key;
     set_health(&pool, provider(1), true);
 
-    // Refreshed within its accept window, then a poll, then past the
-    // window: memory must know the record lives on, or the next
-    // refresh would leave it out as expired.
+    // Refreshed within its first life, then a poll, then past where
+    // that life would have ended: memory must know the record lives
+    // on, or the next refresh would leave it out as expired.
     agent.refresh().await;
     let refreshed = expires_at(&chain, key);
     agent.discovery_poll().await;
-    chain.advance(blocks(config.accept_window.as_secs()) + 1);
+    chain.advance(blocks(config.offer_max_lifetime.as_secs()) + 1);
     agent.refresh().await;
     assert!(
         expires_at(&chain, key) > refreshed,
-        "refreshed again past the accept window"
+        "refreshed again past its first life"
     );
 }
 
@@ -2613,10 +2610,11 @@ struct Admitting {
     key: alloy_primitives::B256,
 }
 
-async fn admitting(accept_window: Duration) -> Admitting {
+async fn admitting(first_life: Duration) -> Admitting {
     let chain = FakeChain::new(LB, CHAIN_ID);
     let mut config = marketplace();
-    config.accept_window = accept_window;
+    // How long an admission waits for the probes.
+    config.offer_max_lifetime = first_life;
     let key = seed_agreement(&chain, provider(1), 20000, 7200);
     let pool = Arc::new(Pool::new(&[]).expect("pool"));
     let agent = Arc::new(start(&chain, &config, &pool).await.expect("starts"));
@@ -2711,13 +2709,13 @@ async fn two_admissions_during_the_wait_write_once() {
 }
 
 #[tokio::test]
-async fn a_provider_whose_probes_never_pass_is_left_to_its_window() {
+async fn a_provider_whose_probes_never_pass_is_left_to_expire() {
     let fleet = admitting(Duration::from_millis(200)).await;
     let stored = fleet.agent.agreement(fleet.key).expect("known");
     let writes_before = fleet.chain.transactions().len();
     fleet.agent.clone().admitted(&stored);
 
-    // The window runs out with the probes failing; a flip after that
+    // The wait runs out with the probes failing; a flip after that
     // is an ordinary readmission, extended by the refresh, not here.
     tokio::time::sleep(Duration::from_millis(500)).await;
     set_health(&fleet.pool, provider(1), true);
@@ -2733,7 +2731,7 @@ async fn a_failed_extend_is_tried_again_at_the_next_admission() {
     set_health(&fleet.pool, provider(1), true);
 
     // The sidecar is down when the probes pass: the extend fails and
-    // memory keeps the record on its accept window.
+    // memory keeps the record as never extended.
     fleet.chain.fail_sidecar("sidecar down");
     fleet.agent.clone().admitted(&stored);
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -2866,8 +2864,8 @@ async fn a_newcomer_serving_wrong_data_is_out_and_not_extended() {
     })
     .await;
     assert!(!entry.eligible(), "out of rotation");
-    // The record keeps its accept window: no extend, so the liar's
-    // slot frees in hours, not days.
+    // The record keeps its first life: no extend, so the liar's
+    // slot frees when that ends.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(fleet.chain.transactions().len(), writes_before);
 }

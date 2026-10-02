@@ -98,10 +98,11 @@ each step leaves a line in `docker compose logs lb`:
    `[integrity]` is configured, and is in rotation. From here its
    agreement is extended at every refresh while it stays eligible.
 
-The operator has `accept_window` from the acceptance to get to step
-3. If the probes have not passed by then, the log says `admission:
-the probes did not pass within the accept window`, the agreement
-expires on its own, and the operator posts a new offer. A node found
+The operator has the record's first lifetime, `offer_max_lifetime`
+from the acceptance, to get to step 3. If the probes have not passed
+by then, the log says `admission: the probes did not pass before the
+agreement record expired`. The agreement and its offer are both gone
+by then, and the operator posts a new offer. A node found
 serving wrong data at admission is logged as such and its agreement is
 not extended either.
 

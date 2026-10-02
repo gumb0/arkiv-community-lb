@@ -84,9 +84,12 @@ id, and then the agreement's first **[counter
 record](ENTITIES.md#counter-record)**, at zero, pointing at it. The
 agreement record carries the rate the agreement was accepted at, the
 tunnel port assigned to this provider, and the key of the offer it
-accepted. It is created with a short lifetime, two hours, called the
-accept window. If the second write fails, the agreement stands and the
-LB opens its counter record at the next daily write.
+accepted. Its first lifetime is two days, the longest an offer can
+have left to live when the LB accepts it (`offer_max_lifetime`): the
+provider has that long to connect. The record so ends at or after its
+offer, and a provider that never connects is accepted once, not again
+from the same offer. If the second write fails, the agreement stands
+and the LB opens its counter record at the next daily write.
 
 The LB accepts one offer at a time, oldest first, up to its free
 slots, and gives each provider the lowest tunnel port not held by a
@@ -143,19 +146,20 @@ records of the providers that are healthy at that moment**, setting each
 record's expiry to three days from then. Nothing else decides who stays.
 
 - A provider that was accepted but never connected is never healthy, so
-  its record is never refreshed and expires at the end of the accept
-  window.
+  its record is never refreshed and expires at the end of its first
+  lifetime, with its offer already gone.
 - A provider whose tunnel is down, or whose node stopped answering, is
   not healthy, so its record expires three days after its last refresh.
 - A provider that was unhealthy for a moment misses one refresh and is
   refreshed the next hour.
 - A provider whose admitted tunnel has just passed its probes is
-  extended at that moment, not at the next hourly refresh: its record
-  lived only for the accept window until then, and the hourly timer is
-  not aligned to it. Only a record still on its accept window, so a
-  tunnel that reconnects after the extend is no write; and only after
-  the integrity check at admission, so a provider found serving wrong
-  data keeps its accept window and nothing more.
+  extended at that moment, not at the next hourly refresh: the hourly
+  timer is not aligned to the record's first lifetime, and a provider
+  that connects near the end of it would expire first. Only a record
+  that was never extended, so a tunnel that reconnects after the
+  extend is no write; and only after the integrity check at admission,
+  so a provider found serving wrong data keeps its first lifetime and
+  nothing more.
 - If the LB itself is down, nothing is refreshed, and every record
   survives up to three days. A restart of the LB never costs a provider
   its agreement.

@@ -194,8 +194,6 @@ pub struct Marketplace {
     pub remote_port_start: u16,
     #[serde(with = "humantime_serde", default = "default_discovery_interval")]
     pub discovery_interval: Duration,
-    #[serde(with = "humantime_serde", default = "default_accept_window")]
-    pub accept_window: Duration,
     #[serde(with = "humantime_serde", default = "default_refresh_interval")]
     pub refresh_interval: Duration,
     #[serde(with = "humantime_serde", default = "default_agreement_life")]
@@ -229,9 +227,6 @@ fn default_remote_port_start() -> u16 {
 }
 fn default_discovery_interval() -> Duration {
     Duration::from_secs(5 * 60)
-}
-fn default_accept_window() -> Duration {
-    Duration::from_secs(2 * 60 * 60)
 }
 fn default_refresh_interval() -> Duration {
     Duration::from_secs(60 * 60)
@@ -418,7 +413,6 @@ impl Marketplace {
         validate_http_url("marketplace.writer_url", &self.writer_url)?;
         for (name, duration) in [
             ("discovery_interval", self.discovery_interval),
-            ("accept_window", self.accept_window),
             ("refresh_interval", self.refresh_interval),
             ("agreement_life", self.agreement_life),
             ("listing_life", self.listing_life),
@@ -437,7 +431,6 @@ impl Marketplace {
         // whole blocks at two seconds each; anything else is refused
         // at the write, better refused here.
         for (name, duration) in [
-            ("accept_window", self.accept_window),
             ("agreement_life", self.agreement_life),
             ("listing_life", self.listing_life),
             ("counter_record_life", self.counter_record_life),
@@ -450,19 +443,12 @@ impl Marketplace {
                 )));
             }
         }
-        // A record still on its accept window is told from an extended
-        // one by its life alone.
-        if self.accept_window >= self.agreement_life {
-            return Err(ConfigError::Invalid(format!(
-                "marketplace.accept_window ({:?}) must be shorter than agreement_life ({:?}): \
-                 an accepted record is told from an extended one by its life",
-                self.accept_window, self.agreement_life
-            )));
-        }
         // An agreement that expired while its offer is still alive
         // would be accepted again from that offer. An offer is only
         // accepted when it expires within `offer_max_lifetime`, so a
-        // refreshed agreement has to live longer than that.
+        // refreshed agreement has to live longer than that. A newly
+        // accepted record lives `offer_max_lifetime` too, and is told
+        // from a refreshed one by that shorter life.
         if self.offer_max_lifetime >= self.agreement_life {
             return Err(ConfigError::Invalid(format!(
                 "marketplace.offer_max_lifetime ({:?}) must be shorter than agreement_life \
@@ -625,7 +611,6 @@ mod tests {
         assert_eq!(marketplace.max_providers, 100);
         assert!(marketplace.remote_ports().eq(20000..=20099));
         assert_eq!(marketplace.discovery_interval, Duration::from_secs(300));
-        assert_eq!(marketplace.accept_window, Duration::from_secs(7200));
         assert_eq!(marketplace.refresh_interval, Duration::from_secs(3600));
         assert_eq!(marketplace.agreement_life, Duration::from_secs(259_200));
         assert_eq!(marketplace.listing_life, Duration::from_secs(2_592_000));
@@ -660,7 +645,7 @@ mod tests {
         let config = parse(&format!(
             "{MARKETPLACE}writer_url = \"http://10.0.0.2:8560\"\n\
              max_providers = 10\nremote_port_start = 30000\n\
-             discovery_interval = \"1m\"\naccept_window = \"30m\"\nagreement_life = \"1d\"\n\
+             discovery_interval = \"1m\"\nagreement_life = \"1d\"\n\
              offer_max_lifetime = \"12h\"\nlisting_life = \"7d\"\ngas_warn_below = \"1.5\"\n"
         ))
         .expect("valid");
@@ -669,7 +654,7 @@ mod tests {
         assert_eq!(marketplace.max_providers, 10);
         assert!(marketplace.remote_ports().eq(30000..=30009));
         assert_eq!(marketplace.discovery_interval, Duration::from_secs(60));
-        assert_eq!(marketplace.accept_window, Duration::from_secs(1800));
+        assert_eq!(marketplace.offer_max_lifetime, Duration::from_secs(43_200));
         assert_eq!(marketplace.agreement_life, Duration::from_secs(86_400));
         assert_eq!(marketplace.listing_life, Duration::from_secs(604_800));
         assert_eq!(
@@ -706,7 +691,6 @@ mod tests {
     fn marketplace_zero_durations_are_refused() {
         for name in [
             "discovery_interval",
-            "accept_window",
             "refresh_interval",
             "agreement_life",
             "listing_life",
@@ -723,7 +707,6 @@ mod tests {
     #[test]
     fn lifetimes_must_be_even_seconds() {
         for name in [
-            "accept_window",
             "agreement_life",
             "listing_life",
             "counter_record_life",
@@ -737,13 +720,12 @@ mod tests {
             }
             // A four-second agreement life needs everything it is
             // checked against to fit it: a flush, a refresh that comes
-            // sooner, a poll sooner than that, and an accept window and
-            // an offer lifetime shorter still.
+            // sooner, a poll sooner than that, and an offer lifetime
+            // shorter still.
             let rest: String = [
                 ("flush_interval", "2s"),
                 ("refresh_interval", "2s"),
                 ("discovery_interval", "1s"),
-                ("accept_window", "2s"),
                 ("offer_max_lifetime", "2s"),
             ]
             .iter()
@@ -786,19 +768,18 @@ mod tests {
     #[test]
     fn a_refreshed_life_outlasts_the_refresh_interval() {
         for name in ["agreement_life", "listing_life"] {
-            // The accept window, the offer lifetime and the flush
-            // interval are set to fit an agreement life this short, so
-            // none of them is what refuses.
+            // The offer lifetime and the flush interval are set to fit
+            // an agreement life this short, so neither is what refuses.
             let error = parse(&format!(
                 "{MARKETPLACE}{name} = \"1h\"\nrefresh_interval = \"1h\"\n\
-                 accept_window = \"30m\"\noffer_max_lifetime = \"30m\"\nflush_interval = \"1h\"\n"
+                 offer_max_lifetime = \"30m\"\nflush_interval = \"1h\"\n"
             ))
             .expect_err("must refuse");
             assert!(error.to_string().contains(name), "{error}");
             assert!(error.to_string().contains("refresh_interval"), "{error}");
             parse(&format!(
                 "{MARKETPLACE}{name} = \"2h\"\nrefresh_interval = \"1h\"\n\
-                 accept_window = \"30m\"\noffer_max_lifetime = \"30m\"\nflush_interval = \"1h\"\n"
+                 offer_max_lifetime = \"30m\"\nflush_interval = \"1h\"\n"
             ))
             .expect("longer is fine");
         }
@@ -816,21 +797,6 @@ mod tests {
             "{MARKETPLACE}refresh_interval = \"2s\"\ndiscovery_interval = \"1s\"\n"
         ))
         .expect("one block is fine");
-    }
-
-    #[test]
-    fn the_accept_window_is_shorter_than_the_agreement_life() {
-        let error = parse(&format!(
-            "{MARKETPLACE}accept_window = \"1d\"\nagreement_life = \"1d\"\n"
-        ))
-        .expect_err("must refuse");
-        assert!(error.to_string().contains("accept_window"), "{error}");
-        assert!(error.to_string().contains("agreement_life"), "{error}");
-        parse(&format!(
-            "{MARKETPLACE}accept_window = \"2h\"\nagreement_life = \"1d\"\n\
-             offer_max_lifetime = \"12h\"\n"
-        ))
-        .expect("shorter is fine");
     }
 
     #[test]

@@ -93,12 +93,6 @@ remote_port_start = 20000
 # Must be shorter than refresh_interval: the same look reads the LB's
 # own records back, which is how a refresh knows which ones still live.
 discovery_interval = "5m"
-# An accepted provider's first lifetime: the time it has to connect
-# its tunnel before its slot frees up again. Shorter than
-# agreement_life: a record still on this window is told from an
-# extended one by its life.
-# An even number of seconds: lifetimes are whole blocks of two seconds.
-accept_window = "2h"
 # How often the listing and every eligible provider's agreement record
 # are extended, in one transaction. Shorter than agreement_life and
 # listing_life, which each refresh sets anew, and at least two
@@ -126,8 +120,14 @@ counter_record_life = "180d"
 # Spam protection. Offers expiring further out than this are ignored,
 # so nobody can post a page of long-lived offers once and crowd real
 # ones out of discovery for good; re-posting costs gas every time.
+# It is also the first lifetime of an accepted provider's agreement
+# record: the time the provider has to connect its tunnel and pass its
+# probes before its slot frees up again. The record so ends at or
+# after its offer, and one offer is accepted once.
 # Shorter than agreement_life: an agreement has to outlive the offer
-# it answers, or the offer is accepted again when the agreement expires.
+# it answers, or the offer is accepted again when the agreement
+# expires; and a record on its first lifetime is told from a refreshed
+# one by its shorter life.
 # An even number of seconds: lifetimes are whole blocks of two seconds.
 offer_max_lifetime = "2d"
 # How long each agreement's counter record covers before it is closed

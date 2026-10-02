@@ -242,7 +242,6 @@ async fn service_on(
         max_providers: 10,
         remote_port_start: 20000,
         discovery_interval: Duration::from_secs(300),
-        accept_window: Duration::from_secs(7200),
         refresh_interval: Duration::from_secs(3600),
         agreement_life: Duration::from_secs(3 * 24 * 3600),
         listing_life: Duration::from_secs(30 * 24 * 3600),
@@ -419,7 +418,7 @@ async fn a_newcomer_serving_wrong_data_is_out_and_kept_on_its_window() {
     assert_eq!(
         chain.entity(key).expect("stored").expires_at,
         before,
-        "not extended: the liar keeps its accept window and nothing more"
+        "not extended: the liar keeps its first life and nothing more"
     );
     service.shutdown().await;
 }

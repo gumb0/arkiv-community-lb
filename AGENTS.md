@@ -108,9 +108,11 @@ first-class concern, not an add-on.
   own per admitted tunnel: a provider whose admitted tunnel has just
   passed its probes, and the integrity check that follows when the
   checks are configured, gets its record extended at once, since the
-  record lives only for the accept window until then; only a record
-  still on that window, told by its life, so a tunnel that reconnects
-  after the extend is no write, and not a provider found serving wrong
+  refresh is not aligned to the record's first lifetime
+  (`offer_max_lifetime` from the acceptance, so the record ends at or
+  after its offer and one offer is accepted once); only a record
+  never extended, told by its life, so a tunnel that reconnects after
+  the extend is no write, and not a provider found serving wrong
   data. The
   tunnel server's admission callback is a route on the admin listener
   that reads the agent's agreements (`docs/TUNNELING.md`). The counts

@@ -124,7 +124,10 @@ first-class concern, not an add-on.
   records back before it writes, since a batch is one transaction and
   one key that has gone fails every count in it. A record whose
   period is over is closed, and a second batch opens its successor,
-  which is only right once the close has landed. A deliberate stop
+  which is only right once the close has landed. An error from a
+  write does not say it did not land: a record memory held that is no
+  longer open is read by its key, and one found closed takes its
+  count off the entry. A deliberate stop
   writes the counts alone, before the agent's task returns.
 - Providers behind NAT reach the LB through **frp tunnels**; a tunneled
   provider is a plain `http://127.0.0.1:<port>` URL to the Proxy. The choice,

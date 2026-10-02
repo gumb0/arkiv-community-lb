@@ -233,6 +233,13 @@ LB counts into, and the next daily write deletes the younger. Nothing
 is lost with it: a count is only ever written into the record the LB
 counts into.
 
+A closing write can land without the LB learning it, when its answer
+is lost. The LB finds out before its next write: the record it counted
+into is no longer among the open ones, so it reads that record by its
+key. When the record is closed, the period's count leaves the LB's
+counter, as it does after an answered close, and the next daily write
+creates the next record. The period is written once.
+
 An open record whose agreement the LB no longer has is closed at the
 next daily write with the count it holds, or deleted when it never
 counted. That is a record whose closing write did not land, or one

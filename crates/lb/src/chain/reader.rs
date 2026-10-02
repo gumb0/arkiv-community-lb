@@ -77,6 +77,12 @@ impl Query {
         self
     }
 
+    /// Narrows the query to the one entity with this key.
+    pub fn key(mut self, key: EntityKey) -> Self {
+        self.conditions.push(Condition::Key(key));
+        self
+    }
+
     pub fn attr_addr(self, name: &'static str, value: Address) -> Self {
         self.attribute(name, AttributeValue::Addr(value))
     }

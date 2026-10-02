@@ -102,12 +102,14 @@ struct Ended {
     served: u64,
 }
 
+/// Open counter records, one per agreement, by agreement key.
+type CountersByAgreement = HashMap<EntityKey, Stored<CounterRecord>>;
+
 /// What the counter reconcile read: the record that counts for each
 /// live agreement, and the ones that count for nobody.
-#[derive(Default)]
 struct Counters {
-    /// By agreement key, the open record the LB counts into.
-    open: HashMap<EntityKey, Stored<CounterRecord>>,
+    /// The open record the LB counts into.
+    open: CountersByAgreement,
     /// An agreement's younger open records: only the oldest counts,
     /// and the flush deletes these.
     duplicates: Vec<EntityKey>,
@@ -152,13 +154,7 @@ impl<R: ChainReader + 'static, W: ChainWriter + 'static> Agreements for Agent<R,
     }
 
     fn admitted(self: Arc<Self>, agreement: &Stored<Agreement>) {
-        let Some(provider) = self
-            .pool
-            .snapshot()
-            .iter()
-            .find(|provider| provider.id == marketplace_id(agreement.record.provider))
-            .cloned()
-        else {
+        let Some(provider) = self.provider_entry(&agreement.record) else {
             return;
         };
         // A reconnect is a probe due at once, as the first admission
@@ -266,6 +262,11 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
 
     pub fn listing_key(&self) -> EntityKey {
         self.listing_key
+    }
+
+    /// The pool entry of an agreement's provider, while it has one.
+    fn provider_entry(&self, agreement: &Agreement) -> Option<Arc<Provider>> {
+        self.pool.get(&marketplace_id(agreement.provider))
     }
 
     pub fn agreement(&self, key: EntityKey) -> Option<Stored<Agreement>> {
@@ -644,18 +645,29 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         adopted
     }
 
-    /// Memory against the chain again, for the counter records: every
-    /// open record of this LB, one page, matched to the agreements
-    /// memory holds. The same read at start, at every poll and before
-    /// every flush, so an agreement adopted at a poll finds its record
-    /// the same way a restart does, and a flush writes against what
-    /// the chain has just shown. What the chain does not have is not
-    /// remembered, and the flush opens, closes or deletes what this
-    /// leaves: a record for an agreement without one, a younger
-    /// duplicate, a record whose agreement is gone.
-    ///
-    /// Returns what it read, for the flush to write against.
+    /// Matches this LB's open counter records on the chain to the
+    /// agreements memory holds. Returns what it read, for the flush to
+    /// write against.
     async fn reconcile_counters(&self, head: u64) -> Result<Counters, ReconcileError> {
+        let records = self.read_open_counters(head).await?;
+        let (oldest, duplicates) = Self::oldest_per_agreement(records);
+        // A record memory held that is no longer open may have been
+        // closed by a write whose answer was lost.
+        self.forget_closed_counters(&oldest).await?;
+        let (open, strays) = self.match_to_agreements(oldest);
+        Ok(Counters {
+            open,
+            duplicates,
+            strays,
+        })
+    }
+
+    /// This LB's open counter records. Count then page: a full page
+    /// says nothing about what lies beyond it.
+    async fn read_open_counters(
+        &self,
+        head: u64,
+    ) -> Result<Vec<Stored<CounterRecord>>, ReconcileError> {
         let query = Query::kind(KIND_COUNTER)
             .creator(self.identity.address)
             .attr_str("state", "open")
@@ -685,52 +697,139 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 }
             }
         }
+        Ok(records)
+    }
+
+    /// Splits open counter records into the one each agreement counts
+    /// into, by agreement key, and the keys of the rest.
+    fn oldest_per_agreement(
+        mut records: Vec<Stored<CounterRecord>>,
+    ) -> (CountersByAgreement, Vec<EntityKey>) {
         // Oldest first, so an agreement's first record is the one it
-        // counts into and any other is a younger duplicate. Which is
-        // which is decided here, so what reads this has one record per
-        // agreement. The duplicate is not logged here, since this runs
-        // every poll and the flush says so when it deletes it.
+        // counts into and any other is a younger duplicate.
         records.sort_by_key(creation);
-        let mut counters = Counters::default();
-        let mut by_agreement: HashMap<EntityKey, Stored<CounterRecord>> = HashMap::new();
+        let mut oldest = HashMap::new();
+        let mut duplicates = Vec::new();
         for stored in records {
-            match by_agreement.entry(stored.record.agreement) {
+            match oldest.entry(stored.record.agreement) {
                 Entry::Vacant(slot) => {
                     slot.insert(stored);
                 }
-                Entry::Occupied(_) => counters.duplicates.push(stored.key),
+                // Not logged: this runs every poll, and the flush says so
+                // when it deletes the duplicate.
+                Entry::Occupied(_) => duplicates.push(stored.key),
+            }
+        }
+        (oldest, duplicates)
+    }
+
+    /// Finds the records memory held that are no longer among the open
+    /// ones and are closed on the chain: their counts leave the
+    /// entries, and memory forgets them.
+    async fn forget_closed_counters(
+        &self,
+        open: &CountersByAgreement,
+    ) -> Result<(), ReconcileError> {
+        let missing: Vec<(EntityKey, EntityKey)> = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(key, _)| !open.contains_key(*key))
+            .filter_map(|(key, live)| Some((*key, live.counter.as_ref()?.key)))
+            .collect();
+        // Every read before memory changes, so one that fails changes
+        // nothing.
+        let mut closed = Vec::new();
+        for (agreement, counter) in missing {
+            if let Some(count) = self.closed_count(counter).await? {
+                closed.push((agreement, count));
             }
         }
         let mut known = self
             .agreements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for (key, live) in known.iter_mut() {
-            let Some(stored) = by_agreement.remove(key) else {
-                // Only a record memory held and the chain no longer has
-                // is worth a line: an agreement that never had one is
-                // waiting for the flush, which says so when it opens it.
-                if live.counter.is_some() {
-                    tracing::warn!(agreement = %key, "the open counter record is gone from the chain: the next flush opens one");
-                }
-                live.counter = None;
+        for (agreement, count) in closed {
+            let Some(live) = known.get_mut(&agreement) else {
                 continue;
             };
-            // The count the record carries is this period's so far, so
-            // the entry counts on from it. Only when the record was
-            // unknown: counting it in twice would bill it twice.
-            if live.counter.is_none()
-                && let Some(entry) = self
-                    .pool
-                    .get(&marketplace_id(live.agreement.record.provider))
-            {
-                entry.seed_served(stored.record.count);
+            tracing::warn!(%agreement, count, "the counter record was closed by a write whose answer was lost: the next flush opens its successor");
+            // The period is written, so its count leaves the entry, as
+            // it does when the close is answered.
+            if let Some(entry) = self.provider_entry(&live.agreement.record) {
+                entry.subtract_served(count);
             }
-            live.counter = Some(open_counter(&stored));
-            counters.open.insert(*key, stored);
+            live.counter = None;
         }
-        counters.strays = by_agreement.into_values().collect();
-        Ok(counters)
+        Ok(())
+    }
+
+    /// Gives each agreement in memory the open record it counts into.
+    /// Returns those records by agreement key, and the records no
+    /// agreement in memory took.
+    fn match_to_agreements(
+        &self,
+        mut records: CountersByAgreement,
+    ) -> (CountersByAgreement, Vec<Stored<CounterRecord>>) {
+        let mut open = HashMap::new();
+        let mut known = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (key, live) in known.iter_mut() {
+            let found = records.remove(key);
+            match (&live.counter, &found) {
+                // New to memory: the entry counts on from the count the
+                // record carries, which is this period's so far. Only
+                // then: counting it in twice would bill it twice.
+                (None, Some(stored)) => {
+                    if let Some(entry) = self.provider_entry(&live.agreement.record) {
+                        entry.seed_served(stored.record.count);
+                    }
+                }
+                // Memory held one and the chain no longer has it. An
+                // agreement that never had one is not worth a line: the
+                // flush says so when it opens it.
+                (Some(_), None) => {
+                    tracing::warn!(agreement = %key, "the open counter record is gone from the chain: the next flush opens one");
+                }
+                _ => {}
+            }
+            // What the chain shows is what memory holds, and nothing
+            // when the chain shows none.
+            live.counter = found.as_ref().map(open_counter);
+            if let Some(stored) = found {
+                open.insert(*key, stored);
+            }
+        }
+        (open, records.into_values().collect())
+    }
+
+    /// The count a counter record was closed with, `None` when it is
+    /// not closed or no longer on the chain.
+    async fn closed_count(&self, counter: EntityKey) -> Result<Option<u64>, ReconcileError> {
+        let query = Query::kind(KIND_COUNTER)
+            .creator(self.identity.address)
+            .key(counter);
+        let page = self
+            .reader
+            .query(&query)
+            .await
+            .map_err(ReconcileError::Chain)?;
+        let Some(entity) = page.entities.first() else {
+            return Ok(None);
+        };
+        match Stored::<CounterRecord>::decode(entity) {
+            Ok(stored) if stored.record.state == CounterState::Closed => {
+                Ok(Some(stored.record.count))
+            }
+            Ok(_) => Ok(None),
+            Err(error) => {
+                tracing::warn!(key = %counter, %error, "a counter record does not decode: skipped");
+                Ok(None)
+            }
+        }
     }
 
     /// The offers against this LB's listing, and the acceptances they
@@ -1183,7 +1282,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             // The pool entry is the count. Without it there is no count
             // to write, and zero is not an absence here: it would patch
             // whatever the record holds down to zero.
-            let Some(entry) = self.pool.get(&marketplace_id(record.provider)) else {
+            let Some(entry) = self.provider_entry(record) else {
                 tracing::error!(
                     agreement = %key,
                     provider = %record.provider,
@@ -1257,7 +1356,8 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
 
     /// The second batch: a successor for every close that landed. A
     /// close that did not land changes nothing and is made again at
-    /// the next flush.
+    /// the next flush; one that landed without its answer is found
+    /// closed by the next counter reconcile.
     fn end_periods(&self, closing: &[Closing], landed: &Landed, head: u64) -> Batch {
         let mut successors = Batch::new();
         let mut known = self
@@ -1275,7 +1375,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             // The period is written, so its count is no longer the
             // entry's. Subtracted, not cleared: a request served while
             // the write was in flight belongs to the next period.
-            if let Some(entry) = self.pool.get(&marketplace_id(record.provider)) {
+            if let Some(entry) = self.provider_entry(record) {
                 entry.subtract_served(close.count);
             }
             live.counter = None;
@@ -1316,7 +1416,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                     tracing::error!(
                         %error,
                         operations = sent.batch.operations().len(),
-                        "a flush batch did not land: its counts are written at the next flush"
+                        "a flush batch was not answered as landed: the next flush writes against what the chain shows"
                     );
                 }
             }
@@ -1329,8 +1429,8 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
 /// names. A batch is one transaction, so every patch in it applied,
 /// and an answer naming fewer is the node or the sidecar changing
 /// shape under us. Said out loud, because what follows from it is
-/// silent: a close taken for lost leaves its count on the provider's
-/// entry, and the period is written and paid a second time.
+/// silent: a close taken for lost gets no successor until the next
+/// counter reconcile finds the record closed, at every period's end.
 fn warn_unnamed_patches(batch: &Batch, result: &BatchResult) {
     let patches = batch
         .operations()
@@ -1341,7 +1441,7 @@ fn warn_unnamed_patches(batch: &Batch, result: &BatchResult) {
         tracing::warn!(
             named = result.patched_entities.len(),
             patches,
-            "the answer to a flush batch does not name every record it patched: a settlement period closed in it may be counted again"
+            "the answer to a flush batch does not name every record it patched: a settlement period closed in it gets its successor a flush late"
         );
     }
 }

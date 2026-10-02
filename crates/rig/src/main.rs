@@ -968,10 +968,19 @@ async fn offer_accepted() {
     assert_eq!(proxy, serde_json::json!({ "unchange": true }), "proxy");
     println!("rig: the token the tooling signed is admitted");
 
-    // The same body with the token's last byte changed is another
+    // The same body with the token's last byte flipped is another
     // signer's; the same token for another port is not the agreement.
+    // That byte says which of two keys the signature recovers to, as
+    // 27 or 28: the other value is a well-formed signature by a key
+    // that is not the provider's. Any other change to it may be read
+    // as the same value.
     let mut wrong = token.clone();
-    wrong.replace_range(wrong.len() - 2.., "00");
+    let flipped = match &token[token.len() - 2..] {
+        "1b" => "1c",
+        "1c" => "1b",
+        other => panic!("a recovery byte of 27 or 28, not {other}"),
+    };
+    wrong.replace_range(wrong.len() - 2.., flipped);
     let refused = admission("NewProxy", &new_proxy_body(&agreement, &wrong, port)).await;
     assert_eq!(refused["reject"], true, "{refused}");
     assert!(

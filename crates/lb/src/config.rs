@@ -470,6 +470,29 @@ impl Marketplace {
                 self.discovery_interval, self.refresh_interval
             )));
         }
+        // A refresh sets a record's life anew, and the next refresh has
+        // to come before that life runs out.
+        for (name, life) in [
+            ("agreement_life", self.agreement_life),
+            ("listing_life", self.listing_life),
+        ] {
+            if life <= self.refresh_interval {
+                return Err(ConfigError::Invalid(format!(
+                    "marketplace.{name} ({life:?}) must be longer than refresh_interval ({:?}): \
+                     a record refreshed to this life expires before the next refresh",
+                    self.refresh_interval
+                )));
+            }
+        }
+        // The chain refuses an extend that does not move an expiry
+        // later, which two refreshes landing in one block would ask for.
+        if self.refresh_interval < Duration::from_secs(2) {
+            return Err(ConfigError::Invalid(format!(
+                "marketplace.refresh_interval ({:?}) must be at least two seconds, one block: \
+                 two refreshes in one block ask for the same expiry, which is refused",
+                self.refresh_interval
+            )));
+        }
         // A flush less often than the agreements live could lose a
         // whole agreement's count.
         if self.flush_interval > self.agreement_life {
@@ -700,15 +723,17 @@ mod tests {
                 assert!(error.to_string().contains(name), "{odd}: {error}");
                 assert!(error.to_string().contains("even"), "{odd}: {error}");
             }
-            // A four-second agreement life needs a flush that fits it
-            // and an accept window shorter still.
+            // A four-second agreement life needs a flush that fits it,
+            // a refresh that comes sooner, a poll sooner than that, and
+            // an accept window shorter still.
             let window = if name == "accept_window" {
                 ""
             } else {
                 "accept_window = \"2s\"\n"
             };
             parse(&format!(
-                "{MARKETPLACE}{name} = \"4s\"\nflush_interval = \"2s\"\n{window}"
+                "{MARKETPLACE}{name} = \"4s\"\nflush_interval = \"2s\"\n\
+                 refresh_interval = \"2s\"\ndiscovery_interval = \"1s\"\n{window}"
             ))
             .expect("even seconds are fine");
         }
@@ -741,6 +766,40 @@ mod tests {
             "{MARKETPLACE}discovery_interval = \"59m\"\nrefresh_interval = \"1h\"\n"
         ))
         .expect("shorter is fine");
+    }
+
+    #[test]
+    fn a_refreshed_life_outlasts_the_refresh_interval() {
+        for name in ["agreement_life", "listing_life"] {
+            // The accept window and the flush interval are set to fit
+            // an agreement life this short, so neither is what refuses.
+            let error = parse(&format!(
+                "{MARKETPLACE}{name} = \"1h\"\nrefresh_interval = \"1h\"\n\
+                 accept_window = \"30m\"\nflush_interval = \"1h\"\n"
+            ))
+            .expect_err("must refuse");
+            assert!(error.to_string().contains(name), "{error}");
+            assert!(error.to_string().contains("refresh_interval"), "{error}");
+            parse(&format!(
+                "{MARKETPLACE}{name} = \"2h\"\nrefresh_interval = \"1h\"\n\
+                 accept_window = \"30m\"\nflush_interval = \"1h\"\n"
+            ))
+            .expect("longer is fine");
+        }
+    }
+
+    #[test]
+    fn the_refresh_interval_is_at_least_a_block() {
+        let error = parse(&format!(
+            "{MARKETPLACE}refresh_interval = \"1s\"\ndiscovery_interval = \"500ms\"\n"
+        ))
+        .expect_err("must refuse");
+        assert!(error.to_string().contains("refresh_interval"), "{error}");
+        assert!(error.to_string().contains("two seconds"), "{error}");
+        parse(&format!(
+            "{MARKETPLACE}refresh_interval = \"2s\"\ndiscovery_interval = \"1s\"\n"
+        ))
+        .expect("one block is fine");
     }
 
     #[test]

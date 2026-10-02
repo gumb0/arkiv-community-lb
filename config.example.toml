@@ -100,7 +100,9 @@ discovery_interval = "5m"
 # An even number of seconds: lifetimes are whole blocks of two seconds.
 accept_window = "2h"
 # How often the listing and every eligible provider's agreement record
-# are extended, in one transaction.
+# are extended, in one transaction. Shorter than agreement_life and
+# listing_life, which each refresh sets anew, and at least two
+# seconds, one block.
 refresh_interval = "1h"
 # What each refresh extends a record to, from now: a provider stays
 # under agreement through an LB outage this long. If a provider

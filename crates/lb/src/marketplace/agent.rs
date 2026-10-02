@@ -34,7 +34,7 @@ use crate::{
     config,
     integrity::IntegrityCheck,
     marketplace::admission::Agreements,
-    pool::{Pool, Provider, marketplace_id},
+    pool::{Pool, Provider},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -73,13 +73,16 @@ pub struct OpenCounter {
 /// The live agreements, by agreement key.
 type KnownAgreements = HashMap<EntityKey, Live>;
 
-/// What the agent knows about one live agreement: its record, and the
-/// open counter record that counts for it. `counter` is `None` while
-/// the agreement has none, after a write that did not land: the flush
-/// opens one.
+/// What the agent knows about one live agreement: its record, its
+/// provider's pool entry, and the open counter record that counts for
+/// it. `counter` is `None` while the agreement has none, after a write
+/// that did not land: the flush opens one.
 #[derive(Debug, Clone)]
 struct Live {
     agreement: Stored<Agreement>,
+    /// The provider's pool entry, in the pool for as long as the
+    /// agreement is in memory.
+    provider: Arc<Provider>,
     counter: Option<OpenCounter>,
 }
 
@@ -154,7 +157,7 @@ impl<R: ChainReader + 'static, W: ChainWriter + 'static> Agreements for Agent<R,
     }
 
     fn admitted(self: Arc<Self>, agreement: &Stored<Agreement>) {
-        let Some(provider) = self.provider_entry(&agreement.record) else {
+        let Some(provider) = self.provider_entry(agreement.key) else {
             return;
         };
         // A reconnect is a probe due at once, as the first admission
@@ -264,9 +267,13 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         self.listing_key
     }
 
-    /// The pool entry of an agreement's provider, while it has one.
-    fn provider_entry(&self, agreement: &Agreement) -> Option<Arc<Provider>> {
-        self.pool.get(&marketplace_id(agreement.provider))
+    /// The pool entry of a live agreement's provider.
+    fn provider_entry(&self, agreement: EntityKey) -> Option<Arc<Provider>> {
+        self.agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&agreement)
+            .map(|live| live.provider.clone())
     }
 
     pub fn agreement(&self, key: EntityKey) -> Option<Stored<Agreement>> {
@@ -534,24 +541,26 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             let Some(over) = known.remove(&key) else {
                 continue;
             };
-            let entry = self
-                .pool
-                .remove(&marketplace_id(over.agreement.record.provider));
+            self.pool.remove(&over.provider.id);
             tracing::info!(
                 provider = %over.agreement.record.provider,
                 agreement = %key,
                 "agreement over: its record is gone from the chain"
             );
-            // Nothing counts for it any more, and what the entry holds
-            // is the whole period, the requests since the last flush
-            // included. Without either there is nothing to write.
-            let (Some(counter), Some(entry)) = (over.counter, entry) else {
+            // Without a counter record there is nothing to write.
+            let Some(counter) = over.counter else {
                 continue;
             };
+            // Nothing counts for it any more, and what the entry holds
+            // is the whole period, the requests since the last flush
+            // included.
             ended.push(Ended {
                 agreement: over.agreement,
                 counter,
-                served: entry.served.load(std::sync::atomic::Ordering::Relaxed),
+                served: over
+                    .provider
+                    .served
+                    .load(std::sync::atomic::Ordering::Relaxed),
             });
         }
         ended
@@ -627,7 +636,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 );
                 continue;
             }
-            self.pool.add(Provider::from_marketplace(
+            let provider = self.pool.add(Provider::from_marketplace(
                 stored.record.provider,
                 key,
                 stored.record.remote_port,
@@ -637,6 +646,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 key,
                 Live {
                     agreement: stored,
+                    provider,
                     counter: None,
                 },
             );
@@ -757,9 +767,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             tracing::warn!(%agreement, count, "the counter record was closed by a write whose answer was lost: the next flush opens its successor");
             // The period is written, so its count leaves the entry, as
             // it does when the close is answered.
-            if let Some(entry) = self.provider_entry(&live.agreement.record) {
-                entry.subtract_served(count);
-            }
+            live.provider.subtract_served(count);
             live.counter = None;
         }
         Ok(())
@@ -783,11 +791,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 // New to memory: the entry counts on from the count the
                 // record carries, which is this period's so far. Only
                 // then: counting it in twice would bill it twice.
-                (None, Some(stored)) => {
-                    if let Some(entry) = self.provider_entry(&live.agreement.record) {
-                        entry.seed_served(stored.record.count);
-                    }
-                }
+                (None, Some(stored)) => live.provider.seed_served(stored.record.count),
                 // Memory held one and the chain no longer has it. An
                 // agreement that never had one is not worth a line: the
                 // flush says so when it opens it.
@@ -996,7 +1000,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             expires_at: created.expires_at,
             record: agreement,
         };
-        self.pool.add(Provider::from_marketplace(
+        let provider = self.pool.add(Provider::from_marketplace(
             offer.creator,
             created.entity_key,
             port,
@@ -1008,6 +1012,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 created.entity_key,
                 Live {
                     agreement: stored,
+                    provider,
                     counter: None,
                 },
             );
@@ -1103,13 +1108,6 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         // provider is skipped, so its record expires `agreement_life`
         // after its last refresh, or at the accept window if it never
         // passed a probe.
-        let eligible: HashSet<String> = self
-            .pool
-            .snapshot()
-            .iter()
-            .filter(|provider| provider.eligible())
-            .map(|provider| provider.id.clone())
-            .collect();
         let mut skipped = 0;
         {
             let known = self
@@ -1118,7 +1116,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             for (key, live) in known.iter() {
                 let agreement = &live.agreement;
-                if !eligible.contains(&marketplace_id(agreement.record.provider)) {
+                if !live.provider.eligible() {
                     skipped += 1;
                     continue;
                 }
@@ -1279,18 +1277,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (key, live) in known.iter() {
             let record = &live.agreement.record;
-            // The pool entry is the count. Without it there is no count
-            // to write, and zero is not an absence here: it would patch
-            // whatever the record holds down to zero.
-            let Some(entry) = self.provider_entry(record) else {
-                tracing::error!(
-                    agreement = %key,
-                    provider = %record.provider,
-                    "an agreement whose provider is not in the pool: nothing is written for it"
-                );
-                continue;
-            };
-            let served = entry.served.load(std::sync::atomic::Ordering::Relaxed);
+            let served = live
+                .provider
+                .served
+                .load(std::sync::atomic::Ordering::Relaxed);
             match counters.open.get(key) {
                 // A period is over once the head has passed the
                 // record's opening by one. A record that counted
@@ -1375,9 +1365,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             // The period is written, so its count is no longer the
             // entry's. Subtracted, not cleared: a request served while
             // the write was in flight belongs to the next period.
-            if let Some(entry) = self.provider_entry(record) {
-                entry.subtract_served(close.count);
-            }
+            live.provider.subtract_served(close.count);
             live.counter = None;
             successors.push(Operation::Create(Create::new(
                 CounterRecord {

@@ -139,6 +139,10 @@ pub struct Agent<R, W> {
     pool: Arc<Pool>,
     identity: Identity,
     listing_key: EntityKey,
+    /// The listing's expiry as the start found or wrote it. A refresh
+    /// does not update it: only an expiry written before this start,
+    /// under another configuration, can be later than a refresh sets.
+    listing_expires_at: u64,
     /// The live agreements, by key: the slot state, and the counter
     /// record each one counts into.
     agreements: Mutex<KnownAgreements>,
@@ -205,6 +209,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             pool,
             identity,
             listing_key: EntityKey::ZERO,
+            listing_expires_at: 0,
             agreements: Mutex::new(HashMap::new()),
             integrity: None,
         };
@@ -239,7 +244,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             .block_number()
             .await
             .map_err(StartError::Chain)?;
-        let listing_key = ensure_listing(
+        let (listing_key, listing_expires_at) = ensure_listing(
             &agent.reader,
             &agent.writer,
             &agent.config,
@@ -249,6 +254,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         .await?;
         Ok(Self {
             listing_key,
+            listing_expires_at,
             ..agent
         })
     }
@@ -1076,11 +1082,15 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         let head = match self.reader.block_number().await {
             Ok(head) => Some(head),
             Err(error) => {
-                tracing::warn!(%error, "the head could not be read: expired records are not filtered");
+                tracing::warn!(%error, "the head could not be read: no record is left out for its expiry");
                 None
             }
         };
-        let (batch, skipped) = self.refresh_batch(head);
+        let RefreshBatch {
+            batch,
+            ineligible,
+            expiring_later,
+        } = self.refresh_batch(head);
         let extends = batch.operations().len();
 
         let mut landed = 0;
@@ -1100,7 +1110,8 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         tracing::info!(
             extended = landed,
             of = extends,
-            ineligible = skipped,
+            ineligible,
+            expiring_later,
             "refresh: the listing and each eligible provider's record"
         );
     }
@@ -1129,18 +1140,34 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         }
     }
 
-    /// The extends one refresh makes, and how many agreements it left
-    /// out as ineligible.
-    fn refresh_batch(&self, head: Option<u64>) -> (Batch, usize) {
-        let mut batch = Batch::single(Operation::Extend(Extend {
-            entity_key: self.listing_key,
-            expires: Expiry::Seconds(self.config.listing_life.as_secs()),
-        }));
+    /// The extends one refresh makes, and how many records it left out.
+    /// `head` is for leaving records out by their expiry: a batch is
+    /// one transaction, so one extend the chain refuses fails every
+    /// other with it.
+    fn refresh_batch(&self, head: Option<u64>) -> RefreshBatch {
+        // An expiry can only be moved later. A record written under a
+        // longer lifetime than is configured now already expires later
+        // than this refresh would set, so its extend would be refused.
+        // The write lands in a block after `head`, so an expiry up to
+        // `head` plus the lifetime is still moved later by it.
+        let expires_later = |expires_at: u64, life: Duration| {
+            head.is_some_and(|head| expires_at > head + blocks(life))
+        };
+        let mut batch = Batch::new();
+        let mut expiring_later = 0;
+        if expires_later(self.listing_expires_at, self.config.listing_life) {
+            expiring_later += 1;
+        } else {
+            batch.push(Operation::Extend(Extend {
+                entity_key: self.listing_key,
+                expires: Expiry::Seconds(self.config.listing_life.as_secs()),
+            }));
+        }
         // Eligibility at this moment is the one rule: an ineligible
         // provider is skipped, so its record expires `agreement_life`
         // after its last refresh, or at the accept window if it never
         // passed a probe.
-        let mut skipped = 0;
+        let mut ineligible = 0;
         let known = self
             .agreements
             .lock()
@@ -1148,11 +1175,10 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         for (key, live) in known.iter() {
             let agreement = &live.agreement;
             if !live.provider.eligible() {
-                skipped += 1;
+                ineligible += 1;
                 continue;
             }
-            // The head is for leaving out records memory knows expired:
-            // extending a gone record fails the whole batch.
+            // An extend of a record that is gone is refused too.
             if head.is_some_and(|head| agreement.expires_at <= head) {
                 tracing::warn!(
                     agreement = %key,
@@ -1162,13 +1188,30 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 );
                 continue;
             }
+            if expires_later(agreement.expires_at, self.config.agreement_life) {
+                expiring_later += 1;
+                continue;
+            }
             batch.push(Operation::Extend(Extend {
                 entity_key: *key,
                 expires: Expiry::Seconds(self.config.agreement_life.as_secs()),
             }));
         }
-        (batch, skipped)
+        RefreshBatch {
+            batch,
+            ineligible,
+            expiring_later,
+        }
     }
+}
+
+/// What one refresh sends, and the records it leaves out, by reason.
+struct RefreshBatch {
+    batch: Batch,
+    /// Agreements whose provider is not eligible at this moment.
+    ineligible: usize,
+    /// Records that already expire later than the refresh would set.
+    expiring_later: usize,
 }
 
 /// What one flush's batch landed: the records the node reports
@@ -1515,14 +1558,14 @@ fn blocks(lifetime: Duration) -> u64 {
 /// One live listing that says what the configuration says: created if
 /// there is none, patched if it differs. When there are several, the
 /// oldest is the LB's: it is the one offers have been pointing at the
-/// longest.
+/// longest. Returns its key and its expiry.
 async fn ensure_listing<R: ChainReader, W: ChainWriter>(
     reader: &R,
     writer: &W,
     config: &config::Marketplace,
     lb: Address,
     head: u64,
-) -> Result<EntityKey, StartError> {
+) -> Result<(EntityKey, u64), StartError> {
     let desired = LbListing {
         wei_per_call: config.wei_per_call,
         tunnel_server: config.tunnel_server.clone(),
@@ -1554,7 +1597,7 @@ async fn ensure_listing<R: ChainReader, W: ChainWriter>(
             .await
             .map_err(StartError::Listing)?;
         tracing::info!(key = %created.entity_key, listing = %desired, "listing created");
-        return Ok(created.entity_key);
+        return Ok((created.entity_key, created.expires_at));
     };
     for extra in listings {
         tracing::warn!(key = %extra.key, "an extra listing under this LB's key: ignored");
@@ -1577,7 +1620,7 @@ async fn ensure_listing<R: ChainReader, W: ChainWriter>(
             "listing updated to the configuration"
         );
     }
-    Ok(kept.key)
+    Ok((kept.key, kept.expires_at))
 }
 
 #[cfg(test)]

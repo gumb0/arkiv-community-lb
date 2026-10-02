@@ -105,6 +105,9 @@ refresh_interval = "1h"
 # What each refresh extends a record to, from now: a provider stays
 # under agreement through an LB outage this long. If a provider
 # becomes ineligible, its agreement expires after this time.
+# Lowering it does not shorten a record already written: an expiry
+# only moves later, so the record keeps its old one, and is refreshed
+# again once that is within the new value. The same for listing_life.
 # An even number of seconds: lifetimes are whole blocks of two seconds.
 agreement_life = "3d"
 # What each refresh extends the LB listing to, from now. Longer than

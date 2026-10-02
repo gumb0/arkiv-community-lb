@@ -311,6 +311,28 @@ impl State {
             })
     }
 
+    /// The entity an extend names, unless the extend would move its
+    /// expiry earlier, which the chain refuses. The chain refuses the
+    /// same expiry too; here it passes, because a write on this fake
+    /// does not move the head, where a real one lands in a later block
+    /// and so asks for a later expiry than the write before it.
+    fn extendable(&self, extend: &Extend) -> Result<usize, WriteError> {
+        let index = self.position(extend.entity_key)?;
+        let current = self.entities[index].expires_at;
+        let asked = self.expires_at(extend.expires);
+        if asked < current {
+            return Err(WriteError::Failed(vec![ErrorLink {
+                name: "FakeChain".to_owned(),
+                message: format!(
+                    "the extend of {:#x} to block {asked} would move its expiry, {current}, earlier",
+                    extend.entity_key
+                ),
+                details: None,
+            }]));
+        }
+        Ok(index)
+    }
+
     /// The rows a query returns: alive at the block it is answered at,
     /// the head unless pinned, and matching every condition. Nothing
     /// else is versioned by block: a pinned read sees the store as it
@@ -516,7 +538,7 @@ impl ChainWriter for FakeChain {
     async fn extend(&self, extend: &Extend) -> Result<Extended, WriteError> {
         let mut state = self.state();
         state.sidecar()?;
-        let index = state.position(extend.entity_key)?;
+        let index = state.extendable(extend)?;
         let expires_at = state.expires_at(extend.expires);
         state.entities[index].expires_at = expires_at;
         let tx_hash = state.transaction(Transaction::Extend(extend.entity_key));
@@ -547,13 +569,17 @@ impl ChainWriter for FakeChain {
             }]));
         }
         // Every entity a patch, delete or extend names must exist before
-        // anything is applied, so a missing key fails the batch whole.
+        // anything is applied, and every extend must move its expiry
+        // later, so one refused operation fails the batch whole.
         for operation in operations {
             let key = match operation {
                 Operation::Create(_) => continue,
                 Operation::Patch(patch) => patch.entity_key,
                 Operation::Delete(delete) => delete.entity_key,
-                Operation::Extend(extend) => extend.entity_key,
+                Operation::Extend(extend) => {
+                    state.extendable(extend)?;
+                    continue;
+                }
             };
             state.position(key)?;
         }

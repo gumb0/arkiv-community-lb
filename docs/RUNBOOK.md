@@ -150,12 +150,13 @@ only.
   integrity checks stop and the refresh cannot write, while serving
   goes on. Agreements then expire one `agreement_life` after their
   last refresh.
-- **Lifetimes only grow.** Never lower `agreement_life` or
-  `listing_life` on a running deployment. An expiry can only be moved
-  later, so every extend to a shorter life is refused, and since the
-  refresh is one transaction, the listing and every agreement miss it
-  together: the log says `a refresh did not land` at every refresh,
-  until the old expiries are closer than the new life.
+- **A lowered lifetime does not shorten records already written.** An
+  expiry can only be moved later. After `agreement_life` or
+  `listing_life` is lowered, a record written under the old value
+  keeps its old expiry, and the refresh leaves it out until that
+  expiry is within the new life; from then on it is refreshed to the
+  new one. The refresh's log line counts the records left out this
+  way as `expiring_later`.
 - **Ending an agreement early.** There is no command for it, and a
   shorter `agreement_life` does not do it (above). Delete the record
   through the sidecar, with the agreement id from `/nodes`:
@@ -295,8 +296,7 @@ Symptom, then where to look.
     everyone away until it answers; the clients retry on their own.
 - **`a refresh did not land`.** The line carries the sidecar's error
   and the key's balance. A dry key is the usual cause (`the LB key is
-  low on GLM` comes first); a lifetime lowered in `config.toml` is the
-  other (Day to day).
+  low on GLM` comes first).
 - **`the offers could not be read: this poll's discovery is
   skipped`.** The reference failed the query: an outage, or a spent
   quota (429). Serving is not affected; offers wait for a poll that

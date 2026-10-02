@@ -2263,6 +2263,59 @@ async fn a_record_memory_knows_expired_is_left_out_of_the_refresh() {
 }
 
 #[tokio::test]
+async fn a_record_written_under_a_longer_lifetime_is_left_out_until_it_can_move_later() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    // The listing and one agreement record were written under an
+    // earlier configuration's lifetimes, thirty days and three days.
+    let earlier = marketplace();
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let listing = start(&chain, &earlier, &pool)
+        .await
+        .expect("starts")
+        .listing_key();
+    let long_lived = seed_agreement(&chain, provider(1), 20000, earlier.agreement_life.as_secs());
+    let fresh = seed_agreement(&chain, provider(2), 20001, earlier.accept_window.as_secs());
+
+    // Restarted with both lifetimes shortened.
+    let mut config = marketplace();
+    config.listing_life = Duration::from_secs(DAY);
+    config.agreement_life = Duration::from_secs(4 * 3600);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    set_health(&pool, provider(1), true);
+    set_health(&pool, provider(2), true);
+    chain.advance(100);
+    let listing_before = expires_at(&chain, listing);
+    let long_lived_before = expires_at(&chain, long_lived);
+    let writes_before = chain.transactions().len();
+
+    // An extend of either long-lived record would move its expiry
+    // earlier, which the chain refuses, and one refusal fails the
+    // whole batch. Both are left out, and the third is extended.
+    agent.refresh().await;
+    let transactions = chain.transactions();
+    let Transaction::Batch(log) = &transactions[writes_before] else {
+        panic!("a batch, not {:?}", transactions[writes_before]);
+    };
+    assert_eq!(log.extended, vec![fresh], "the record within the lifetime");
+    assert_eq!(
+        expires_at(&chain, fresh),
+        chain.head() + blocks(config.agreement_life.as_secs())
+    );
+    assert_eq!(expires_at(&chain, listing), listing_before);
+    assert_eq!(expires_at(&chain, long_lived), long_lived_before);
+
+    // Once the old expiry is within the new lifetime of the head, a
+    // refresh moves it later again.
+    chain.advance(long_lived_before - chain.head() - blocks(config.agreement_life.as_secs()) + 1);
+    agent.refresh().await;
+    assert!(
+        expires_at(&chain, long_lived) > long_lived_before,
+        "refreshed again once the refresh moves its expiry later"
+    );
+}
+
+#[tokio::test]
 async fn the_reconcile_learns_a_refreshed_expiry() {
     let chain = FakeChain::new(LB, CHAIN_ID);
     let config = marketplace();

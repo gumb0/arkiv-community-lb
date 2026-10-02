@@ -170,7 +170,12 @@ balance and warns when it is below a configured floor, because a key
 that runs dry is refused before anything executes and every write
 stops. A refresh that fails is logged with the balance and retried an
 hour later; the records it would have extended still have days to
-live. The reference being unreachable does not stop a refresh: the
+live. An expiry can only be moved later, and one refused extend would
+fail the whole transaction, so a record that already expires later
+than the refresh would set is left out of it. That is what a lifetime
+lowered in the configuration leaves behind: the records written under
+the old value keep their old expiry until it is within the new
+lifetime. The reference being unreachable does not stop a refresh: the
 sidecar is the one that writes. A listing that disappears while the
 LB runs, after a network reset or a deletion by hand, fails every
 refresh until the LB is restarted, which recreates it; a known

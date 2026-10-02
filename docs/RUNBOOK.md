@@ -310,8 +310,9 @@ Symptom, then where to look.
 - **`reference unanswered: chain head lag goes unchecked`.** Not an
   outage: serving continues, only lag verdicts stop. The line appears
   once per change of state, as does its counterpart `reference
-  answered`. Check `ARKIV_RPC_URL` and `ARKIV_API_KEY` — a metered
-  endpoint answers 429 when the key is missing or the quota is spent.
+  answered`, and carries the reason the read failed for. Check
+  `ARKIV_RPC_URL` and `ARKIV_API_KEY` — a metered endpoint answers 429
+  when the key is missing or the quota is spent.
 - **Clients get `no healthy provider`.** No provider is eligible;
   `/nodes` says why for each, as above.
 - **The LB exits at start.** A config error names the field. A config

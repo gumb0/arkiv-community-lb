@@ -136,22 +136,20 @@ impl Monitor {
         let first_ask = reference_height.asked.is_none();
         let was_answered = reference_height.height.is_some();
         reference_height.asked = Some(std::time::Instant::now());
-        reference_height.height = match reader.block_number().await {
-            Ok(height) => Some(height),
-            Err(error) => {
-                tracing::debug!(%error, "reference probe failed");
-                None
-            }
-        };
-        // Logged on change only, so a silent reference shows once at
-        // the default level instead of once per ask at debug.
-        let answered = reference_height.height.is_some();
-        if first_ask || answered != was_answered {
-            if answered {
+        let asked = reader.block_number().await;
+        reference_height.height = asked.as_ref().ok().copied();
+        // At the default level on change only, so a silent reference
+        // shows once, with the reason that ask failed for; every
+        // failed ask after it is one line at debug.
+        match asked {
+            Ok(_) if first_ask || !was_answered => {
                 tracing::info!("reference answered: chain head lag is checked");
-            } else {
-                tracing::warn!("reference unanswered: chain head lag goes unchecked");
             }
+            Ok(_) => {}
+            Err(error) if first_ask || was_answered => {
+                tracing::warn!(%error, "reference unanswered: chain head lag goes unchecked");
+            }
+            Err(error) => tracing::debug!(%error, "reference probe failed"),
         }
     }
 

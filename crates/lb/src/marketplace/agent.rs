@@ -1070,28 +1070,9 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
     /// One refresh: the listing and the eligible providers' agreement
     /// records extended, in one batch.
     pub async fn refresh(&self) {
-        // A dry key is refused before execution and every write stops,
-        // so a low balance is worth a warning before it gets there. A
-        // failed read does not stop the refresh: the reference being
-        // down is not the sidecar being down.
-        let balance = match self.reader.balance(self.identity.address).await {
-            Ok(balance) => {
-                if balance < self.config.gas_warn_below.0 {
-                    tracing::warn!(
-                        balance = %glm(balance),
-                        floor = %glm(self.config.gas_warn_below.0),
-                        "the LB key is low on GLM: writes stop when it runs out"
-                    );
-                }
-                Some(balance)
-            }
-            Err(error) => {
-                tracing::warn!(%error, "the LB key's balance could not be read");
-                None
-            }
-        };
-        // The head is for leaving out records memory knows expired:
-        // extending a gone record fails the whole batch.
+        // A failed read of either does not stop the refresh: the
+        // reference being down is not the sidecar being down.
+        let balance = self.gas_balance().await;
         let head = match self.reader.block_number().await {
             Ok(head) => Some(head),
             Err(error) => {
@@ -1099,42 +1080,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 None
             }
         };
-
-        let mut batch = Batch::single(Operation::Extend(Extend {
-            entity_key: self.listing_key,
-            expires: Expiry::Seconds(self.config.listing_life.as_secs()),
-        }));
-        // Eligibility at this moment is the one rule: an ineligible
-        // provider is skipped, so its record expires `agreement_life`
-        // after its last refresh, or at the accept window if it never
-        // passed a probe.
-        let mut skipped = 0;
-        {
-            let known = self
-                .agreements
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for (key, live) in known.iter() {
-                let agreement = &live.agreement;
-                if !live.provider.eligible() {
-                    skipped += 1;
-                    continue;
-                }
-                if head.is_some_and(|head| agreement.expires_at <= head) {
-                    tracing::warn!(
-                        agreement = %key,
-                        provider = %agreement.record.provider,
-                        "an eligible provider's agreement record has expired: not refreshed, \
-                         the next poll drops it"
-                    );
-                    continue;
-                }
-                batch.push(Operation::Extend(Extend {
-                    entity_key: *key,
-                    expires: Expiry::Seconds(self.config.agreement_life.as_secs()),
-                }));
-            }
-        }
+        let (batch, skipped) = self.refresh_batch(head);
         let extends = batch.operations().len();
 
         let mut landed = 0;
@@ -1157,6 +1103,71 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             ineligible = skipped,
             "refresh: the listing and each eligible provider's record"
         );
+    }
+
+    /// The LB key's balance, with a warning when it is low; `None`
+    /// when it could not be read.
+    async fn gas_balance(&self) -> Option<alloy_primitives::U256> {
+        match self.reader.balance(self.identity.address).await {
+            Ok(balance) => {
+                // A dry key is refused before execution and every write
+                // stops, so a low balance is worth a warning before it
+                // gets there.
+                if balance < self.config.gas_warn_below.0 {
+                    tracing::warn!(
+                        balance = %glm(balance),
+                        floor = %glm(self.config.gas_warn_below.0),
+                        "the LB key is low on GLM: writes stop when it runs out"
+                    );
+                }
+                Some(balance)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the LB key's balance could not be read");
+                None
+            }
+        }
+    }
+
+    /// The extends one refresh makes, and how many agreements it left
+    /// out as ineligible.
+    fn refresh_batch(&self, head: Option<u64>) -> (Batch, usize) {
+        let mut batch = Batch::single(Operation::Extend(Extend {
+            entity_key: self.listing_key,
+            expires: Expiry::Seconds(self.config.listing_life.as_secs()),
+        }));
+        // Eligibility at this moment is the one rule: an ineligible
+        // provider is skipped, so its record expires `agreement_life`
+        // after its last refresh, or at the accept window if it never
+        // passed a probe.
+        let mut skipped = 0;
+        let known = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (key, live) in known.iter() {
+            let agreement = &live.agreement;
+            if !live.provider.eligible() {
+                skipped += 1;
+                continue;
+            }
+            // The head is for leaving out records memory knows expired:
+            // extending a gone record fails the whole batch.
+            if head.is_some_and(|head| agreement.expires_at <= head) {
+                tracing::warn!(
+                    agreement = %key,
+                    provider = %agreement.record.provider,
+                    "an eligible provider's agreement record has expired: not refreshed, \
+                     the next poll drops it"
+                );
+                continue;
+            }
+            batch.push(Operation::Extend(Extend {
+                entity_key: *key,
+                expires: Expiry::Seconds(self.config.agreement_life.as_secs()),
+            }));
+        }
+        (batch, skipped)
     }
 }
 

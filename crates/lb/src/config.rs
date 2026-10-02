@@ -459,6 +459,18 @@ impl Marketplace {
                 self.accept_window, self.agreement_life
             )));
         }
+        // An agreement that expired while its offer is still alive
+        // would be accepted again from that offer. An offer is only
+        // accepted when it expires within `offer_max_lifetime`, so a
+        // refreshed agreement has to live longer than that.
+        if self.offer_max_lifetime >= self.agreement_life {
+            return Err(ConfigError::Invalid(format!(
+                "marketplace.offer_max_lifetime ({:?}) must be shorter than agreement_life \
+                 ({:?}): an agreement has to outlive the offer it answers, or the offer is \
+                 accepted again when the agreement expires",
+                self.offer_max_lifetime, self.agreement_life
+            )));
+        }
         // The refresh leaves out records memory shows expired, and
         // memory learns a refreshed expiry at the next discovery poll:
         // the poll has to come before the next refresh.
@@ -649,7 +661,7 @@ mod tests {
             "{MARKETPLACE}writer_url = \"http://10.0.0.2:8560\"\n\
              max_providers = 10\nremote_port_start = 30000\n\
              discovery_interval = \"1m\"\naccept_window = \"30m\"\nagreement_life = \"1d\"\n\
-             listing_life = \"7d\"\ngas_warn_below = \"1.5\"\n"
+             offer_max_lifetime = \"12h\"\nlisting_life = \"7d\"\ngas_warn_below = \"1.5\"\n"
         ))
         .expect("valid");
         let marketplace = config.marketplace.expect("the section is present");
@@ -723,19 +735,22 @@ mod tests {
                 assert!(error.to_string().contains(name), "{odd}: {error}");
                 assert!(error.to_string().contains("even"), "{odd}: {error}");
             }
-            // A four-second agreement life needs a flush that fits it,
-            // a refresh that comes sooner, a poll sooner than that, and
-            // an accept window shorter still.
-            let window = if name == "accept_window" {
-                ""
-            } else {
-                "accept_window = \"2s\"\n"
-            };
-            parse(&format!(
-                "{MARKETPLACE}{name} = \"4s\"\nflush_interval = \"2s\"\n\
-                 refresh_interval = \"2s\"\ndiscovery_interval = \"1s\"\n{window}"
-            ))
-            .expect("even seconds are fine");
+            // A four-second agreement life needs everything it is
+            // checked against to fit it: a flush, a refresh that comes
+            // sooner, a poll sooner than that, and an accept window and
+            // an offer lifetime shorter still.
+            let rest: String = [
+                ("flush_interval", "2s"),
+                ("refresh_interval", "2s"),
+                ("discovery_interval", "1s"),
+                ("accept_window", "2s"),
+                ("offer_max_lifetime", "2s"),
+            ]
+            .iter()
+            .filter(|(key, _)| *key != name)
+            .map(|(key, value)| format!("{key} = \"{value}\"\n"))
+            .collect();
+            parse(&format!("{MARKETPLACE}{name} = \"4s\"\n{rest}")).expect("even seconds are fine");
         }
         parse(&format!("{MARKETPLACE}discovery_interval = \"3s\"\n"))
             .expect("an interval is not a lifetime");
@@ -771,18 +786,19 @@ mod tests {
     #[test]
     fn a_refreshed_life_outlasts_the_refresh_interval() {
         for name in ["agreement_life", "listing_life"] {
-            // The accept window and the flush interval are set to fit
-            // an agreement life this short, so neither is what refuses.
+            // The accept window, the offer lifetime and the flush
+            // interval are set to fit an agreement life this short, so
+            // none of them is what refuses.
             let error = parse(&format!(
                 "{MARKETPLACE}{name} = \"1h\"\nrefresh_interval = \"1h\"\n\
-                 accept_window = \"30m\"\nflush_interval = \"1h\"\n"
+                 accept_window = \"30m\"\noffer_max_lifetime = \"30m\"\nflush_interval = \"1h\"\n"
             ))
             .expect_err("must refuse");
             assert!(error.to_string().contains(name), "{error}");
             assert!(error.to_string().contains("refresh_interval"), "{error}");
             parse(&format!(
                 "{MARKETPLACE}{name} = \"2h\"\nrefresh_interval = \"1h\"\n\
-                 accept_window = \"30m\"\nflush_interval = \"1h\"\n"
+                 accept_window = \"30m\"\noffer_max_lifetime = \"30m\"\nflush_interval = \"1h\"\n"
             ))
             .expect("longer is fine");
         }
@@ -811,7 +827,22 @@ mod tests {
         assert!(error.to_string().contains("accept_window"), "{error}");
         assert!(error.to_string().contains("agreement_life"), "{error}");
         parse(&format!(
-            "{MARKETPLACE}accept_window = \"2h\"\nagreement_life = \"1d\"\n"
+            "{MARKETPLACE}accept_window = \"2h\"\nagreement_life = \"1d\"\n\
+             offer_max_lifetime = \"12h\"\n"
+        ))
+        .expect("shorter is fine");
+    }
+
+    #[test]
+    fn an_agreement_outlives_the_offer_it_answers() {
+        let error = parse(&format!(
+            "{MARKETPLACE}offer_max_lifetime = \"2d\"\nagreement_life = \"2d\"\n"
+        ))
+        .expect_err("must refuse");
+        assert!(error.to_string().contains("offer_max_lifetime"), "{error}");
+        assert!(error.to_string().contains("agreement_life"), "{error}");
+        parse(&format!(
+            "{MARKETPLACE}offer_max_lifetime = \"1d\"\nagreement_life = \"2d\"\n"
         ))
         .expect("shorter is fine");
     }

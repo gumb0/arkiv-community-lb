@@ -126,6 +126,8 @@ counter_record_life = "180d"
 # Spam protection. Offers expiring further out than this are ignored,
 # so nobody can post a page of long-lived offers once and crowd real
 # ones out of discovery for good; re-posting costs gas every time.
+# Shorter than agreement_life: an agreement has to outlive the offer
+# it answers, or the offer is accepted again when the agreement expires.
 # An even number of seconds: lifetimes are whole blocks of two seconds.
 offer_max_lifetime = "2d"
 # How long each agreement's counter record covers before it is closed

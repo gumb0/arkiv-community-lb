@@ -154,13 +154,7 @@ impl<R: ChainReader + 'static, W: ChainWriter + 'static> Agreements for Agent<R,
     }
 
     fn admitted(self: Arc<Self>, agreement: &Stored<Agreement>) {
-        let Some(provider) = self
-            .pool
-            .snapshot()
-            .iter()
-            .find(|provider| provider.id == marketplace_id(agreement.record.provider))
-            .cloned()
-        else {
+        let Some(provider) = self.provider_entry(&agreement.record) else {
             return;
         };
         // A reconnect is a probe due at once, as the first admission
@@ -268,6 +262,11 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
 
     pub fn listing_key(&self) -> EntityKey {
         self.listing_key
+    }
+
+    /// The pool entry of an agreement's provider, while it has one.
+    fn provider_entry(&self, agreement: &Agreement) -> Option<Arc<Provider>> {
+        self.pool.get(&marketplace_id(agreement.provider))
     }
 
     pub fn agreement(&self, key: EntityKey) -> Option<Stored<Agreement>> {
@@ -740,10 +739,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 // record carries, which is this period's so far. Only
                 // then: counting it in twice would bill it twice.
                 (None, Some(stored)) => {
-                    if let Some(entry) = self
-                        .pool
-                        .get(&marketplace_id(live.agreement.record.provider))
-                    {
+                    if let Some(entry) = self.provider_entry(&live.agreement.record) {
                         entry.seed_served(stored.record.count);
                     }
                 }
@@ -1215,7 +1211,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             // The pool entry is the count. Without it there is no count
             // to write, and zero is not an absence here: it would patch
             // whatever the record holds down to zero.
-            let Some(entry) = self.pool.get(&marketplace_id(record.provider)) else {
+            let Some(entry) = self.provider_entry(record) else {
                 tracing::error!(
                     agreement = %key,
                     provider = %record.provider,
@@ -1307,7 +1303,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             // The period is written, so its count is no longer the
             // entry's. Subtracted, not cleared: a request served while
             // the write was in flight belongs to the next period.
-            if let Some(entry) = self.pool.get(&marketplace_id(record.provider)) {
+            if let Some(entry) = self.provider_entry(record) {
                 entry.subtract_served(close.count);
             }
             live.counter = None;

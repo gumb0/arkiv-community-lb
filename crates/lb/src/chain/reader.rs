@@ -334,7 +334,11 @@ impl Reader {
     }
 
     async fn call(&self, method: &str, params: Value) -> Result<Value, ReadError> {
-        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+        // A random id, so a provider cannot tell the LB's own reads from
+        // a client's by it; the probes keep id 0, and nothing here reads
+        // the id back.
+        let id: u32 = rand::random_range(1..u32::MAX);
+        let body = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         let mut request = self
             .client
             .post(self.url.clone())

@@ -84,6 +84,10 @@ struct Live {
     /// agreement is in memory.
     provider: Arc<Provider>,
     counter: Option<OpenCounter>,
+    /// The task waiting for this provider's probes after its tunnel
+    /// was admitted, while one runs: a tunnel that reconnects before
+    /// the probes pass starts no second one.
+    admission_task: Option<tokio::task::AbortHandle>,
 }
 
 /// Which flush this is: the one on the timer, or the one a deliberate
@@ -169,10 +173,23 @@ impl<R: ChainReader + 'static, W: ChainWriter + 'static> Agreements for Agent<R,
         // extended, so a tunnel that reconnects after the extend
         // starts nothing and cannot make the LB write.
         provider.schedule_probe_now();
-        if self.was_extended(agreement.key) {
+        let mut known = self
+            .agreements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(live) = known.get_mut(&agreement.key) else {
+            return;
+        };
+        if was_extended(live, self.config.agreement_life)
+            || live
+                .admission_task
+                .as_ref()
+                .is_some_and(|task| !task.is_finished())
+        {
             return;
         }
-        tokio::spawn(self.admission(provider, agreement.key));
+        let task = tokio::spawn(self.clone().admission(provider, agreement.key));
+        live.admission_task = Some(task.abort_handle());
     }
 }
 
@@ -370,25 +387,6 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         }
     }
 
-    /// Whether an agreement's record was extended, as memory knows it:
-    /// its life, expiry less creation, is at least `agreement_life`,
-    /// which an extend sets from the moment it lands. An accepted
-    /// record lives `offer_max_lifetime`, shorter by configuration;
-    /// its creation block is an estimate until the reconcile reads it
-    /// back, a few blocks early at most. A record memory does not hold
-    /// counts as extended: there is nothing to extend.
-    fn was_extended(&self, key: EntityKey) -> bool {
-        self.agreements
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&key)
-            .is_none_or(|live| {
-                let record = &live.agreement;
-                record.expires_at.saturating_sub(record.created_at)
-                    >= blocks(self.config.agreement_life)
-            })
-    }
-
     /// The steps after a provider's tunnel is admitted, in order: its
     /// probes pass, it is checked for integrity, then its agreement is
     /// extended.
@@ -422,13 +420,6 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 );
                 return;
             }
-        }
-        // Checked again after the wait: a second admission of the same
-        // provider may have extended the record by now, or a discovery poll
-        // may have dropped it from memory because it expired, and extending
-        // a gone record would fail.
-        if self.was_extended(agreement) {
-            return;
         }
         tracing::info!(
             provider = %provider.id,
@@ -653,6 +644,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                     agreement: stored,
                     provider,
                     counter: None,
+                    admission_task: None,
                 },
             );
             adopted += 1;
@@ -1023,6 +1015,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                     agreement: stored,
                     provider,
                     counter: None,
+                    admission_task: None,
                 },
             );
         tracing::info!(
@@ -1206,6 +1199,16 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             expiring_later,
         }
     }
+}
+
+/// Whether an agreement's record was extended: its life, expiry less
+/// creation, is at least `agreement_life`, which an extend sets from
+/// the moment it lands. An accepted record lives `offer_max_lifetime`,
+/// shorter by configuration; its creation block is an estimate until
+/// the reconcile reads it back, a few blocks early at most.
+fn was_extended(live: &Live, agreement_life: Duration) -> bool {
+    let record = &live.agreement;
+    record.expires_at.saturating_sub(record.created_at) >= blocks(agreement_life)
 }
 
 /// What one refresh sends, and the records it leaves out, by reason.

@@ -2763,8 +2763,8 @@ async fn a_record_gone_during_the_wait_is_not_extended() {
     fleet.agent.discovery_poll().await;
     assert!(fleet.pool.snapshot().is_empty(), "dropped from the pool");
 
-    // The probes pass on the entry the task still holds: no extend of
-    // a gone record is attempted.
+    // The probes pass on the entry the task still holds: the extend of
+    // the gone record fails, and nothing is written.
     entry.set_health(true);
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
@@ -2844,6 +2844,34 @@ async fn a_newcomer_is_checked_before_its_record_is_extended() {
     assert!(
         fleet.node.blocks.load(Ordering::Relaxed) > 0,
         "the node was read"
+    );
+    assert_eq!(
+        fleet.chain.transactions()[writes_before..],
+        [Transaction::Extend(fleet.key)]
+    );
+}
+
+#[tokio::test]
+async fn a_tunnel_that_reconnects_during_the_wait_is_checked_once() {
+    let fleet = checked().await;
+    set_health(&fleet.pool, provider(1), false);
+    let stored = fleet.agent.agreement(fleet.key).expect("known");
+    let writes_before = fleet.chain.transactions().len();
+    // Admitted three times before its probes pass: one task waits, the
+    // other two admissions start none.
+    for _ in 0..3 {
+        fleet.agent.clone().admitted(&stored);
+    }
+    set_health(&fleet.pool, provider(1), true);
+    wait_for("the record is extended", || {
+        fleet.chain.transactions().len() > writes_before
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        fleet.node.blocks.load(Ordering::Relaxed),
+        1,
+        "one integrity check, one block read"
     );
     assert_eq!(
         fleet.chain.transactions()[writes_before..],

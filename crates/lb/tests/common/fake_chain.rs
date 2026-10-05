@@ -298,10 +298,13 @@ impl State {
         }
     }
 
+    /// The entity a write names, for the write: an expired one is gone
+    /// from the chain, so a write to it fails like one to a key that
+    /// never existed.
     fn position(&self, key: EntityKey) -> Result<usize, WriteError> {
         self.entities
             .iter()
-            .position(|entity| entity.key == key)
+            .position(|entity| entity.key == key && entity.expires_at > self.head)
             .ok_or_else(|| {
                 WriteError::Failed(vec![ErrorLink {
                     name: "FakeChain".to_owned(),

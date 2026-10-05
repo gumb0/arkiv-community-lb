@@ -52,8 +52,10 @@ not operator-chosen.
   A provider whose answers differ, twice, is taken out of rotation
   with both answers logged side by side, and only a passing round
   brings it back. The design and what it cannot catch are
-  [docs/INTEGRITY.md](docs/INTEGRITY.md). Tested in-process over fake
-  providers and a fake reference.
+  [docs/INTEGRITY.md](docs/INTEGRITY.md); the whole problem, what v1
+  does not catch and what would come next, is
+  [docs/MISBEHAVING_NODES.md](docs/MISBEHAVING_NODES.md). Tested
+  in-process over fake providers and a fake reference.
 - **The host stack** (`compose.yaml`, `Dockerfile`, `tunnel/`): the LB
   and the tunnel server for NAT'd providers, deployed together —
   operations in [docs/RUNBOOK.md](docs/RUNBOOK.md), the tunnel decision

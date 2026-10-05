@@ -249,3 +249,6 @@ work. Two fields, documented in `config.example.toml`:
 - **Evidence that survives a restart**, on the nodes view or on chain.
 - **Comparing providers against each other**, so the reference is not
   the only oracle.
+
+What each of these is for, what lies beyond them, and the order they
+would be worth taking in is [MISBEHAVING_NODES.md](MISBEHAVING_NODES.md).

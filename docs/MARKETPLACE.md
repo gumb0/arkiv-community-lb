@@ -68,7 +68,7 @@ provider already has a live offer, and while it has a live agreement,
 so an operator cannot waste gas on an offer the LB would skip.
 
 The LB polls for offers against its listing every five minutes and
-considers those that expire within two days and name its own chain.
+considers those that expire within one day and name its own chain.
 Offers from providers that already have an agreement, and offers an
 agreement already points at, are skipped; a provider's duplicate
 offers are tolerated and the oldest taken. When there are more offers
@@ -84,7 +84,7 @@ id, and then the agreement's first **[counter
 record](ENTITIES.md#counter-record)**, at zero, pointing at it. The
 agreement record carries the rate the agreement was accepted at, the
 tunnel port assigned to this provider, and the key of the offer it
-accepted. Its first lifetime is two days, the longest an offer can
+accepted. Its first lifetime is one day, the longest an offer can
 have left to live when the LB accepts it (`offer_max_lifetime`): the
 provider has that long to connect. The record so ends at or after its
 offer, and a provider that never connects is accepted once, not again

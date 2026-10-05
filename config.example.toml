@@ -120,6 +120,8 @@ counter_record_life = "180d"
 # Spam protection. Offers expiring further out than this are ignored,
 # so nobody can post a page of long-lived offers once and crowd real
 # ones out of discovery for good; re-posting costs gas every time.
+# The provider tooling posts offers that live one day, so a shorter
+# value here hides them.
 # It is also the first lifetime of an accepted provider's agreement
 # record: the time the provider has to connect its tunnel and pass its
 # probes before its slot frees up again. The record so ends at or
@@ -129,7 +131,7 @@ counter_record_life = "180d"
 # expires; and a record on its first lifetime is told from a refreshed
 # one by its shorter life.
 # An even number of seconds: lifetimes are whole blocks of two seconds.
-offer_max_lifetime = "2d"
+offer_max_lifetime = "1d"
 # How long each agreement's counter record covers before it is closed
 # and the next one opened: the settlement period. Each record's period
 # starts when that record is opened, so there is no common settlement

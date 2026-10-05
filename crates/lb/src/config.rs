@@ -241,7 +241,7 @@ fn default_counter_record_life() -> Duration {
     Duration::from_secs(180 * 24 * 60 * 60)
 }
 fn default_offer_max_lifetime() -> Duration {
-    Duration::from_secs(2 * 24 * 60 * 60)
+    Duration::from_secs(24 * 60 * 60)
 }
 fn default_settlement_period() -> Duration {
     Duration::from_secs(7 * 24 * 60 * 60)
@@ -618,7 +618,7 @@ mod tests {
             marketplace.counter_record_life,
             Duration::from_secs(15_552_000)
         );
-        assert_eq!(marketplace.offer_max_lifetime, Duration::from_secs(172_800));
+        assert_eq!(marketplace.offer_max_lifetime, Duration::from_secs(86_400));
         assert_eq!(marketplace.gas_warn_below, Wei::new(20_000_000_000_000_000));
         assert_eq!(
             marketplace.settlement_period,

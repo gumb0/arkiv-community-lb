@@ -219,6 +219,12 @@ A record with no count is not closed; it stays open until it has one.
 Each agreement has its own periods, starting when the provider joined;
 nothing is shared between providers.
 
+A provider can send requests to the public endpoint itself and is
+counted for the share of them that reaches its own node. The rate
+limiter in front of the LB bounds the pace per client address, and
+nothing bounds the count per agreement; a known limitation, with a
+payout cap per settlement period as the fix.
+
 Each record names the first and last block its count covers, so a
 provider can check it against its own logs. Counts live in memory between
 writes, so a crash loses at most a day of counting; a deliberate stop

@@ -200,6 +200,56 @@ only.
   unless-stopped` bring the stack back on boot; there is no systemd
   unit to manage.
 
+## What normal operation costs
+
+Two meters run while the LB serves: the reference endpoint's quota,
+spent by every call that goes through it, the sidecar's writes
+included, and the LB key's GLM on Arkiv, spent by the writes. The
+numbers below were measured on tiramisu in September 2026 (arkiv-reth
+v0.2.0, a hub key with the default quota of 1,000,000 units a month).
+
+**Reference units.** A head read or a block fetch costs about 10
+units, an `arkiv_query` about 100. At the default intervals:
+
+| Read | How often | Units a month |
+|---|---|---|
+| The Monitor's head read (`ref_height_interval`, 60 s) | every minute | ~440,000 |
+| The discovery poll (`discovery_interval`, 5 min): a head read and three queries, for the offers, the agreements and the counter records | 12 an hour | ~2,600,000 |
+| The integrity round (`integrity.interval`, 30 min): a head read, a block fetch, one pinned query, and a page of keys when the last page ran dry | 2 an hour | ~250,000 |
+| The sidecar's writes (nonce, gas, send, receipt polls per transaction) | hourly and daily | ~7,000 |
+| **Total** | | **~3,300,000** |
+
+That is about three times the hub's default quota, and the discovery
+poll is four fifths of it. The knobs are the three intervals, in that
+order of effect: discovery at 15 minutes brings the month to ~1.6
+million. The size of the fleet changes none of this; a settle run
+adds a few hundred units.
+
+**Running a node as the reference** is the other answer, and worth
+considering from the first deployment: a node on this box or beside
+it, set up like a provider's from the node repository, with its RPC
+as `ARKIV_RPC_URL`. Every reference call is then unmetered, the
+intervals can stay at their defaults, and the data is the same chain.
+What it costs is the node's own disk and keeping it synced: the
+reference is the oracle, and a reference that falls behind shows as
+every provider lagging at once ([Troubleshooting](#troubleshooting)).
+
+**Gas on Arkiv.** At the 1 gwei floor, with the measured prices
+(extend 10,000 gas; patch ~45,000; create ~96,000):
+
+| Write | How often | Gas | GLM a month at the cap of 100 |
+|---|---|---|---|
+| The refresh: one extend for the listing and one per eligible provider | hourly | (N + 1) × 10,000 | ~0.74 |
+| The flush: one patch per agreement with a count | daily | N × ~45,000 | ~0.14 |
+| An acceptance: the agreement record and its first counter record | per provider | ~190,000 | ~0.0002 each |
+| **Total** | | | **~0.9** |
+
+A small fleet spends a few hundredths of a GLM a month, a full one
+about one; `gas_warn_below` (0.02 GLM) is weeks of the first and
+under a day of the second, so size it to the fleet. Settle spends its
+own key: one receipt (~96,000 gas on Arkiv) per closed counter
+record, and the transfers' gas on the payout chain.
+
 ## Releases and updates
 
 A release is a git tag with its notes on GitHub. Deploy one with

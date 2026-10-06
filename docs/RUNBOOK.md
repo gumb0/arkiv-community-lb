@@ -47,11 +47,34 @@ it holds no secret, since the LB admits each tunnel by a signature,
 and nothing that differs between boxes. Its admission route must
 match `listen.admin` in `config.toml`.
 
+## What the stack leaves to you
+
+Three things a public endpoint needs are not in this repository, on
+purpose: they are solved the same way for any HTTP service, and the
+deployment chooses the tools. All three belong to the first
+deployment, not to a later one.
+
+- **TLS.** The LB serves plain HTTP on 8545. Put a reverse proxy in
+  front of it that terminates TLS and forwards to `127.0.0.1:8545`,
+  and open 443 instead of 8545. The LB reads nothing from client
+  headers, so the proxy may add or strip what it likes.
+- **A DNS name**, for the public endpoint and for the tunnel server.
+  Clients need the first; the second goes into `tunnel_server` in
+  `config.toml`, and a name there rather than an address is what
+  makes a host move free for the providers ([Changes that reach every
+  provider](#changes-that-reach-every-provider)).
+- **Rate limiting**, at the same reverse proxy, per client address. The
+  LB has no limit of its own on how many requests a client may send or
+  how many run at once ([known
+  limitations](../README.md#known-limitations)), and the limit is also
+  what bounds a provider sending traffic to its own node through the
+  public endpoint ([MARKETPLACE.md](MARKETPLACE.md#counting)).
+
 ## First deployment
 
-1. Firewall first: inbound allow TCP 22, 7000, 8545; everything else
-   denied. ICMP is your choice — nothing here depends on ping either
-   way.
+1. Firewall first: inbound allow TCP 22, 7000, and 8545 (or 443,
+   with the reverse proxy above in front); everything else denied.
+   ICMP is your choice — nothing here depends on ping either way.
 2. Install Docker with the compose plugin:
    <https://docs.docker.com/engine/install/>.
 3. Clone this repository and create the machine-local files from their

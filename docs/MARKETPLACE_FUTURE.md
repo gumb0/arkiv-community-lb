@@ -31,7 +31,9 @@ reopen them one at a time.
 - **Every request is worth the same.** The count is of answers relayed,
   whatever the method, and the pay is count times rate.
 - **Every eligible provider gets the same share.** Round robin, no
-  weight.
+  weight. The weight is the [reputation
+  section](MISBEHAVING_NODES.md#a-reputation-mechanism) of the other
+  note; this one leaves it there.
 - **Nothing is paid for being there.** A provider with no traffic earns
   nothing, however good its node.
 - **A slot costs nothing.** Posting an offer only requires gas; an
@@ -210,10 +212,10 @@ Here the payer is the LB, so the LB would sign every request it
 forwards, the provider's tooling would keep the signed requests, and
 settle would pay the count the provider shows rather than the count
 the LB wrote, in Lava's shape at the least. That is a different
-payment system, not a change to this one. Short of it, the provider's tooling can publish
-its own count for the period beside the LB's, which makes a
-disagreement a public fact and enforces nothing; with several LBs it
-at least shows which LB undercounts.
+payment system, not a change to this one. Short of it, the provider's
+tooling can publish its own count for the period beside the LB's,
+which makes a disagreement a public fact and enforces nothing; with
+several LBs it at least shows which LB undercounts.
 
 ## Benchmarking
 
@@ -242,9 +244,11 @@ taking the port of each provider from the LB's nodes view. The burst
 then never passes through the Proxy: it competes with no client
 traffic for the LB's runtime, and the LB counts none of it, so
 benchmark traffic is never paid. The process runs on its own cadence,
-one provider at a time, and writes its result to the chain through the
-writer sidecar as a record keyed by the provider's address, which the
-LB reads back the way it reads every other record.
+one provider at a time as a rule, and the fleet at once when the
+point is to see which identities share a node, and writes its result
+to the chain through the writer sidecar as a record keyed by the
+provider's address, which the LB reads back the way it reads every
+other record.
 
 **How the result would reach the rate:** a benchmark needs the tunnel,
 and in v1 the tunnel comes after acceptance, because the provider

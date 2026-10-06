@@ -6,7 +6,9 @@ permissionless provider can do wrong, what the integrity checks of v1
 catch ([INTEGRITY.md](INTEGRITY.md)), what they do not, and the steps
 from here, in the order they would be worth taking. Companion to
 [MARKETPLACE.md](MARKETPLACE.md), which says how providers join, and to
-[PROXY.md](PROXY.md), which says how health works. Vocabulary as in
+[PROXY.md](PROXY.md), which says how health works, and to
+[MARKETPLACE_FUTURE.md](MARKETPLACE_FUTURE.md), which covers the
+market side: pricing, payment, the bond, several LBs. Vocabulary as in
 those notes: the *reference* is the official Arkiv RPC endpoint the LB
 is configured with; an *integrity round* is one pass of the integrity
 checks over the providers.
@@ -212,14 +214,16 @@ costs nothing, so detection catches the lazy case. Both signals are
 worth showing to the operator as a flag, and neither is worth acting on
 automatically: honest providers behind one NAT share an address too.
 
-What works is pricing: make a slot cost something that
-cannot be duplicated for free. A bond held by the agreement does that,
-and the marketplace being on chain already allows it. It costs the
-operator capital per slot, and it costs the design a rule for when the
-bond is lost and a way to dispute that. The cheaper answer for a curated
-rollout is an offer whitelist: the operator of the LB decides whose
-offers are accepted, which is the right tool while the network is small
-and the providers are known.
+What works is pricing: make a slot cost something that cannot be
+duplicated for free. A bond held for the agreement's life does that,
+and the marketplace being on chain already allows it. Held and
+returned, it costs the operator capital per slot and nothing else;
+one that can be lost costs the design a rule for when, and a way to
+dispute it. The shape is in the
+[marketplace note](MARKETPLACE_FUTURE.md#slots-and-a-bond). The
+cheaper answer for a curated rollout is an offer whitelist: the
+operator of the LB decides whose offers are accepted, which is the
+right tool while the network is small and the providers are known.
 
 ## The proxying provider
 
@@ -251,7 +255,9 @@ cannot get from its upstream in time: a burst of reads over a random
 slice of state, many keys or a block range, with a short deadline. A
 node has the data; a relay fetches it, and a metered reference makes
 that slow or refuses it. The same burst, with a payment attached to what
-it measures, is the benchmarking of the marketplace note: a relay then
+it measures, is the
+[benchmarking](MARKETPLACE_FUTURE.md#benchmarking) of the marketplace
+note: a relay then
 scores no higher than its upstream, so relaying earns less than running
 what it relays to; and identities that share an upstream degrade
 together when the fleet is measured at once. It raises the cost of
@@ -342,7 +348,7 @@ answers as evidence; there is nothing to argue with.
 | Altered transaction bodies | Sampled replay | Closes it where clients ask for bodies |
 | A dropped transaction | None proposed | A transaction sent through the provider and watched elsewhere |
 | A provider that proxies a node | Benchmarking burst | Raises the cost; a relay to the reference fails it, a relay to an honest node earns less than the node |
-| One operator, several identities | A bond, or an offer whitelist | Not detected; a second slot costs capital, or only listed keys are accepted while providers are known |
+| One operator, several identities | A bond | Not detected; a second slot costs capital |
 | A slow provider | Latency in the selection weight | A smaller share instead of every Nth request slow |
 | A provider that generates its own traffic | A payout cap per agreement per period | Bounds the gain; the rate limiter in front of the LB bounds the pace per address |
 | A liar that oscillates | N clean integrity rounds before readmission | Bounds the gain per offence |
@@ -365,8 +371,7 @@ change:
 4. **Replay of the sample against the reference,** one method at a time,
    starting with the transaction receipt, since that is the lie that
    breaks clients' writes.
-5. **The offer whitelist,** for the curated rollout, before any bond.
-6. **Providers compared with each other,** reusing the pinned read, with
+5. **Providers compared with each other,** reusing the pinned read, with
    the reference as the audit.
 
 What this note does not propose at any step: proving that a node exists

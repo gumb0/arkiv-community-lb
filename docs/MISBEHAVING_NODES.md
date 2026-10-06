@@ -340,6 +340,12 @@ answers as evidence; there is nothing to argue with.
 
 ## Each gap and its answer
 
+The checks around one provider, with everything in this note in
+place. v1 is the integrity round and the entry it writes; the rest is
+what the sections above add.
+
+![The checks around one provider, v1 and what this note adds](misbehaving-nodes-checks.svg)
+
 | Gap | Answer | How far it goes |
 | --- | --- | --- |
 | Wrong answers to queries and other methods | Sampled replay | Closes it, one method at a time |

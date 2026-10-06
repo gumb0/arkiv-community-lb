@@ -83,38 +83,12 @@ The node-operator side lives in the companion repo,
 
 ## Known limitations
 
-Deliberate for the first version, not oversights:
-
-- One load balancer instance, no redundancy: a restart is a short outage
-  for everyone using the endpoint.
-- Method filtering is a text search over the request body rather than a
-  JSON parse, so it can refuse a request that merely mentions a refused
-  name ([docs/ENDPOINT.md](docs/ENDPOINT.md)) and cannot count requests
-  per method.
-- An error the load balancer itself generates for a batch request is a
-  single JSON-RPC error object with `id: null`, not a response array
-  ([docs/ENDPOINT.md](docs/ENDPOINT.md)); batches a node answers arrive
-  as the node's array.
-- Nothing limits how many requests a client may send, or how many run at
-  once, so memory use scales with concurrency times the response cap.
-- Health is binary and probes decide it: a provider that answers its
-  probes within the probe timeout keeps its full share of traffic,
-  however slow its answers; one consistently slower than the probe
-  timeout leaves rotation entirely.
-- A provider's chain head lag is measured against a reference endpoint,
-  so while that endpoint is unreachable, one provider falling behind its
-  peers goes unnoticed.
-- Failover retries draw from the shared round-robin cursor rather than
-  remembering which providers a request already tried. So at the moment
-  a provider dies, a small share of the requests in flight can spend
-  their whole retry budget on it and fail, even though a healthy
-  provider was available. It takes heavily concurrent traffic to hit,
-  and quarantine closes the window after a few failures.
-- A settlement run that pays a provider and then cannot write that
-  provider's receipts leaves records that still look unpaid, and there
-  is no way to write those receipts afterwards. The run says so, names
-  the transfer it made and stops; what an operator can do from there
-  is in [docs/RUNBOOK.md](docs/RUNBOOK.md).
+Deliberate for the first version, not oversights, listed by area in
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md) with what an operator does
+about each. The first three an integrator meets: one instance, so a
+restart is a short outage; no limit on clients, so a rate limiter in
+front is part of the deployment; method filtering by text search, so
+a request that mentions a refused method name is refused.
 
 ## License
 

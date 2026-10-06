@@ -42,9 +42,10 @@
   <rect x="420" y="290" width="130" height="40" rx="4" class="box"/>
   <text x="485" y="315" class="t">integrity round</text>
 
-  <rect x="505" y="160" width="115" height="50" rx="4" class="box"/>
-  <text x="562" y="180" class="t">Monitor</text>
-  <text x="562" y="198" class="t small">health, every few seconds</text>
+  <rect x="505" y="155" width="115" height="62" rx="4" class="box"/>
+  <text x="562" y="174" class="t">Monitor</text>
+  <text x="562" y="192" class="t small">health,</text>
+  <text x="562" y="207" class="t small">every few seconds</text>
   <line x1="620" y1="178" x2="760" y2="92" class="v1"/>
   <text x="672" y="122" class="t lv1">probes</text>
   <line x1="505" y1="185" x2="480" y2="185" class="v1"/>

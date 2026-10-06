@@ -66,7 +66,7 @@ deployment, not to a later one.
 - **Rate limiting**, at the same reverse proxy, per client address. The
   LB has no limit of its own on how many requests a client may send or
   how many run at once ([known
-  limitations](../README.md#known-limitations)), and the limit is also
+  limitations](LIMITATIONS.md#serving)), and the limit is also
   what bounds a provider sending traffic to its own node through the
   public endpoint ([MARKETPLACE.md](MARKETPLACE.md#counting)).
 

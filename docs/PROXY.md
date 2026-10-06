@@ -122,7 +122,7 @@ of the attempt timeout and the time remaining). This is failover: in
 the short window when a provider is already dead but not yet
 quarantined, the client's request moves to another provider and the
 client almost never notices — the rare miss under heavily concurrent
-traffic is a known limitation (see the README).
+traffic is a known limitation ([LIMITATIONS.md](LIMITATIONS.md#serving)).
 
 The budget limits the damage when the request itself is the problem:
 such a request can reach only a few providers before it fails, instead

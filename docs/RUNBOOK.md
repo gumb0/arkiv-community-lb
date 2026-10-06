@@ -172,11 +172,33 @@ only.
   and the next flush closes its counter record with the count it
   holds, so what the provider served is still paid. Ask the operator
   to stop their tunnel.
-- Code updates: `git pull` (or check out a release tag), then
-  `docker compose up -d --build` — `--build` is only ever needed here.
+- Code updates: a release tag, below.
 - Reboot safety: Docker's enabled service plus `restart:
   unless-stopped` bring the stack back on boot; there is no systemd
   unit to manage.
+
+## Releases and updates
+
+A release is a git tag with its notes on GitHub. Deploy one with
+
+```sh
+git fetch --tags && git checkout v0.2.0
+docker compose up -d --build
+```
+
+The build takes a few minutes; `up -d` then stops the running LB,
+which writes its counts first and can take up to `stop_grace_period`
+(200 s), and starts the new one. The tunnel clients reconnect on their
+own and `/nodes` fills in within the boot window. Nothing on the
+providers' side changes unless the notes say so.
+
+Before updating, check the config keys the new tag adds or removes:
+the LB refuses to start on an unknown key, so a removed one has to
+leave `config.toml` first. The release notes say, and
+`git diff v0.1.0 v0.2.0 -- config.example.toml` shows every change
+between two tags.
+
+Going back is the same two commands with the previous tag.
 
 ## Changes that reach every provider
 

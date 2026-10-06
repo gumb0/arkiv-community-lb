@@ -267,6 +267,25 @@ pays is decided by the chain and not by a flag, and running it twice
 pays nobody twice. A weekly cron and a command run by hand are the
 same run.
 
+**From a cron.** On the machine that runs it: a clone of this
+repository with `settle/` installed (`npm ci`) and a `.env` at its
+root holding the reference endpoint and the settle block, nothing
+else; the key in a file only that user can read; and one line, here
+for Monday 06:00:
+
+```
+0 6 * * 1  cd /home/settle/arkiv-community-lb/settle && SETTLE_PRIVATE_KEY=$(cat /home/settle/.settle.key) npm run settle -- --pay >> /home/settle/settle.log 2>&1
+```
+
+Keep the log: it is the only record of a run that paid and could not
+write its receipts, below. Rehearse by hand (`npm run settle`, no
+key) before the line goes in and after any change to `.env`. How often
+the line fires is how often providers are paid; the settlement period
+(`settlement_period`, a week) is how much each run finds, so a daily
+line pays each provider as soon as its period closes and a weekly one
+pays it up to a week later. A run that fails exits 1, which cron does
+not report by itself; have the log checked, or mail it.
+
 **When a transfer fails**, nothing is lost: the run says so, moves to
 the next provider, and the next run finds those records unpaid.
 

@@ -301,3 +301,7 @@ Four commands of the node tooling's `marketplace.sh`, each a step:
 - **A registry.** A network-level key that creates every LB listing
   and hands it to its LB, so the tooling ships one address for any
   number of LBs.
+
+What each of these is for, what lies beyond them, and the order they
+would be worth taking in is
+[MARKETPLACE_FUTURE.md](MARKETPLACE_FUTURE.md).

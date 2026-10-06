@@ -35,8 +35,10 @@ not operator-chosen.
   once a day by default, closing one record per settlement period,
   which is what settle pays. The flow is
   [docs/MARKETPLACE.md](docs/MARKETPLACE.md); the records every
-  codebase encodes against are [docs/ENTITIES.md](docs/ENTITIES.md).
-  Tested in-process over a fake chain.
+  codebase encodes against are [docs/ENTITIES.md](docs/ENTITIES.md);
+  what an open marketplace would need beyond this is
+  [docs/MARKETPLACE_FUTURE.md](docs/MARKETPLACE_FUTURE.md). Tested
+  in-process over a fake chain.
 - **The settle CLI** (`settle/`): pays the providers. It reads the
   closed counter records and the receipts of earlier runs from Arkiv,
   sends one GLM transfer per provider on the payout chain, and writes

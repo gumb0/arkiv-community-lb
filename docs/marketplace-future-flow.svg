@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="720" viewBox="0 0 960 720" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14">
+  <defs>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9a9a9a"/>
+    </marker>
+    <marker id="n" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b4411a"/>
+    </marker>
+  </defs>
+  <style>
+    .v1 { stroke: #9a9a9a; fill: none; stroke-width: 1.6; marker-end: url(#g); }
+    .new { stroke: #b4411a; fill: none; stroke-width: 1.8; marker-end: url(#n); }
+    .lv1 { fill: #6a6a6a; }
+    .lnew { fill: #b4411a; font-weight: 600; }
+    .life { stroke: #c9c9c9; stroke-width: 1.2; stroke-dasharray: 5 5; }
+    .actor { fill: #f3f1ec; stroke: #8a8a8a; stroke-width: 1.2; }
+    .note { fill: #fbeee6; stroke: #b4411a; stroke-width: 1; }
+    .band { fill: #f3f1ec; stroke: none; }
+    .small { font-size: 12.5px; fill: #555; }
+  </style>
+  <rect width="960" height="720" fill="#ffffff"/>
+
+  <!-- actors -->
+  <rect x="60" y="20" width="150" height="34" rx="4" class="actor"/>
+  <text x="135" y="42" text-anchor="middle" font-weight="600">provider</text>
+  <rect x="405" y="20" width="150" height="34" rx="4" class="actor"/>
+  <text x="480" y="42" text-anchor="middle" font-weight="600">Arkiv records</text>
+  <rect x="750" y="20" width="150" height="34" rx="4" class="actor"/>
+  <text x="825" y="42" text-anchor="middle" font-weight="600">LB</text>
+
+  <!-- lifelines -->
+  <line x1="135" y1="54" x2="135" y2="700" class="life"/>
+  <line x1="480" y1="54" x2="480" y2="700" class="life"/>
+  <line x1="825" y1="54" x2="825" y2="700" class="life"/>
+
+  <!-- 1 listing -->
+  <line x1="825" y1="90" x2="480" y2="90" class="new"/>
+  <text x="652" y="82" text-anchor="middle" class="lnew">listing</text>
+  <text x="652" y="108" text-anchor="middle" class="small">ceiling rate, tier table, rate per eligible hour, bond amount, cap</text>
+  <text x="652" y="124" text-anchor="middle" class="small">(created by the registry, owned by the LB)</text>
+
+  <!-- 2 reads listings -->
+  <line x1="480" y1="150" x2="135" y2="150" class="v1"/>
+  <text x="307" y="142" text-anchor="middle" class="lv1">reads the listings, picks one</text>
+
+  <!-- 3 bond -->
+  <rect x="40" y="172" width="190" height="40" rx="3" class="note"/>
+  <text x="135" y="189" text-anchor="middle" class="lnew">bond deposited</text>
+  <text x="135" y="205" text-anchor="middle" class="small">on the payout chain</text>
+
+  <!-- 4 offer -->
+  <line x1="135" y1="240" x2="480" y2="240" class="new"/>
+  <text x="307" y="232" text-anchor="middle" class="lnew">offer: minimum rate, term</text>
+  <text x="307" y="258" text-anchor="middle" class="small">and the node's specs, as today</text>
+
+  <!-- 5 tunnel -->
+  <line x1="135" y1="290" x2="825" y2="290" class="new"/>
+  <text x="480" y="282" text-anchor="middle" class="lnew">tunnel connects, signed over the offer key</text>
+  <text x="480" y="308" text-anchor="middle" class="small">the LB assigns the port in its admission answer; no record yet</text>
+
+  <!-- 6 checks -->
+  <line x1="825" y1="340" x2="135" y2="340" class="v1"/>
+  <text x="480" y="332" text-anchor="middle" class="lv1">probes, integrity check, benchmark</text>
+
+  <!-- 7 agreement -->
+  <line x1="825" y1="385" x2="480" y2="385" class="new"/>
+  <text x="652" y="377" text-anchor="middle" class="lnew">agreement record</text>
+  <text x="652" y="403" text-anchor="middle" class="small">written after the checks; the bid, raised by the tier; term</text>
+  <line x1="480" y1="430" x2="135" y2="430" class="v1"/>
+  <text x="307" y="422" text-anchor="middle" class="lv1">reads the record</text>
+
+  <!-- 8 serving band -->
+  <rect x="60" y="455" width="840" height="46" rx="3" class="band"/>
+  <text x="480" y="474" text-anchor="middle" class="lv1">serves traffic; the LB refreshes the record every hour while the provider is eligible</text>
+  <text x="480" y="492" text-anchor="middle" class="lnew">sampled replay checks the traffic; the benchmark runs again on its own cadence</text>
+
+  <!-- 9 counter record -->
+  <line x1="825" y1="535" x2="480" y2="535" class="new"/>
+  <text x="652" y="527" text-anchor="middle" class="lnew">counter record per period</text>
+  <text x="652" y="553" text-anchor="middle" class="small">capped count, units, eligible hours, the period's rate</text>
+
+  <!-- 11 receipts -->
+  <line x1="825" y1="600" x2="480" y2="600" class="v1"/>
+  <text x="652" y="592" text-anchor="middle" class="lv1">receipts, written by settle</text>
+  <text x="652" y="618" text-anchor="middle" class="lnew">count × rate + hours × hourly rate</text>
+
+  <!-- 12 bond returned -->
+  <rect x="40" y="650" width="190" height="40" rx="3" class="note"/>
+  <text x="135" y="667" text-anchor="middle" class="lnew">bond returned</text>
+  <text x="135" y="683" text-anchor="middle" class="small">when the agreement ends</text>
+
+  <!-- legend -->
+  <line x1="500" y1="677" x2="540" y2="677" class="v1"/>
+  <text x="548" y="681" class="small">as in v1</text>
+  <line x1="630" y1="677" x2="670" y2="677" class="new"/>
+  <text x="678" y="681" class="small">new or changed</text>
+</svg>

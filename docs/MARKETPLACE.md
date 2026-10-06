@@ -302,6 +302,6 @@ Four commands of the node tooling's `marketplace.sh`, each a step:
   and hands it to its LB, so the tooling ships one address for any
   number of LBs.
 
-What each of these is for, what lies beyond them, and the order they
-would be worth taking in is
-[MARKETPLACE_FUTURE.md](MARKETPLACE_FUTURE.md).
+What an open marketplace would need beyond these, rate competition
+and the registry among them, and the order it would be worth building
+in, is [MARKETPLACE_FUTURE.md](MARKETPLACE_FUTURE.md).

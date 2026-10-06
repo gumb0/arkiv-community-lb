@@ -69,9 +69,10 @@ creator, creation and expiry heights, payload, attributes.
 Pinning the reference to the provider's own block is what makes the
 comparison exact. Blocks are two seconds apart, and two nodes asked at
 the same moment are often a block apart; asked at the same block, they
-must agree. The provider is never asked a pinned read, so the check
-cannot be told from client traffic by its shape, and a provider that
-lies to clients about an entity lies to the check.
+must agree. The provider is never asked a pinned read, so one check
+looks like one client's request; what can still give the checks away
+is their cadence, which is regular where client traffic is not (see
+below).
 
 One key serves the whole fleet each round, and the reference is asked
 once per block the providers answered at, not once per provider. The
@@ -219,10 +220,16 @@ work. Two fields, documented in `config.example.toml`:
 - **A provider that proxies an honest node.** It passes every check its
   upstream would pass. Nothing in the answers can tell it apart, and
   nothing here tries to.
+- **Wrong blocks at any other height.** The block check reads the
+  finalized block and no other. A node that serves it right and wrong
+  blocks above or below it passes every round.
+- **A dropped transaction.** A provider that accepts a transaction and
+  never broadcasts it answers nothing a read can see.
 - **A provider that serves wrong data to some clients and not others.**
   The checks reach a provider the way clients do, so it cannot tell them
-  apart by origin, but a provider that lies at random will be caught only
-  as often as the sampled read lands on a lie.
+  apart by origin; it can by cadence, since the rounds are regular and
+  client traffic is not, and a provider that lies at random is caught
+  only as often as the sampled read lands on a lie.
 - **A provider that fails the round's reads on purpose.** A read that
   errors or times out is unknown, never a verdict, since liveness is the
   health check's job. A provider that answers its probes and errors on
@@ -250,5 +257,5 @@ work. Two fields, documented in `config.example.toml`:
 - **Comparing providers against each other**, so the reference is not
   the only oracle.
 
-What each of these is for, what lies beyond them, and the order they
-would be worth taking in is [MISBEHAVING_NODES.md](MISBEHAVING_NODES.md).
+The whole problem, what lies beyond these, and the order they would
+be worth taking in is [MISBEHAVING_NODES.md](MISBEHAVING_NODES.md).

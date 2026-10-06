@@ -307,6 +307,24 @@ transaction and its amount on the payout chain, then choose one:
   manual job today: one receipt per record, under the settle key,
   naming that transaction (`ENTITIES.md` has the shape).
 
+## Keys
+
+Three secrets exist in this deployment, and the provider tooling ships
+the addresses of the first two as network values, like genesis.
+
+| | The LB key | The settle key | The reference API key |
+|---|---|---|---|
+| What it does | Signs every record the LB writes: the listing, agreements, counter records. Its address is the LB's identity: what the tooling trusts records by | Sends the GLM transfers on the payout chain and writes the receipts on Arkiv, one address on both chains, so a receipt's creator is the transfer's sender | Opens the metered reference endpoint for the LB, the sidecar and settle |
+| Where it lives | `writer.key` on this box, mounted into the sidecar as a secret, never in an environment | Given to a settle run per invocation; never on this box | `ARKIV_API_KEY` in `.env` on this box and on the settle machine |
+| What it must hold | Gas on Arkiv, for the writes (Day to day) | The GLM owed, and gas on both chains: the payout chain for the transfers, Arkiv for the receipts | Quota (Day to day) |
+| If it leaks | Anyone can write records as the LB: forge agreements, alter counts. Rotate at once | Anyone can spend the GLM in it, and write receipts that mark records paid. Rotate at once | Anyone can spend the quota. Rotate at the endpoint |
+| Rotating it | A new key is a new LB: the tooling ships the new address, every agreement expires unrefreshed, every provider re-onboards with a new offer. Settle the old key's records first. Announce it like a host move | Settle reads a record as paid only by a receipt from its own address, so a new key would pay every closed record again. Pay everything with the old key first, then switch, and accept that records closed before the switch and paid by the old key are paid again if any are left; a known limitation | Edit `.env`, then `docker compose up -d` here and nothing on the settle machine beyond its own `.env` |
+
+The provider's key is the operator's own: it posts the offer, signs
+the tunnel token and receives the payouts, and the node repository's
+README covers it. The admin API has no key; it is loopback-only, and
+that is its whole protection.
+
 ## Troubleshooting
 
 Symptom, then where to look.

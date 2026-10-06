@@ -172,17 +172,55 @@ only.
   and the next flush closes its counter record with the count it
   holds, so what the provider served is still paid. Ask the operator
   to stop their tunnel.
-- **A network reset** deletes every record. Before an announced reset,
-  run settle: what was counted and not paid by then cannot be paid
-  after. Once the network is back, set `health.chain_id` if the reset
-  changed it, then `docker compose restart lb`: the LB writes its
-  listing again and waits for offers, and every provider posts a new
-  offer with the key it has.
 - Code updates: `git pull` (or check out a release tag), then
   `docker compose up -d --build` — `--build` is only ever needed here.
 - Reboot safety: Docker's enabled service plus `restart:
   unless-stopped` bring the stack back on boot; there is no systemd
   unit to manage.
+
+## Changes that reach every provider
+
+Most config changes are a restart and nothing more. Three are not:
+each one has a consequence on the providers' side, and the operator
+has to know it before making the change.
+
+**Moving the LB to another host.** Copy `config.toml`, `.env` and
+`writer.key` to the new box, set `tunnel_server` in `config.toml` to
+the new box's address, and start the stack there; the old box is
+stopped first, so the two never write with the same key at once. The
+LB's identity is its key, so every agreement record and every
+provider's admission token stay valid, and the LB patches its listing
+with the new address at startup. But each provider's tunnel client
+dials the address written into its own `.env` when it joined, so
+every operator has to run `./marketplace.sh start-tunnel` again,
+which reads the new address from the listing and restarts their
+tunnel; the agreement, the token and the port are unchanged. Until
+they do, their nodes are unreachable, so announce the move with the
+deadline: an agreement expires `agreement_life` (three days) after its
+last refresh, and an unreachable provider is not refreshed. A provider
+that misses the deadline posts a new offer. If `tunnel_server` is a
+DNS name rather than an address, the move needs nothing from the
+operators: point the name at the new box and the clients reconnect
+on their own.
+
+**Changing the rate.** `wei_per_call` in `config.toml` and a restart;
+the LB patches its listing. The new rate applies to offers accepted
+from then on. Running agreements keep the rate in their record,
+whatever the listing says, and their counter records carry it, so do
+not expect the fleet to re-price: a provider moves to the new rate
+when its agreement expires and it posts a new offer. With a lowered
+rate that is only when the provider leaves and comes back; with a
+raised one, operators under agreement may ask to end their agreement
+early and re-post (Day to day, "Ending an agreement early").
+
+**A network reset** deletes every record. Before an announced reset,
+run settle: what was counted and not paid by then cannot be paid
+after. Once the network is back, set `health.chain_id` if the reset
+changed it, then `docker compose restart lb`: the LB writes its
+listing again and waits for offers, and every provider posts a new
+offer with the key it has, once their nodes have followed the reset.
+A running LB that was not restarted shows every refresh failing with
+a not-found error; that is the symptom, and the restart is the fix.
 
 ## Paying the providers
 

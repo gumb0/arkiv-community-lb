@@ -229,6 +229,17 @@ quality score is the precedent for the first: measured by the
 consumers' own requests, and an input to who is paired with whom the
 next epoch.
 
+Client traffic alone measures some of this for free: the Proxy sees
+every request's latency, so a latency tier needs no burst at all.
+What traffic cannot tell is what the burst is for: how much more than
+its round-robin share a node could take, which a weighted selection
+would need to steer heavy traffic; whether it serves history far
+below the head, which is what an archive node is; anything about a
+newcomer before it has traffic, so the rate at acceptance; and the
+relay to another node, which only a burst its upstream refuses
+shows. If none of those is wanted, the latency tier from traffic is
+enough and the benchmark is not worth building.
+
 **What it would measure:** throughput, as requests answered in a burst of a
 fixed size; latency under that load; and depth, whether the node answers
 at a block range far below the head, which is what an archive node is.
@@ -284,11 +295,11 @@ unit of capacity where a newcomer's is ranked by price alone.
 **What it costs:** load on the provider, by design; the reference's quota
 when the sample is checked there; and the bursts are recognisable, so a
 provider can answer bursts from a better node than it serves clients
-from, which is the [traffic-lying
-gap](MISBEHAVING_NODES.md#the-traffic-lying-provider-and-sampled-replay)
-again.
-The sampled replay of client traffic is the check against that, not the
-benchmark.
+from. The check against that is the latency of real client traffic,
+which the Proxy sees on every request: a provider whose client traffic
+is answered well slower than its benchmark was is not serving clients
+from the node it benchmarked, and a burst the traffic does not bear
+out earns no tier.
 
 ## Slots and a bond
 
@@ -446,9 +457,9 @@ change:
    the tunnel ports directly, its result a record per provider on the
    chain. A measurement only at first; paying by it, the rate at
    acceptance and a tier per settlement period, comes once the
-   sampled replay runs beside it, since replay is what catches a
-   provider that answers bursts from a better node than its clients
-   get.
+   latency of client traffic is kept per provider beside it, since
+   that is what catches a provider answering bursts from a better
+   node than its clients get.
 
 What this note does not propose at any step: permissionless LBs. The
 registry with a chosen set of LBs covers the stated direction; the

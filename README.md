@@ -6,7 +6,8 @@ Providers are discovered through an on-chain marketplace, paid in GLM for the
 requests they serve, and checked for integrity — the nodes are permissionless,
 not operator-chosen.
 
-**Status: under construction.**
+**Status: under construction.** The documents are indexed in
+[docs/README.md](docs/README.md).
 
 ## What is here
 

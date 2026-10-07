@@ -4,6 +4,65 @@ Notable changes per release, newest first. The LB box deploys a tag:
 `git checkout <tag> && docker compose up -d --build`
 ([docs/RUNBOOK.md](docs/RUNBOOK.md)).
 
+## v0.3.0
+
+Integrity: a provider serving wrong data is found and taken out of
+rotation, with both answers logged side by side; the handover
+package; the two design notes.
+
+- Integrity checks (`crates/lb/src/integrity.rs`, the `[integrity]`
+  section in config): once a round, every provider's block at the
+  finalized height and one entity read by key are compared with the
+  reference, the entity pinned to the block the provider answered at.
+  A difference that survives a second look is a divergence; the
+  provider leaves rotation, and only a later passing round brings it
+  back, never its probes. Stale is left to the lag check. The verdict
+  and its height show in `/nodes`; the evidence event carries both
+  answers whole ([docs/INTEGRITY.md](docs/INTEGRITY.md)). Without the
+  section, providers are judged by their probes alone.
+- A newcomer is checked at admission: once its admitted tunnel passes
+  its probes, the integrity check runs at that moment and the
+  agreement record is extended on the spot, not at the next hourly
+  refresh; a provider found serving wrong data keeps its first
+  lifetime and nothing more.
+- An accepted agreement's first lifetime is `offer_max_lifetime`, so
+  a record ends at or after its offer and an offer is accepted once;
+  `accept_window` is gone, and `offer_max_lifetime` defaults to one
+  day, the provider tooling's offer life. A lifetime lowered in config
+  no longer fails every refresh: a record that already expires later
+  is left out until it is within the new value.
+- A close whose answer was lost is found closed at the next flush, not
+  written again; a flush that landed through a crash is read back and
+  nothing is counted twice.
+- The LB's own reads carry a random request id, so a provider cannot
+  tell them from client traffic by it. The eligibility flip event is
+  named `eligibility flip`; the reference-unanswered warning carries
+  the reason.
+- The rig: a relay that can lie (`rig relay --lie entity|block|
+  frozen-head`, and `scripts/relay.sh` for a live node), and five
+  scenarios on it: `wrong-entity`, `wrong-block`, `frozen-head`,
+  `reference-down`, and `offer-accepted`, which runs the provider
+  tooling's own offer and tunnel token through the LB
+  ([docs/TESTING.md](docs/TESTING.md)).
+- The handover package: the runbook gains what the stack leaves to
+  the deployment (TLS, DNS, rate limiting), what normal operation
+  costs, releases and updates, the changes that reach every provider,
+  settle from a cron, and the keys in one table
+  ([docs/RUNBOOK.md](docs/RUNBOOK.md)); every known limitation in one
+  document ([docs/LIMITATIONS.md](docs/LIMITATIONS.md)); an index of
+  the documents ([docs/README.md](docs/README.md)).
+- Two design notes: [docs/MISBEHAVING_NODES.md](docs/MISBEHAVING_NODES.md),
+  the full problem of providers that serve wrong data and the steps
+  from here, and [docs/MARKETPLACE_FUTURE.md](docs/MARKETPLACE_FUTURE.md),
+  what an open marketplace needs beyond this version.
+
+Upgrade notes: `config.toml` changes in two places. `accept_window`
+must be removed, or the LB refuses to start on the unknown key; and
+the `[integrity]` section turns the checks on (`interval`,
+`confirm_after`, both with defaults), and needs the reference endpoint
+in `.env`. `offer_max_lifetime` now defaults to one day; set it back
+to two if the old value is wanted. Records on the chain are unchanged.
+
 ## v0.2.0
 
 The marketplace: a provider joins by posting an offer on Arkiv, serves

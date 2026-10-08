@@ -143,10 +143,6 @@ itself:
   afterwards; the run says so and stops, and a person decides
   ([RUNBOOK.md](RUNBOOK.md#paying-the-providers),
   [#37](https://github.com/gumb0/arkiv-community-lb/issues/37)).
-- **A rotated settle key pays every closed record again**, since a
-  record is read as paid only by a receipt from settle's own address
-  ([RUNBOOK.md](RUNBOOK.md#keys),
-  [#60](https://github.com/gumb0/arkiv-community-lb/issues/60)).
 - **One counter record settle cannot decode stops every provider
   being paid** ([#40](https://github.com/gumb0/arkiv-community-lb/issues/40)).
 - **A receipt is written after one confirmation**, so a reorg of the

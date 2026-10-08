@@ -299,10 +299,13 @@ Lifetime: permanent.
 
 Query, by settle before paying, per provider with closed records:
 `$creator == SETTLE_ADDRESS AND kind == "rpc.receipt" AND provider ==
-P`. The counter records whose key appears in a receipt are already paid
-and are skipped, so a settle run can be repeated safely. Query, by a
-provider: the same with its own address. The settle address is shipped
-with the provider tooling, next to the LB address.
+P`, once for the current settle address and once for each previous
+one, since a receipt written before a key rotation still marks its
+record paid. The counter records whose key appears in a receipt are
+already paid and are skipped, so a settle run can be repeated safely.
+Query, by a provider: the same with its own address. The settle
+address and the previous ones are shipped with the provider tooling,
+next to the LB address.
 
 ## Reading rules
 

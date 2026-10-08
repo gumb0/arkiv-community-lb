@@ -1,5 +1,6 @@
 // What a run owes: every closed counter record the LB wrote that no
-// receipt of ours names yet, grouped by provider.
+// receipt of ours, or of an earlier settle key, names yet, grouped by
+// provider.
 
 import type { Reader } from "./chain.ts"
 import {
@@ -38,10 +39,15 @@ export function amountOf(record: Counter): bigint {
 
 /**
  * The ledger a run would pay. Closed records are read once; a
- * provider's receipts are read per provider, which is one query per
- * provider that has anything owed and none for the rest.
+ * provider's receipts are read per provider and settle address, so
+ * nothing is read for a provider with no closed records.
  */
-export async function ledger(reader: Reader, lb: Hex, settle: Hex): Promise<Ledger> {
+export async function ledger(
+  reader: Reader,
+  lb: Hex,
+  settle: Hex,
+  previous: Hex[] = [],
+): Promise<Ledger> {
   const closed = (
     await reader.query(byKind(KIND.counter, creator(lb), attrStr("state", "closed")))
   ).map(decodeCounter)
@@ -60,10 +66,16 @@ export async function ledger(reader: Reader, lb: Hex, settle: Hex): Promise<Ledg
   const owed: Owed[] = []
   let paid = 0
   for (const [provider, records] of byProvider) {
-    const receipts = (
-      await reader.query(byKind(KIND.receipt, creator(settle), attrAddr("provider", provider)))
-    ).map(decodeReceipt)
-    const settled = new Set(receipts.map((receipt) => receipt.counter.toLowerCase()))
+    // One read per address, each filtered by its creator: anyone can
+    // write a receipt naming a provider, and a page of those must not
+    // hide the real ones.
+    const settled = new Set<string>()
+    for (const payer of [settle, ...previous]) {
+      const receipts = (
+        await reader.query(byKind(KIND.receipt, creator(payer), attrAddr("provider", provider)))
+      ).map(decodeReceipt)
+      for (const receipt of receipts) settled.add(receipt.counter.toLowerCase())
+    }
     const unpaid = records.filter((record) => !settled.has(record.key.toLowerCase()))
     paid += records.length - unpaid.length
     if (unpaid.length === 0) continue

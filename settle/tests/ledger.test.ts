@@ -77,6 +77,23 @@ describe("the ledger", () => {
     equal(plan.owed[0]?.records.length, 1)
   })
 
+  it("skips a record a receipt of a previous settle key names", async () => {
+    // A rotated key must not pay again what the old one paid.
+    const previous = address(8)
+    const chain = fakeChain([
+      closedCounter({ key: key(1), provider: address(1), count: 10 }),
+      closedCounter({ key: key(2), provider: address(1), count: 20 }),
+      receipt({ key: key(0x11), counter: key(1), provider: address(1), creator: previous }),
+    ])
+
+    const plan = await ledger(chain, LB, SETTLE, [previous])
+    equal(plan.paid, 1)
+    deepEqual(
+      plan.owed[0]?.records.map((record) => record.key),
+      [key(2)],
+    )
+  })
+
   it("leaves a record that is still counting alone", async () => {
     // Only a closed record is payable: an open one is still being
     // written to, and paying it would pay the same requests again
@@ -146,6 +163,17 @@ describe("the ledger", () => {
     await ledger(chain, LB, SETTLE)
     const receiptReads = chain.asked.filter((text) => text.includes("rpc.receipt"))
     equal(receiptReads.length, 1, "one provider, one read")
+  })
+
+  it("reads a provider's receipts once per settle address", async () => {
+    // One read per address, each filtered by its creator: a read of
+    // the provider's receipts by anyone would let a page of forged
+    // ones hide the real receipts.
+    const chain = fakeChain([closedCounter({ key: key(1), provider: address(1), count: 10 })])
+
+    await ledger(chain, LB, SETTLE, [address(8)])
+    const receiptReads = chain.asked.filter((text) => text.includes("rpc.receipt"))
+    equal(receiptReads.length, 2)
   })
 })
 

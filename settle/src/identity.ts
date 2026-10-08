@@ -21,3 +21,19 @@ export function settleAddress(fromKey?: Hex, configured?: string): Hex {
   }
   return fromKey
 }
+
+/**
+ * The addresses of earlier settle keys, from SETTLE_PREVIOUS_ADDRESSES:
+ * their receipts still say a record is paid, so a rotated key does
+ * not pay again what an old one paid.
+ */
+export function previousAddresses(current: Hex, configured?: string): Hex[] {
+  const previous = new Set<Hex>()
+  for (const entry of (configured ?? "").split(",")) {
+    const trimmed = entry.trim()
+    if (trimmed === "") continue
+    const address = getAddress(trimmed)
+    if (address !== current) previous.add(address)
+  }
+  return [...previous]
+}

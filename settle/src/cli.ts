@@ -4,7 +4,7 @@
 import { formatEther, getAddress, type Hex } from "viem"
 import { parseArgs, USAGE } from "./args.ts"
 import { connectReader, connectWriter } from "./chain.ts"
-import { settleAddress } from "./identity.ts"
+import { previousAddresses, settleAddress } from "./identity.ts"
 import { ledger } from "./ledger.ts"
 import { pay } from "./pay.ts"
 import { connectPayout, problems } from "./payout.ts"
@@ -44,9 +44,13 @@ async function main(): Promise<void> {
     privateKey: key,
   })
   const settle = settleAddress(payout.address, optional("SETTLE_ADDRESS"))
+  const previous = previousAddresses(settle, optional("SETTLE_PREVIOUS_ADDRESSES"))
 
-  const plan = await ledger(reader, lb, settle)
+  const plan = await ledger(reader, lb, settle, previous)
   console.log(`Chain ${reader.chainId}, the LB's records under ${lb}`)
+  if (previous.length > 0) {
+    console.log(`Receipts of earlier settle keys count as paid: ${previous.join(", ")}`)
+  }
   for (const entry of plan.owed) {
     console.log(
       `${entry.provider}  ${formatEther(entry.amountWei)} GLM  ${entry.records.length} record${entry.records.length === 1 ? "" : "s"}`,

@@ -32,6 +32,7 @@ async fn main() {
         Err(error) => fail(&error),
     };
     tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
         public = %service.public_addr,
         admin = %service.admin_addr,
         providers,

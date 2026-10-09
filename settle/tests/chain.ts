@@ -9,7 +9,7 @@ import { KIND, type ReceiptRecord } from "../src/records.ts"
 export const LB = "0x1111111111111111111111111111111111111111" as Hex
 export const SETTLE = "0x2222222222222222222222222222222222222222" as Hex
 
-export function provider(n: number): Hex {
+export function address(n: number): Hex {
   return `0x${String(n).repeat(40)}`.slice(0, 42) as Hex
 }
 

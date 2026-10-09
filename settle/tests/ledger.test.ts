@@ -10,7 +10,7 @@ import {
   fakeChain,
   key,
   openCounter,
-  provider,
+  address,
   receipt,
 } from "./chain.ts"
 
@@ -21,15 +21,15 @@ describe("the ledger", () => {
     // The rate is the record's own: the LB's configuration may have
     // moved since, and the deal it was counted under did not.
     const chain = fakeChain([
-      closedCounter({ key: key(1), provider: provider(1), count: 1000, weiPerCall: GLM / 1000n }),
-      closedCounter({ key: key(2), provider: provider(1), count: 500, weiPerCall: GLM / 500n }),
-      closedCounter({ key: key(3), provider: provider(2), count: 1, weiPerCall: GLM }),
+      closedCounter({ key: key(1), provider: address(1), count: 1000, weiPerCall: GLM / 1000n }),
+      closedCounter({ key: key(2), provider: address(1), count: 500, weiPerCall: GLM / 500n }),
+      closedCounter({ key: key(3), provider: address(2), count: 1, weiPerCall: GLM }),
     ])
 
     const plan = await ledger(chain, LB, SETTLE)
     equal(plan.owed.length, 2)
     const [first, second] = plan.owed
-    equal(first?.provider, provider(1).toLowerCase())
+    equal(first?.provider, address(1).toLowerCase())
     equal(first?.amountWei, 2n * GLM, "one GLM from each of its records")
     equal(second?.amountWei, GLM)
     equal(plan.totalOwedWei, 3n * GLM)
@@ -38,9 +38,9 @@ describe("the ledger", () => {
 
   it("skips a record a receipt of ours already names", async () => {
     const chain = fakeChain([
-      closedCounter({ key: key(1), provider: provider(1), count: 10 }),
-      closedCounter({ key: key(2), provider: provider(1), count: 20 }),
-      receipt({ key: key(0x11), counter: key(1), provider: provider(1) }),
+      closedCounter({ key: key(1), provider: address(1), count: 10 }),
+      closedCounter({ key: key(2), provider: address(1), count: 20 }),
+      receipt({ key: key(0x11), counter: key(1), provider: address(1) }),
     ])
 
     const plan = await ledger(chain, LB, SETTLE)
@@ -53,8 +53,8 @@ describe("the ledger", () => {
 
   it("pays nobody when every record is receipted", async () => {
     const chain = fakeChain([
-      closedCounter({ key: key(1), provider: provider(1), count: 10 }),
-      receipt({ key: key(0x11), counter: key(1), provider: provider(1) }),
+      closedCounter({ key: key(1), provider: address(1), count: 10 }),
+      receipt({ key: key(0x11), counter: key(1), provider: address(1) }),
     ])
 
     const plan = await ledger(chain, LB, SETTLE)
@@ -66,10 +66,10 @@ describe("the ledger", () => {
   it("counts a receipt written by another key for nothing", async () => {
     // Only settle's own receipts say a record is paid; anyone can
     // write a record that looks like one.
-    const stranger = provider(9)
+    const stranger = address(9)
     const chain = fakeChain([
-      closedCounter({ key: key(1), provider: provider(1), count: 10 }),
-      receipt({ key: key(0x11), counter: key(1), provider: provider(1), creator: stranger }),
+      closedCounter({ key: key(1), provider: address(1), count: 10 }),
+      receipt({ key: key(0x11), counter: key(1), provider: address(1), creator: stranger }),
     ])
 
     const plan = await ledger(chain, LB, SETTLE)
@@ -82,8 +82,8 @@ describe("the ledger", () => {
     // written to, and paying it would pay the same requests again
     // when it closes.
     const chain = fakeChain([
-      closedCounter({ key: key(1), provider: provider(1), count: 10 }),
-      openCounter({ key: key(2), provider: provider(1), count: 7 }),
+      closedCounter({ key: key(1), provider: address(1), count: 10 }),
+      openCounter({ key: key(2), provider: address(1), count: 7 }),
     ])
 
     const plan = await ledger(chain, LB, SETTLE)
@@ -95,7 +95,7 @@ describe("the ledger", () => {
 
   it("leaves a record written at a newer schema version alone", async () => {
     const chain = fakeChain([
-      closedCounter({ key: key(1), provider: provider(1), count: 10, version: 2 }),
+      closedCounter({ key: key(1), provider: address(1), count: 10, version: 2 }),
     ])
 
     const plan = await ledger(chain, LB, SETTLE)
@@ -117,9 +117,9 @@ describe("the ledger", () => {
   })
 
   it("leaves another LB's records alone", async () => {
-    const other = provider(8)
+    const other = address(8)
     const chain = fakeChain([
-      closedCounter({ key: key(1), provider: provider(1), count: 10, creator: other }),
+      closedCounter({ key: key(1), provider: address(1), count: 10, creator: other }),
     ])
 
     const plan = await ledger(chain, LB, SETTLE)
@@ -128,9 +128,9 @@ describe("the ledger", () => {
 
   it("puts a provider's oldest period first", async () => {
     const chain = fakeChain([
-      closedCounter({ key: key(2), provider: provider(1), count: 1, closedBlock: 900 }),
-      closedCounter({ key: key(1), provider: provider(1), count: 1, closedBlock: 300 }),
-      closedCounter({ key: key(3), provider: provider(1), count: 1, closedBlock: 600 }),
+      closedCounter({ key: key(2), provider: address(1), count: 1, closedBlock: 900 }),
+      closedCounter({ key: key(1), provider: address(1), count: 1, closedBlock: 300 }),
+      closedCounter({ key: key(3), provider: address(1), count: 1, closedBlock: 600 }),
     ])
 
     const plan = await ledger(chain, LB, SETTLE)
@@ -141,7 +141,7 @@ describe("the ledger", () => {
   })
 
   it("reads the receipts of a provider that has records, and of no other", async () => {
-    const chain = fakeChain([closedCounter({ key: key(1), provider: provider(1), count: 10 })])
+    const chain = fakeChain([closedCounter({ key: key(1), provider: address(1), count: 10 })])
 
     await ledger(chain, LB, SETTLE)
     const receiptReads = chain.asked.filter((text) => text.includes("rpc.receipt"))
@@ -155,7 +155,7 @@ describe("what one record is owed", () => {
       amountOf({
         key: key(1),
         agreement: key(0xaa),
-        provider: provider(1),
+        provider: address(1),
         count: 48213n,
         weiPerCall: 10n ** 15n,
         openedBlock: 1204000n,

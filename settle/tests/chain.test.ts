@@ -3,9 +3,9 @@
 import { deepStrictEqual as deepEqual, strictEqual as equal } from "node:assert/strict"
 import { describe, it } from "node:test"
 import { everyPage, type Page } from "../src/chain.ts"
-import { closedCounter, key, provider } from "./chain.ts"
+import { address, closedCounter, key } from "./chain.ts"
 
-const row = (n: number) => closedCounter({ key: key(n), provider: provider(1), count: n })
+const row = (n: number) => closedCounter({ key: key(n), provider: address(1), count: n })
 
 describe("reading every page", () => {
   it("follows the cursor until a page names no next one", async () => {

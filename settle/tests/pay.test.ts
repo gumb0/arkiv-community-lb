@@ -13,7 +13,7 @@ import {
   closedCounter,
   fakeChain,
   key,
-  provider,
+  address,
   receipt,
   written,
 } from "./chain.ts"
@@ -78,9 +78,9 @@ function payloadOf(record: ReceiptRecord): Record<string, unknown> {
 describe("a run", () => {
   it("sends one transfer per provider and a receipt per record", async () => {
     const chain = fakeChain([
-      closedCounter({ key: key(1), provider: provider(1), count: 10 }),
-      closedCounter({ key: key(2), provider: provider(1), count: 20 }),
-      closedCounter({ key: key(3), provider: provider(2), count: 5 }),
+      closedCounter({ key: key(1), provider: address(1), count: 10 }),
+      closedCounter({ key: key(2), provider: address(1), count: 20 }),
+      closedCounter({ key: key(3), provider: address(2), count: 5 }),
     ])
     const plan = await ledger(chain, LB, SETTLE)
     const it = run()
@@ -91,7 +91,7 @@ describe("a run", () => {
     equal(it.written.length, 3, "one receipt each, not one per provider")
     equal(paid.length, 2)
     equal(
-      it.sent.find((transfer) => transfer.to === provider(1).toLowerCase())?.amountWei,
+      it.sent.find((transfer) => transfer.to === address(1).toLowerCase())?.amountWei,
       30n * 10n ** 15n,
       "both records in one transfer",
     )
@@ -101,7 +101,7 @@ describe("a run", () => {
     const chain = fakeChain([
       closedCounter({
         key: key(1),
-        provider: provider(1),
+        provider: address(1),
         agreement: key(0xaa),
         count: 48213,
         weiPerCall: 10n ** 15n,
@@ -122,14 +122,14 @@ describe("a run", () => {
   })
 
   it("pays nobody the second time", async () => {
-    const rows = [closedCounter({ key: key(1), provider: provider(1), count: 10 })]
+    const rows = [closedCounter({ key: key(1), provider: address(1), count: 10 })]
     const first = run()
     const paidFirst = await first.pay(await ledger(fakeChain(rows), LB, SETTLE))
     equal(paidFirst.length, 1)
     equal(first.sent.length, 1)
 
     // The receipt the first run wrote is what the second one reads.
-    rows.push(receipt({ key: key(0x11), counter: key(1), provider: provider(1) }))
+    rows.push(receipt({ key: key(0x11), counter: key(1), provider: address(1) }))
     const again = run()
     const paid = await again.pay(await ledger(fakeChain(rows), LB, SETTLE))
 
@@ -141,9 +141,9 @@ describe("a run", () => {
     // The two halves meet here: what pay writes is what ledger reads,
     // and the receipt's counter attribute is the whole of it.
     const rows = [
-      closedCounter({ key: key(1), provider: provider(1), count: 10 }),
-      closedCounter({ key: key(2), provider: provider(1), count: 20 }),
-      closedCounter({ key: key(3), provider: provider(2), count: 5 }),
+      closedCounter({ key: key(1), provider: address(1), count: 10 }),
+      closedCounter({ key: key(2), provider: address(1), count: 20 }),
+      closedCounter({ key: key(3), provider: address(2), count: 5 }),
     ]
     const first = run()
     await first.pay(await ledger(fakeChain(rows), LB, SETTLE))
@@ -162,7 +162,7 @@ describe("a run", () => {
     // A hundred receipts are not a hundred transactions: that is what
     // the batch is for.
     const rows = Array.from({ length: 120 }, (_, at) =>
-      closedCounter({ key: key(at + 1), provider: provider(1), count: 1 }),
+      closedCounter({ key: key(at + 1), provider: address(1), count: 1 }),
     )
     const it = run()
 
@@ -179,7 +179,7 @@ describe("a run", () => {
   it("sends nothing at all when something stands in the way", async () => {
     // Short of Arkiv gas, a run would make every transfer and write
     // no receipt: every provider paid with nothing to say so.
-    const chain = fakeChain([closedCounter({ key: key(1), provider: provider(1), count: 10 })])
+    const chain = fakeChain([closedCounter({ key: key(1), provider: address(1), count: 10 })])
     const plan = await ledger(chain, LB, SETTLE)
     const it = run()
 
@@ -196,7 +196,7 @@ describe("a run", () => {
     // it still land, and each one that does is a record the next run
     // will not pay twice.
     const rows = Array.from({ length: 120 }, (_, at) =>
-      closedCounter({ key: key(at + 1), provider: provider(1), count: 1 }),
+      closedCounter({ key: key(at + 1), provider: address(1), count: 1 }),
     )
     const it = run({ refuseBatch: 2 })
 
@@ -216,9 +216,9 @@ describe("a run", () => {
     // after this one: no gas on Arkiv, the endpoint gone. Going on
     // would pay each of them and record none of it.
     const chain = fakeChain([
-      closedCounter({ key: key(1), provider: provider(1), count: 10 }),
-      closedCounter({ key: key(2), provider: provider(2), count: 20 }),
-      closedCounter({ key: key(3), provider: provider(3), count: 30 }),
+      closedCounter({ key: key(1), provider: address(1), count: 10 }),
+      closedCounter({ key: key(2), provider: address(2), count: 20 }),
+      closedCounter({ key: key(3), provider: address(3), count: 30 }),
     ])
     const plan = await ledger(chain, LB, SETTLE)
     const it = run({ failWrites: true })
@@ -237,8 +237,8 @@ describe("a run", () => {
 
   it("stops when it lost sight of a transfer", async () => {
     const chain = fakeChain([
-      closedCounter({ key: key(1), provider: provider(1), count: 10 }),
-      closedCounter({ key: key(2), provider: provider(2), count: 20 }),
+      closedCounter({ key: key(1), provider: address(1), count: 10 }),
+      closedCounter({ key: key(2), provider: address(2), count: 20 }),
     ])
     const plan = await ledger(chain, LB, SETTLE)
     const it = run({ unresolved: true })
@@ -254,11 +254,11 @@ describe("a run", () => {
     // one repeats it at best, and at worst sends a transfer into the
     // same conditions and loses sight of it.
     const chain = fakeChain([
-      closedCounter({ key: key(1), provider: provider(1), count: 10 }),
-      closedCounter({ key: key(2), provider: provider(2), count: 20 }),
+      closedCounter({ key: key(1), provider: address(1), count: 10 }),
+      closedCounter({ key: key(2), provider: address(2), count: 20 }),
     ])
     const plan = await ledger(chain, LB, SETTLE)
-    const it = run({ failFor: provider(1) })
+    const it = run({ failFor: address(1) })
 
     const paid = await it.pay(plan)
 
@@ -280,7 +280,7 @@ describe("a run", () => {
     // Viem gives up waiting after a few minutes of a chain that is
     // merely slow, and the transaction can be mined after that. A run
     // that called this a failure would send it again.
-    const chain = fakeChain([closedCounter({ key: key(1), provider: provider(1), count: 10 })])
+    const chain = fakeChain([closedCounter({ key: key(1), provider: address(1), count: 10 })])
     const plan = await ledger(chain, LB, SETTLE)
     const it = run({ unresolved: true })
 
@@ -307,7 +307,7 @@ describe("a run", () => {
   it("says so loudly when it paid and could not write the receipts", async () => {
     // The money is gone and the record still looks unpaid, which is
     // the one failure a later run cannot tell from an unpaid record.
-    const chain = fakeChain([closedCounter({ key: key(1), provider: provider(1), count: 10 })])
+    const chain = fakeChain([closedCounter({ key: key(1), provider: address(1), count: 10 })])
     const plan = await ledger(chain, LB, SETTLE)
     const it = run({ failWrites: true })
 

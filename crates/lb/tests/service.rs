@@ -226,7 +226,8 @@ async fn nodes_is_a_current_view_of_the_pool() {
             "chain_verified": false,
             "health_streak": 0,
             "last_height": null,
-            "served": 0,
+            "served_period": 0,
+            "served_total": 0,
             "transport_failures": 0,
             "last_probe_ms": null,
             "integrity_verdict": null,
@@ -286,7 +287,8 @@ async fn nodes_is_a_current_view_of_the_pool() {
     assert_eq!(node["chain_verified"], false);
     assert_eq!(node["health_streak"], 3);
     assert_eq!(node["last_height"], 0, "genesis height is not 'unknown'");
-    assert_eq!(node["served"], 2);
+    assert_eq!(node["served_period"], 2);
+    assert_eq!(node["served_total"], 2);
     assert_eq!(node["transport_failures"], 1);
     assert_eq!(node["last_probe_ms"], 7);
 

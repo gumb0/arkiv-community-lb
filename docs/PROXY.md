@@ -42,9 +42,12 @@ no separate snapshot or cache.
     "chain_verified": true,
     "health_streak": 4,
     "last_height": 12345,
-    "served": 98,
+    "served_period": 98,
+    "served_total": 1540,
     "transport_failures": 2,
-    "last_probe_ms": 12
+    "last_probe_ms": 12,
+    "integrity_verdict": "match",
+    "integrity_height": 12300
   },
   {
     "id": "0x2121212121212121212121212121212121212121",
@@ -56,9 +59,12 @@ no separate snapshot or cache.
     "chain_verified": false,
     "health_streak": -2,
     "last_height": null,
-    "served": 0,
+    "served_period": 0,
+    "served_total": 0,
     "transport_failures": 0,
-    "last_probe_ms": null
+    "last_probe_ms": null,
+    "integrity_verdict": null,
+    "integrity_height": null
   }
 ]
 ```
@@ -73,18 +79,22 @@ no separate snapshot or cache.
   record, null for a static one.
 - `ineligibility_reason` says why a provider is out of rotation:
   `probe`, `traffic`, `lag`, or `chain` — the source of its latest
-  health signal. It is `null` while the provider is eligible. A fresh
-  provider reads `probe`: born ineligible, no passing probe yet.
+  health signal — or `integrity`, a confirmed divergence
+  ([INTEGRITY.md](INTEGRITY.md)). It is `null` while the provider is
+  eligible. A fresh provider reads `probe`: born ineligible, no
+  passing probe yet.
 - `chain_verified` says the provider passed its last chain-identity
   check. It stays `false` when no `chain_id` is configured.
 - `health_streak` is positive for consecutive successes and negative
   for consecutive failures.
 - `last_height` is the last successfully decoded block height, or
   `null` before one is observed. Height zero is reported as zero.
-- `served` counts completed public forwards in the current settlement
-  period, the billing basis. A marketplace provider's count starts
-  from what its open counter record on the chain already holds, so a
-  restart of the LB does not lose the period's count.
+- `served_period` counts completed public forwards in the current
+  settlement period, the billing basis. A marketplace provider's count
+  starts from what its open counter record on the chain already holds,
+  so a restart of the LB does not lose the period's count.
+  `served_total` counts them since the process started and is never
+  reset or seeded: the stats basis.
 - `transport_failures` counts public forwarding attempts that produced
   no provider answer, such as connection errors, timeouts, non-2xx
   statuses, and incomplete response bodies.
@@ -93,6 +103,9 @@ no separate snapshot or cache.
   in whole milliseconds. It is `null` before the first probe; a
   round trip shorter than one millisecond is reported as zero. It remains
   `null` when an unanswered chain check prevents the height probe.
+- `integrity_verdict` is the last integrity verdict (`match`, `stale`,
+  `divergence`, `unknown`) and `integrity_height` the height it was
+  given at; both `null` before any round has judged the provider.
 
 ## Pinned forward
 

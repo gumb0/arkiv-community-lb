@@ -85,6 +85,9 @@ pub struct Provider {
     /// billing basis: what the agreement's open counter record on the
     /// chain should say.
     pub served: AtomicU64,
+    /// Completed forwards since the process started, never reset: the
+    /// stats basis, which the hourly buckets are differences of.
+    pub served_total: AtomicU64,
     /// Client-traffic attempts that did not produce a provider answer.
     pub transport_failures: AtomicU64,
     /// Source of the most recent health signal. Starts as `Probe`:
@@ -149,6 +152,7 @@ impl Provider {
             next_probe: Mutex::new(Instant::now()),
             unanswered_probe_streak: AtomicU32::new(0),
             served: AtomicU64::new(0),
+            served_total: AtomicU64::new(0),
             transport_failures: AtomicU64::new(0),
             last_health_source: AtomicU8::new(HealthSignal::Probe as u8),
             last_probe_ms: AtomicU64::new(u64::MAX),
@@ -197,6 +201,7 @@ impl Provider {
     /// billing basis.
     pub fn record_served(&self) {
         self.served.fetch_add(1, Ordering::Relaxed);
+        self.served_total.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The settlement period just written and closed: its count is no
@@ -601,6 +606,9 @@ mod tests {
         provider.record_served();
         provider.seed_served(48213);
         assert_eq!(provider.served.load(Ordering::Relaxed), 48214);
+        // The total is this process's own count: what the chain
+        // already held is not its to carry.
+        assert_eq!(provider.served_total.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -614,6 +622,7 @@ mod tests {
             provider.record_served();
         }
         provider.subtract_served(10);
+        assert_eq!(provider.served_total.load(Ordering::Relaxed), 3);
         assert_eq!(provider.served.load(Ordering::Relaxed), 3);
     }
 

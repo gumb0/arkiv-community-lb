@@ -263,7 +263,11 @@ struct NodeView {
     chain_verified: bool,
     health_streak: i64,
     last_height: Option<u64>,
-    served: u64,
+    /// Completed forwards in the current settlement period: what the
+    /// open counter record should say.
+    served_period: u64,
+    /// Completed forwards since the process started, never reset.
+    served_total: u64,
     transport_failures: u64,
     last_probe_ms: Option<u64>,
     /// The last integrity verdict and the height it was given at;
@@ -290,7 +294,8 @@ impl From<&Provider> for NodeView {
             chain_verified: provider.chain_verified.load(Ordering::Relaxed),
             health_streak: provider.health_streak.load(Ordering::Relaxed),
             last_height: provider.last_height(),
-            served: provider.served.load(Ordering::Relaxed),
+            served_period: provider.served.load(Ordering::Relaxed),
+            served_total: provider.served_total.load(Ordering::Relaxed),
             transport_failures: provider.transport_failures.load(Ordering::Relaxed),
             last_probe_ms: provider.last_probe_ms(),
             integrity_verdict: provider.last_verdict().map(|(verdict, _)| verdict.as_str()),

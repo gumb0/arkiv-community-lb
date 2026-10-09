@@ -346,6 +346,32 @@ async fn deadline_wins_over_remaining_budget() {
     let (status, body) = post(&public, request(5)).await;
     assert_eq!(status, 504); // Gateway Timeout
     assert_eq!(body["error"]["code"], REQUEST_TIMED_OUT);
+    assert_eq!(
+        _service.pool.lb_outcomes.timed_out.load(Ordering::Relaxed),
+        1
+    );
+}
+
+#[tokio::test]
+async fn the_answers_the_lb_gives_itself_are_counted() {
+    let addrs = [dead_addr().await, dead_addr().await];
+    let (service, public) = start_lb(&addrs).await;
+    let outcomes = &service.pool.lb_outcomes;
+
+    // Both providers dead: the budget runs out with no answer.
+    let (status, _) = post(&public, request(1)).await;
+    assert_eq!(status, 503);
+    assert_eq!(outcomes.no_provider_answered.load(Ordering::Relaxed), 1);
+
+    // Nobody eligible: refused before any attempt.
+    for provider in service.pool.snapshot().iter() {
+        provider.set_health(false);
+    }
+    let (status, _) = post(&public, request(2)).await;
+    assert_eq!(status, 503);
+    assert_eq!(outcomes.no_healthy_provider.load(Ordering::Relaxed), 1);
+    assert_eq!(outcomes.no_provider_answered.load(Ordering::Relaxed), 1);
+    assert_eq!(outcomes.timed_out.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]

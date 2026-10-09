@@ -506,6 +506,21 @@ type Members = Vec<Arc<Provider>>;
 pub struct Pool {
     members: ArcSwap<Members>,
     cursor: AtomicUsize,
+    /// The requests the LB answered itself, with no provider answer in
+    /// them; counted here because they belong to no entry.
+    pub lb_outcomes: LbOutcomes,
+}
+
+/// The outcomes the LB produces on its own, as monotone counters since
+/// the process started: the stats basis beside each entry's total.
+#[derive(Debug, Default)]
+pub struct LbOutcomes {
+    /// No provider was eligible when the request arrived.
+    pub no_healthy_provider: AtomicU64,
+    /// The request deadline passed before any provider answered.
+    pub timed_out: AtomicU64,
+    /// The retry budget ran out with no provider answer.
+    pub no_provider_answered: AtomicU64,
 }
 
 impl Pool {
@@ -517,6 +532,7 @@ impl Pool {
         Ok(Self {
             members: ArcSwap::from_pointee(members),
             cursor: AtomicUsize::new(0),
+            lb_outcomes: LbOutcomes::default(),
         })
     }
 

@@ -1,7 +1,10 @@
 //! The public listener: the served JSON-RPC endpoint, with failover
 //! over the provider pool.
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{Arc, atomic::Ordering},
+    time::Instant,
+};
 
 use axum::{
     Json, Router,
@@ -133,6 +136,11 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
     for _ in 0..max_attempts {
         let Some(provider) = state.pool.next_eligible() else {
             log_outcome(started, attempts, None, "no_healthy_provider");
+            state
+                .pool
+                .lb_outcomes
+                .no_healthy_provider
+                .fetch_add(1, Ordering::Relaxed);
             return error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 jsonrpc::NO_HEALTHY_PROVIDER,
@@ -183,6 +191,11 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
     // own code.
     if Instant::now() >= deadline {
         log_outcome(started, attempts, None, "timed_out");
+        state
+            .pool
+            .lb_outcomes
+            .timed_out
+            .fetch_add(1, Ordering::Relaxed);
         error(
             StatusCode::GATEWAY_TIMEOUT,
             jsonrpc::REQUEST_TIMED_OUT,
@@ -191,6 +204,11 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
         )
     } else {
         log_outcome(started, attempts, None, "no_provider_answered");
+        state
+            .pool
+            .lb_outcomes
+            .no_provider_answered
+            .fetch_add(1, Ordering::Relaxed);
         error(
             StatusCode::SERVICE_UNAVAILABLE,
             jsonrpc::NO_HEALTHY_PROVIDER,

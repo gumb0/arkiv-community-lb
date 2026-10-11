@@ -14,3 +14,4 @@ pub mod monitor;
 pub mod pool;
 pub mod proxy;
 pub mod service;
+pub mod stats;

@@ -21,6 +21,8 @@ use lb::{
 };
 use serde_json::{Value, json};
 
+mod common;
+
 /// One recorded request: the headers and body a provider saw.
 type Seen = (HeaderMap, Bytes);
 
@@ -141,6 +143,7 @@ async fn start_lb_with(
     tune: impl FnOnce(&mut Config),
 ) -> (lb::service::Service, String) {
     let mut config = Config::default();
+    config.stats.file = common::stats_file();
     config.listen.public = "127.0.0.1:0".parse().expect("addr");
     config.listen.admin = "127.0.0.1:0".parse().expect("addr");
     // No Monitor: these tests set eligibility by hand, and a probe

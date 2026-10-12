@@ -28,14 +28,22 @@ use common::{
 
 const CHAIN_ID: u64 = 1337;
 
+/// A config for a service started by a test: both listeners on a port
+/// of the system's choosing, and a stats file of the test's own.
+fn config() -> Config {
+    let mut config = Config::default();
+    config.listen.public = "127.0.0.1:0".parse().expect("addr");
+    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    config.stats.file = common::stats_file();
+    config
+}
+
 #[tokio::test]
 async fn boots_serves_and_shuts_down() {
-    let mut config = Config::default();
+    let mut config = config();
     // No Monitor: even over an empty pool a probe round would complete
     // and flip `ready`, making its assertion below racy.
     config.health.disable_probing = true;
-    config.listen.public = "127.0.0.1:0".parse().expect("addr");
-    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
     let service = lb::service::start(config).await.expect("service boots");
     let public = format!("http://{}", service.public_addr);
     let admin = format!("http://{}", service.admin_addr);
@@ -146,10 +154,8 @@ async fn shutdown_lets_an_in_flight_request_finish() {
     let provider_addr = listener.local_addr().expect("addr");
     tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
 
-    let mut config = Config::default();
+    let mut config = config();
     config.health.disable_probing = true;
-    config.listen.public = "127.0.0.1:0".parse().expect("addr");
-    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
     config.providers = vec![Provider {
         id: "held".into(),
         url: format!("http://{provider_addr}"),
@@ -194,10 +200,8 @@ async fn shutdown_lets_an_in_flight_request_finish() {
 
 #[tokio::test]
 async fn nodes_is_a_current_view_of_the_pool() {
-    let mut config = Config::default();
+    let mut config = config();
     config.health.disable_probing = true;
-    config.listen.public = "127.0.0.1:0".parse().expect("addr");
-    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
     config.providers = vec![Provider {
         id: "node-1".into(),
         url: "http://127.0.0.1:18545".into(),
@@ -297,9 +301,7 @@ async fn nodes_is_a_current_view_of_the_pool() {
 
 #[tokio::test]
 async fn a_bad_reference_url_refuses_to_start() {
-    let mut config = Config::default();
-    config.listen.public = "127.0.0.1:0".parse().expect("addr");
-    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    let mut config = config();
     config.reference = Some("not a url".into());
 
     let error = lb::service::start(config)
@@ -310,9 +312,7 @@ async fn a_bad_reference_url_refuses_to_start() {
 
 #[tokio::test]
 async fn an_integrity_section_without_a_reference_refuses_to_start() {
-    let mut config = Config::default();
-    config.listen.public = "127.0.0.1:0".parse().expect("addr");
-    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    let mut config = config();
     config.integrity = Some(lb::config::Integrity::default());
 
     let error = lb::service::start(config)
@@ -354,9 +354,7 @@ async fn integrity_fleet() -> IntegrityFleet {
     }
     liar.lie_entity.store(true, Ordering::Relaxed);
 
-    let mut config = Config::default();
-    config.listen.public = "127.0.0.1:0".parse().expect("addr");
-    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    let mut config = config();
     config.reference = Some(format!("http://{reference_addr}"));
     config.health.probe_interval = Duration::from_millis(20);
     config.health.flip_after = 2;
@@ -509,18 +507,15 @@ async fn integrity_reads_run_under_the_client_timeout_not_the_probes() {
 #[tokio::test]
 async fn the_hourly_tick_closes_a_bucket_with_what_was_served() {
     let (provider_addr, _provider) = common::fake_provider::rpc_provider(CHAIN_ID).await;
-    let mut config = Config::default();
+    let mut config = config();
     config.health.disable_probing = true;
-    config.listen.public = "127.0.0.1:0".parse().expect("addr");
-    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
     config.providers = vec![Provider {
         id: "p0".into(),
         url: format!("http://{provider_addr}"),
     }];
     // An hour of one second, so a bucket closes within the test.
     config.stats.period = Some(Duration::from_secs(1));
-    let file = std::env::temp_dir().join(format!("lb-stats-test-{}.json", std::process::id()));
-    config.stats.file = file.clone();
+    let file = config.stats.file.clone();
     let service = lb::service::start(config).await.expect("service boots");
     service.pool.snapshot()[0].set_health(true);
     let public = format!("http://{}", service.public_addr);
@@ -577,23 +572,18 @@ async fn the_hourly_tick_closes_a_bucket_with_what_was_served() {
 
     service.shutdown().await;
     assert!(file.exists(), "a stop saves the rings");
-    std::fs::remove_file(&file).expect("removed");
 }
 
 #[tokio::test]
 async fn a_start_reads_the_rings_back_from_the_file() {
-    let file = std::env::temp_dir().join(format!("lb-stats-restart-{}.json", std::process::id()));
+    let mut config = config();
+    config.health.disable_probing = true;
     let mut saved = lb::stats::Stats::default();
     let ring = &mut saved.providers.entry("p0".into()).or_default().served;
     ring.tick(3_600, 10);
     ring.tick(7_200, 25);
-    saved.save(&file).expect("saved");
+    saved.save(&config.stats.file).expect("saved");
 
-    let mut config = Config::default();
-    config.health.disable_probing = true;
-    config.listen.public = "127.0.0.1:0".parse().expect("addr");
-    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
-    config.stats.file = file.clone();
     let service = lb::service::start(config).await.expect("service boots");
 
     let stats = service.stats.lock().expect("stats").clone();
@@ -604,5 +594,4 @@ async fn a_start_reads_the_rings_back_from_the_file() {
         .collect();
     assert_eq!(counts, vec![10, 15], "the history is there before any tick");
     assert!(stats.started_at > 7_200, "under this process's start");
-    std::fs::remove_file(&file).expect("removed");
 }

@@ -2378,6 +2378,7 @@ async fn a_failed_refresh_changes_nothing_and_the_next_one_extends() {
 
 fn service_config() -> lb::config::Config {
     let mut config = lb::config::Config::default();
+    config.stats.file = common::stats_file();
     config.listen.public = "127.0.0.1:0".parse().expect("addr");
     config.listen.admin = "127.0.0.1:0".parse().expect("addr");
     config.health.disable_probing = true;

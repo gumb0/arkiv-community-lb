@@ -232,6 +232,7 @@ async fn service_on(
         Expiry::Seconds(3600),
     );
     let mut config = lb::config::Config::default();
+    config.stats.file = common::stats_file();
     config.listen.public = "127.0.0.1:0".parse().expect("addr");
     config.listen.admin = "127.0.0.1:0".parse().expect("addr");
     config.health.disable_probing = true;
@@ -509,6 +510,7 @@ async fn a_body_that_is_not_a_callback_is_a_400() {
 #[tokio::test]
 async fn without_the_marketplace_there_is_no_route() {
     let mut config = lb::config::Config::default();
+    config.stats.file = common::stats_file();
     config.listen.public = "127.0.0.1:0".parse().expect("addr");
     config.listen.admin = "127.0.0.1:0".parse().expect("addr");
     config.health.disable_probing = true;

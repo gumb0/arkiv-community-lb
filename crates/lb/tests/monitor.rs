@@ -19,6 +19,7 @@ async fn start_monitored(
     tune: impl FnOnce(&mut Config),
 ) -> lb::service::Service {
     let mut config = Config::default();
+    config.stats.file = common::stats_file();
     config.listen.public = "127.0.0.1:0".parse().expect("addr");
     config.listen.admin = "127.0.0.1:0".parse().expect("addr");
     config.health.probe_interval = Duration::from_millis(20);

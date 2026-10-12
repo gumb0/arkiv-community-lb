@@ -17,6 +17,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/arkiv-lb /usr/local/bin/arkiv-lb
+# The stats file's directory (config: stats.file), owned by the LB's
+# uid so the named volume mounted there is writable from the start.
+RUN mkdir -p /var/lib/arkiv-lb && chown 65534:65534 /var/lib/arkiv-lb
 USER 65534:65534
 # The config is mounted in by compose.
 ENTRYPOINT ["arkiv-lb", "/etc/arkiv-lb/config.toml"]

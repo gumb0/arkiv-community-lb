@@ -37,7 +37,10 @@ first-class concern, not an add-on.
 
 - **Single instance by design.** No distributed coordination; availability
   comes from safe, fast restarts. All durable state lives on-chain — local
-  state is a cache.
+  state is a cache. One named exception: the hourly stats (`stats.rs`)
+  are saved to a file so a restart keeps them. They are a cache of
+  history that nothing decides on and the LB never queries; losing the
+  file loses old buckets, never correctness.
 - **Logic and domain encoding live in Rust; the sidecar speaks SDK, not
   marketplace.** The TS chain-writer sidecar exposes only the SDK's generic
   entity operations (opaque payloads, generic annotations) and holds no

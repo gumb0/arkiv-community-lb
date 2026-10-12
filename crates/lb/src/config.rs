@@ -12,7 +12,7 @@ use std::{
     collections::HashSet,
     fs,
     net::{Ipv4Addr, SocketAddr},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -107,13 +107,23 @@ impl Default for Listen {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Stats {
+    pub file: PathBuf,
     /// Test hook, unreachable from the toml: the hour the stats are
     /// bucketed by, shortened so a test sees a bucket close.
     #[serde(skip)]
     pub period: Option<Duration>,
+}
+
+impl Default for Stats {
+    fn default() -> Self {
+        Self {
+            file: PathBuf::from("/var/lib/arkiv-lb/stats.json"),
+            period: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

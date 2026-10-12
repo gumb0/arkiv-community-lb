@@ -519,6 +519,8 @@ async fn the_hourly_tick_closes_a_bucket_with_what_was_served() {
     }];
     // An hour of one second, so a bucket closes within the test.
     config.stats.period = Some(Duration::from_secs(1));
+    let file = std::env::temp_dir().join(format!("lb-stats-test-{}.json", std::process::id()));
+    config.stats.file = file.clone();
     let service = lb::service::start(config).await.expect("service boots");
     service.pool.snapshot()[0].set_health(true);
     let public = format!("http://{}", service.public_addr);
@@ -574,4 +576,33 @@ async fn the_hourly_tick_closes_a_bucket_with_what_was_served() {
     );
 
     service.shutdown().await;
+    assert!(file.exists(), "a stop saves the rings");
+    std::fs::remove_file(&file).expect("removed");
+}
+
+#[tokio::test]
+async fn a_start_reads_the_rings_back_from_the_file() {
+    let file = std::env::temp_dir().join(format!("lb-stats-restart-{}.json", std::process::id()));
+    let mut saved = lb::stats::Stats::default();
+    let ring = &mut saved.providers.entry("p0".into()).or_default().served;
+    ring.tick(3_600, 10);
+    ring.tick(7_200, 25);
+    saved.save(&file).expect("saved");
+
+    let mut config = Config::default();
+    config.health.disable_probing = true;
+    config.listen.public = "127.0.0.1:0".parse().expect("addr");
+    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    config.stats.file = file.clone();
+    let service = lb::service::start(config).await.expect("service boots");
+
+    let stats = service.stats.lock().expect("stats").clone();
+    let counts: Vec<u64> = stats.providers["p0"]
+        .served
+        .since(0)
+        .map(|b| b.count)
+        .collect();
+    assert_eq!(counts, vec![10, 15], "the history is there before any tick");
+    assert!(stats.started_at > 7_200, "under this process's start");
+    std::fs::remove_file(&file).expect("removed");
 }

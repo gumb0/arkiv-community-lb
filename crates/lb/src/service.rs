@@ -228,7 +228,7 @@ pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
     if let Some(checker) = checker {
         tasks.push(tokio::spawn(checker.run(shutdown.subscribe())));
     }
-    let stats = Arc::new(Mutex::new(stats::Stats::default()));
+    let stats = Arc::new(Mutex::new(stats::Stats::load(&config.stats.file)));
     tasks.push(tokio::spawn(stats::run(
         stats.clone(),
         pool.clone(),
@@ -236,6 +236,7 @@ pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
             .stats
             .period
             .unwrap_or(Duration::from_secs(stats::HOUR)),
+        config.stats.file.clone(),
         shutdown.subscribe(),
     )));
     if !config.health.disable_probing {

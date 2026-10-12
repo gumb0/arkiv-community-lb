@@ -5,10 +5,12 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, atomic::Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::pool::Pool;
@@ -22,7 +24,7 @@ pub const HOURS: usize = 31 * 24;
 pub const HOUR: u64 = 3600;
 
 /// One hour of one counter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bucket {
     /// The hour's start, unix seconds.
     pub start: u64,
@@ -35,13 +37,16 @@ pub struct Bucket {
 /// The ring of one counter: its last `HOURS` completed hours, and the
 /// reading the next bucket is a difference from. A missing hour is
 /// absent, not zero: the LB was not running then.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Ring {
     /// Oldest at the front, the latest hour at the back.
     buckets: VecDeque<Bucket>,
     /// The reading at the last tick; none before the first tick after
     /// a start, when the counter began at zero. A reading of zero is
-    /// not the same: that is a tick that found nothing served.
+    /// not the same: that is a tick that found nothing served. Not
+    /// saved: a ring read from the file belongs to a fresh process,
+    /// whose counters start at zero again.
+    #[serde(skip)]
     last: Option<u64>,
 }
 
@@ -95,14 +100,14 @@ impl Ring {
 }
 
 /// One provider's rings.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProviderRings {
     pub served: Ring,
     pub transport_failures: Ring,
 }
 
 /// The LB's own rings, for the answers it gave itself.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LbRings {
     pub no_healthy_provider: Ring,
     pub timed_out: Ring,
@@ -110,9 +115,15 @@ pub struct LbRings {
 }
 
 /// Every ring the LB keeps, behind one lock: written once an hour by
-/// the tick, read by the stats route.
-#[derive(Clone, Debug, Default)]
+/// the tick, read by the stats route, and saved to a file whole at
+/// every tick and at a stop, so a restart keeps the history. The file
+/// is a cache of history, never queried: losing it loses old buckets
+/// and nothing else.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Stats {
+    /// When this process started, unix seconds: the hour it falls in
+    /// is the one a start cut short.
+    pub started_at: u64,
     /// By pool id. A provider that left the pool keeps its rings until
     /// its newest hour is older than a ring holds.
     pub providers: HashMap<String, ProviderRings>,
@@ -120,6 +131,39 @@ pub struct Stats {
 }
 
 impl Stats {
+    /// The rings the last process left in `file`, or none; either way
+    /// with this process's start. A file that does not parse is
+    /// reported and left behind: the next save replaces it.
+    pub fn load(file: &Path) -> Self {
+        let mut stats = match std::fs::read(file) {
+            Ok(bytes) => match serde_json::from_slice::<Self>(&bytes) {
+                Ok(stats) => stats,
+                Err(error) => {
+                    tracing::warn!(file = %file.display(), %error, "the stats file does not parse: starting without history");
+                    Self::default()
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tracing::info!(file = %file.display(), "no stats file yet: starting without history");
+                Self::default()
+            }
+            Err(error) => {
+                tracing::warn!(file = %file.display(), %error, "the stats file cannot be read: starting without history");
+                Self::default()
+            }
+        };
+        stats.started_at = now();
+        stats
+    }
+
+    /// Writes the rings whole, through a temporary file and a rename,
+    /// so a crash mid-write leaves the last good file in place.
+    pub fn save(&self, file: &Path) -> std::io::Result<()> {
+        let temporary = file.with_extension("json.tmp");
+        std::fs::write(&temporary, serde_json::to_vec(self)?)?;
+        std::fs::rename(&temporary, file)
+    }
+
     /// Closes the hour that starts at `start` for every counter, from the
     /// pool as it is now. A provider seen for the first time gets its
     /// rings here, so its first bucket is partial.
@@ -164,12 +208,14 @@ pub fn now() -> u64 {
 }
 
 /// The tick task: at every boundary of `period` on the wall clock,
-/// closes the bucket that just ended. The period is an hour, except in
-/// tests, and whole seconds either way.
+/// closes the bucket that just ended and saves the rings; at a stop
+/// it saves them once more. The period is an hour, except in tests,
+/// and whole seconds either way.
 pub async fn run(
     stats: Arc<Mutex<Stats>>,
     pool: Arc<Pool>,
     period: Duration,
+    file: PathBuf,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let period_secs = period.as_secs();
@@ -179,7 +225,10 @@ pub async fn run(
         let wait = tokio::time::sleep(Duration::from_secs(next - now));
         tokio::select! {
             _ = wait => {}
-            _ = shutdown.changed() => return,
+            _ = shutdown.changed() => {
+                save(&stats, &file);
+                return;
+            }
         }
         let start = next - period_secs;
         stats
@@ -187,6 +236,19 @@ pub async fn run(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .tick(start, &pool);
         tracing::debug!(start, "stats: the hour closed");
+        save(&stats, &file);
+    }
+}
+
+/// Saves a copy of the rings, taken under the lock and written outside
+/// it; a failure is logged, since the next hour tries again.
+fn save(stats: &Mutex<Stats>, file: &Path) {
+    let snapshot = stats
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Err(error) = snapshot.save(file) {
+        tracing::warn!(file = %file.display(), %error, "the stats file could not be written");
     }
 }
 
@@ -275,6 +337,29 @@ mod tests {
         assert_eq!(buckets[HOURS - 1].start, T0 + (ticks - 1) * HOUR);
         assert_eq!(ring.newest(), Some(T0 + (ticks - 1) * HOUR));
         assert!(buckets.iter().all(|b| b.count == 1 && !b.partial));
+    }
+
+    #[test]
+    fn the_file_keeps_the_buckets_and_forgets_the_reading() {
+        let mut stats = Stats::default();
+        let ring = &mut stats.providers.entry("p0".into()).or_default().served;
+        ring.tick(T0, 10);
+        ring.tick(T0 + HOUR, 25);
+        let file = std::env::temp_dir().join(format!("stats-test-{}.json", std::process::id()));
+        stats.save(&file).expect("saved");
+        let loaded = Stats::load(&file);
+        std::fs::remove_file(&file).expect("removed");
+        let ring = &loaded.providers["p0"].served;
+        assert_eq!(
+            buckets(ring, 0),
+            vec![bucket(T0, 10, true), bucket(T0 + HOUR, 15, false)]
+        );
+        assert_eq!(ring.last, None, "a fresh process's counters start at zero");
+        assert!(loaded.started_at > 0);
+        assert!(
+            Stats::load(&file).providers.is_empty(),
+            "no file is no history"
+        );
     }
 
     #[test]

@@ -163,6 +163,16 @@ interval = "30m"
 # the chain's tip to resolve. Must be shorter than interval.
 confirm_after = "30s"
 
+# The hourly stats the dashboard reads (GET /stats on the admin
+# listener): a ring of the last 31 days of hourly buckets per
+# provider, kept in memory and saved to this file at every hour and at
+# a stop, so a restart keeps the history. In the stack the directory
+# is a named volume, so the file outlives the container. A crash
+# loses the hour in progress and nothing else; losing the file loses
+# old buckets and nothing else.
+[stats]
+file = "/var/lib/arkiv-lb/stats.json"
+
 # One block per provider. id is the stable handle (lowercase letters,
 # digits, '-') used in logs, /nodes and /node/{id}; a tunneled provider
 # is just a loopback URL on this host.

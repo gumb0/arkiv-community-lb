@@ -42,6 +42,12 @@ them:
   file: create it with the key's text, and keep the key funded (see Day
   to day)
 
+One named volume, `lb-state`, holds the LB's hourly stats file
+(`stats.file` in the config): the last 31 days of hourly buckets per
+provider, saved at every hour and at a stop, which `/stats` serves.
+It outlives updates and restarts; `docker compose down -v` removes it,
+and the LB then starts without history and says so.
+
 The tunnel server's config, `tunnel/frps.toml`, is tracked as it is:
 it holds no secret, since the LB admits each tunnel by a signature,
 and nothing that differs between boxes. Its admission route must

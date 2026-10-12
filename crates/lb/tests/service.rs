@@ -505,3 +505,73 @@ async fn integrity_reads_run_under_the_client_timeout_not_the_probes() {
 
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn the_hourly_tick_closes_a_bucket_with_what_was_served() {
+    let (provider_addr, _provider) = common::fake_provider::rpc_provider(CHAIN_ID).await;
+    let mut config = Config::default();
+    config.health.disable_probing = true;
+    config.listen.public = "127.0.0.1:0".parse().expect("addr");
+    config.listen.admin = "127.0.0.1:0".parse().expect("addr");
+    config.providers = vec![Provider {
+        id: "p0".into(),
+        url: format!("http://{provider_addr}"),
+    }];
+    // An hour of one second, so a bucket closes within the test.
+    config.stats.period = Some(Duration::from_secs(1));
+    let service = lb::service::start(config).await.expect("service boots");
+    service.pool.snapshot()[0].set_health(true);
+    let public = format!("http://{}", service.public_addr);
+
+    let client = reqwest::Client::new();
+    for id in 1..=3 {
+        let status = client
+            .post(&public)
+            .json(&serde_json::json!({"jsonrpc":"2.0","id":id,"method":"eth_blockNumber","params":[]}))
+            .send()
+            .await
+            .expect("answered")
+            .status();
+        assert_eq!(status, 200);
+    }
+
+    // The three land in the bucket of the second they were served in,
+    // or across two; what is closed within a few ticks adds up to
+    // three, and the first bucket is the partial one a start leaves.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let served = loop {
+        let served: Vec<lb::stats::Bucket> = {
+            let stats = service.stats.lock().expect("stats");
+            stats
+                .providers
+                .get("p0")
+                .map(|rings| rings.served.since(0).copied().collect())
+                .unwrap_or_default()
+        };
+        if served.iter().map(|bucket| bucket.count).sum::<u64>() == 3 {
+            break served;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no bucket closed with the three requests: {served:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(served[0].partial, "the first bucket is cut by the start");
+    assert!(served.iter().skip(1).all(|bucket| !bucket.partial));
+    assert!(
+        served
+            .windows(2)
+            .all(|pair| pair[1].start == pair[0].start + 1),
+        "one bucket per period, in order: {served:?}"
+    );
+    let lb = service.stats.lock().expect("stats").lb.clone();
+    assert!(
+        lb.no_healthy_provider
+            .since(0)
+            .all(|bucket| bucket.count == 0),
+        "the LB answered nothing itself"
+    );
+
+    service.shutdown().await;
+}

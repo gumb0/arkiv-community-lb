@@ -35,6 +35,7 @@ pub struct Config {
     /// Absent: no integrity rounds; a provider is judged by its probes
     /// alone. Present, it needs the reference endpoint too.
     pub integrity: Option<Integrity>,
+    pub stats: Stats,
     pub providers: Vec<Provider>,
     /// The reference RPC endpoint. Comes from `ARKIV_RPC_URL` in the
     /// environment — the same variable the writer sidecar reads.
@@ -104,6 +105,15 @@ impl Default for Listen {
             admin: SocketAddr::from((Ipv4Addr::LOCALHOST, 9545)),    // 127.0.0.1:9545
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct Stats {
+    /// Test hook, unreachable from the toml: the hour the stats are
+    /// bucketed by, shortened so a test sees a bucket close.
+    #[serde(skip)]
+    pub period: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -876,6 +886,12 @@ mod tests {
     #[test]
     fn the_probing_test_hook_is_not_reachable_from_toml() {
         parse("[health]\ndisable_probing = true\n")
+            .expect_err("a serde-skipped field must stay unknown to the toml");
+    }
+
+    #[test]
+    fn the_stats_period_test_hook_is_not_reachable_from_toml() {
+        parse("[stats]\nperiod = \"1s\"\n")
             .expect_err("a serde-skipped field must stay unknown to the toml");
     }
 

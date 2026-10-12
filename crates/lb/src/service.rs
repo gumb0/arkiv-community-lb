@@ -4,7 +4,7 @@
 
 use std::{
     net::SocketAddr,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, Mutex, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -20,7 +20,7 @@ use crate::{
         admission::Agreements,
         agent::{self, Agent},
     },
-    monitor, pool, proxy,
+    monitor, pool, proxy, stats,
 };
 
 /// The agent reads pages of records, heavier than a probe's one number.
@@ -31,6 +31,7 @@ pub struct Service {
     pub public_addr: SocketAddr,
     pub admin_addr: SocketAddr,
     pub pool: Arc<pool::Pool>,
+    pub stats: Arc<Mutex<stats::Stats>>,
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
 }
@@ -227,6 +228,16 @@ pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
     if let Some(checker) = checker {
         tasks.push(tokio::spawn(checker.run(shutdown.subscribe())));
     }
+    let stats = Arc::new(Mutex::new(stats::Stats::default()));
+    tasks.push(tokio::spawn(stats::run(
+        stats.clone(),
+        pool.clone(),
+        config
+            .stats
+            .period
+            .unwrap_or(Duration::from_secs(stats::HOUR)),
+        shutdown.subscribe(),
+    )));
     if !config.health.disable_probing {
         let reference = match &config.reference {
             Some(url) => Some(Reader::new(
@@ -259,6 +270,7 @@ pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
         public_addr,
         admin_addr,
         pool,
+        stats,
         shutdown,
         tasks,
     })

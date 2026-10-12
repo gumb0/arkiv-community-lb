@@ -1,23 +1,31 @@
 //! Hourly buckets, kept in a fixed ring per counter: the stats the
 //! dashboard reads, as differences of the monotone counters on the
-//! entries and the pool. Nothing here does I/O or keeps time; the tick
-//! task hands in the hour and the readings.
+//! entries and the pool. The rings do no I/O and keep no time; the
+//! tick task at the end hands them the hour and the readings.
 
-use std::collections::VecDeque;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{Arc, Mutex, atomic::Ordering},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use tokio::sync::watch;
+
+use crate::pool::Pool;
 
 /// How many hours a ring holds: 31 days. The oldest bucket makes room
 /// for the newest; nothing grows and nothing is evicted.
 pub const HOURS: usize = 31 * 24;
 
-/// Seconds in an hour; bucket stamps are unix seconds at the hour's
-/// start.
+/// Seconds in an hour. Hours are named by their start, in unix
+/// seconds.
 pub const HOUR: u64 = 3600;
 
 /// One hour of one counter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bucket {
     /// The hour's start, unix seconds.
-    pub hour: u64,
+    pub start: u64,
     pub count: u64,
     /// Not a whole hour: the hour in progress, or the hour cut by a
     /// start.
@@ -47,36 +55,138 @@ impl Default for Ring {
 }
 
 impl Ring {
-    /// Closes the hour that ends at `hour`: the bucket for the hour
-    /// before it, counting what the reading grew by since the last
-    /// tick. The first tick after a start closes a partial hour, since
-    /// the counter began at zero when the process did.
-    pub fn tick(&mut self, hour: u64, reading: u64) {
+    /// Closes the hour that starts at `start` with what the reading grew by
+    /// since the last tick. The first tick after a start closes a
+    /// partial hour, since the counter began at zero when the process
+    /// did.
+    pub fn tick(&mut self, start: u64, reading: u64) {
         if self.buckets.len() == HOURS {
             self.buckets.pop_front();
         }
         self.buckets.push_back(Bucket {
-            hour: hour - HOUR,
+            start,
             count: reading.saturating_sub(self.last.unwrap_or(0)),
             partial: self.last.is_none(),
         });
         self.last = Some(reading);
     }
 
+    /// The start of the newest completed hour, if any.
+    pub fn newest(&self) -> Option<u64> {
+        self.buckets.back().map(|bucket| bucket.start)
+    }
+
     /// The hour in progress, from the last tick to the reading given.
-    pub fn partial(&self, hour: u64, reading: u64) -> Bucket {
+    pub fn partial(&self, start: u64, reading: u64) -> Bucket {
         Bucket {
-            hour,
+            start,
             count: reading.saturating_sub(self.last.unwrap_or(0)),
             partial: true,
         }
     }
 
-    /// The completed buckets from `since` on, oldest first.
+    /// The completed buckets from the hour starting at `since` on,
+    /// oldest first.
     pub fn since(&self, since: u64) -> impl Iterator<Item = &Bucket> {
         self.buckets
             .iter()
-            .filter(move |bucket| bucket.hour >= since)
+            .filter(move |bucket| bucket.start >= since)
+    }
+}
+
+/// One provider's rings.
+#[derive(Clone, Debug, Default)]
+pub struct ProviderRings {
+    pub served: Ring,
+    pub transport_failures: Ring,
+}
+
+/// The LB's own rings, for the answers it gave itself.
+#[derive(Clone, Debug, Default)]
+pub struct LbRings {
+    pub no_healthy_provider: Ring,
+    pub timed_out: Ring,
+    pub no_provider_answered: Ring,
+}
+
+/// Every ring the LB keeps, behind one lock: written once an hour by
+/// the tick, read by the stats route.
+#[derive(Clone, Debug, Default)]
+pub struct Stats {
+    /// By pool id. A provider that left the pool keeps its rings until
+    /// its newest hour is older than a ring holds.
+    pub providers: HashMap<String, ProviderRings>,
+    pub lb: LbRings,
+}
+
+impl Stats {
+    /// Closes the hour that starts at `start` for every counter, from the
+    /// pool as it is now. A provider seen for the first time gets its
+    /// rings here, so its first bucket is partial.
+    pub fn tick(&mut self, start: u64, pool: &Pool) {
+        for provider in pool.snapshot().iter() {
+            let rings = self.providers.entry(provider.id.clone()).or_default();
+            rings
+                .served
+                .tick(start, provider.served_total.load(Ordering::Relaxed));
+            rings
+                .transport_failures
+                .tick(start, provider.transport_failures.load(Ordering::Relaxed));
+        }
+        let outcomes = &pool.lb_outcomes;
+        self.lb
+            .no_healthy_provider
+            .tick(start, outcomes.no_healthy_provider.load(Ordering::Relaxed));
+        self.lb
+            .timed_out
+            .tick(start, outcomes.timed_out.load(Ordering::Relaxed));
+        self.lb
+            .no_provider_answered
+            .tick(start, outcomes.no_provider_answered.load(Ordering::Relaxed));
+        // A provider gone for longer than a ring holds has nothing
+        // left to show.
+        let oldest_kept = start.saturating_sub(HOURS as u64 * HOUR);
+        self.providers.retain(|_, rings| {
+            rings
+                .served
+                .newest()
+                .is_some_and(|newest| newest >= oldest_kept)
+        });
+    }
+}
+
+/// Unix seconds now.
+pub fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0)
+}
+
+/// The tick task: at every boundary of `period` on the wall clock,
+/// closes the bucket that just ended. The period is an hour, except in
+/// tests, and whole seconds either way.
+pub async fn run(
+    stats: Arc<Mutex<Stats>>,
+    pool: Arc<Pool>,
+    period: Duration,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let period_secs = period.as_secs();
+    loop {
+        let now = now();
+        let next = (now / period_secs + 1) * period_secs;
+        let wait = tokio::time::sleep(Duration::from_secs(next - now));
+        tokio::select! {
+            _ = wait => {}
+            _ = shutdown.changed() => return,
+        }
+        let start = next - period_secs;
+        stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .tick(start, &pool);
+        tracing::debug!(start, "stats: the hour closed");
     }
 }
 
@@ -84,13 +194,13 @@ impl Ring {
 mod tests {
     use super::*;
 
-    // A real-looking stamp (2025-10-09), rounded down to the start of
-    // its hour, the way the tick task's stamps are.
+    // A real-looking time (2025-10-09), rounded down to the start of
+    // its hour, the way the tick task's hours are.
     const T0: u64 = 1_760_000_000 - 1_760_000_000 % HOUR;
 
-    fn bucket(hour: u64, count: u64, partial: bool) -> Bucket {
+    fn bucket(start: u64, count: u64, partial: bool) -> Bucket {
         Bucket {
-            hour,
+            start,
             count,
             partial,
         }
@@ -103,9 +213,9 @@ mod tests {
     #[test]
     fn a_bucket_is_what_the_reading_grew_by_since_the_last_tick() {
         let mut ring = Ring::default();
-        ring.tick(T0 + HOUR, 10);
+        ring.tick(T0, 10);
+        ring.tick(T0 + HOUR, 25);
         ring.tick(T0 + 2 * HOUR, 25);
-        ring.tick(T0 + 3 * HOUR, 25);
         assert_eq!(
             buckets(&ring, 0),
             vec![
@@ -119,8 +229,8 @@ mod tests {
     #[test]
     fn a_tick_that_found_nothing_is_a_whole_hour_of_nothing() {
         let mut ring = Ring::default();
+        ring.tick(T0, 0);
         ring.tick(T0 + HOUR, 0);
-        ring.tick(T0 + 2 * HOUR, 0);
         assert_eq!(
             buckets(&ring, 0),
             vec![bucket(T0, 0, true), bucket(T0 + HOUR, 0, false)]
@@ -135,18 +245,18 @@ mod tests {
             bucket(T0, 4, true),
             "before any tick, everything since the start"
         );
-        ring.tick(T0 + HOUR, 10);
+        ring.tick(T0, 10);
         assert_eq!(ring.partial(T0 + HOUR, 13), bucket(T0 + HOUR, 3, true));
     }
 
     #[test]
     fn since_cuts_at_the_hour_and_keeps_the_order() {
         let mut ring = Ring::default();
-        for i in 1..=5 {
+        for i in 0..5 {
             ring.tick(T0 + i * HOUR, i);
         }
-        let hours: Vec<u64> = ring.since(T0 + 2 * HOUR).map(|b| b.hour).collect();
-        assert_eq!(hours, vec![T0 + 2 * HOUR, T0 + 3 * HOUR, T0 + 4 * HOUR]);
+        let starts: Vec<u64> = ring.since(T0 + 2 * HOUR).map(|b| b.start).collect();
+        assert_eq!(starts, vec![T0 + 2 * HOUR, T0 + 3 * HOUR, T0 + 4 * HOUR]);
         assert_eq!(ring.since(T0 + 10 * HOUR).count(), 0);
     }
 
@@ -154,15 +264,16 @@ mod tests {
     fn the_ring_keeps_the_last_hours_only() {
         let mut ring = Ring::default();
         let ticks = HOURS as u64 + 5;
-        for i in 1..=ticks {
+        for i in 0..ticks {
             ring.tick(T0 + i * HOUR, i);
         }
         let buckets: Vec<&Bucket> = ring.since(0).collect();
         assert_eq!(buckets.len(), HOURS);
         // Five hours fell off the oldest end; the rest are in order and
         // each is one hour's growth.
-        assert_eq!(buckets[0].hour, T0 + 5 * HOUR);
-        assert_eq!(buckets[HOURS - 1].hour, T0 + (ticks - 1) * HOUR);
+        assert_eq!(buckets[0].start, T0 + 5 * HOUR);
+        assert_eq!(buckets[HOURS - 1].start, T0 + (ticks - 1) * HOUR);
+        assert_eq!(ring.newest(), Some(T0 + (ticks - 1) * HOUR));
         assert!(buckets.iter().all(|b| b.count == 1 && !b.partial));
     }
 
@@ -172,8 +283,8 @@ mod tests {
         // restored from a file and ticked by a fresh process is the
         // case, and it must not panic.
         let mut ring = Ring::default();
-        ring.tick(T0 + HOUR, 50);
-        ring.tick(T0 + 2 * HOUR, 3);
+        ring.tick(T0, 50);
+        ring.tick(T0 + HOUR, 3);
         assert_eq!(ring.since(T0 + HOUR).next().map(|b| b.count), Some(0));
     }
 }

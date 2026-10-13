@@ -78,7 +78,9 @@ impl Ring {
     /// same hour, which a restart inside the hour leaves behind (the
     /// stop closed it, the first tick after closes it again), the
     /// counts are added to it and it stays partial; otherwise a new
-    /// bucket.
+    /// bucket. A tick that runs late reads the counters late, so the
+    /// hour it closes carries counts from after its end; the next hour
+    /// is short by as much.
     pub fn close(&mut self, start: u64, reading: u64, stopping: bool) {
         let count = reading.saturating_sub(self.last.unwrap_or(0));
         let partial = stopping || self.last.is_none();

@@ -149,12 +149,16 @@ only.
   per-probe lines — set `RUST_LOG=info,lb=debug` in `.env` and apply
   it with `docker compose up -d`; set it back the same way.
 - Admin API from a workstation: the port is loopback-only by design,
-  so forward it — `ssh -L 9545:127.0.0.1:9545 <box>` — and read
-  `http://127.0.0.1:9545/nodes` locally. It shows each provider's
-  eligibility and the reason when it is out, its counts, and its last
-  integrity verdict with the height it was given at. A JSON-RPC
-  request POSTed to `http://127.0.0.1:9545/node/{id}` is forwarded to
-  that one provider, eligibility ignored.
+  so forward it — `ssh -L 9545:127.0.0.1:9545 <box>` — and use it at
+  `http://127.0.0.1:9545` locally:
+  - `/nodes` shows each provider's eligibility and the reason when it
+    is out, its counts, and its last integrity verdict with the height
+    it was given at.
+  - A JSON-RPC request POSTed to `/node/{id}` is forwarded to that one
+    provider, eligibility ignored.
+  - `/stats` serves each provider's counts per hour for the last 31
+    days ([STATS.md](STATS.md)); a dashboard's backend reads it
+    through the same kind of forward.
 - `config.toml` changes: `docker compose restart lb` — the file is
   mounted in and read at startup; no rebuild. With the marketplace on,
   a stop or a restart writes the counts to the chain first and waits

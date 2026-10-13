@@ -593,7 +593,6 @@ async fn a_start_reads_the_rings_back_from_the_file() {
         .map(|b| b.count)
         .collect();
     assert_eq!(counts, vec![10, 15], "the history is there before any tick");
-    assert!(stats.started_at > 7_200, "under this process's start");
 }
 
 #[tokio::test]

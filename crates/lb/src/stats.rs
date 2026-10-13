@@ -29,8 +29,7 @@ pub struct Bucket {
     /// The hour's start, unix seconds.
     pub start: u64,
     pub count: u64,
-    /// Not a whole hour: the hour in progress, or the hour cut by a
-    /// start.
+    /// Not a whole hour: cut by a start or a stop.
     pub partial: bool,
 }
 
@@ -108,23 +107,6 @@ impl Ring {
         self.buckets.back().map(|bucket| bucket.start)
     }
 
-    /// The hour in progress: what the reading grew by since the last
-    /// tick. After a restart inside this hour the newest saved bucket
-    /// is this same hour, closed by the stop; its count is added, so
-    /// the hour reads as one whole.
-    pub fn partial(&self, start: u64, reading: u64) -> Bucket {
-        let saved = self
-            .buckets
-            .back()
-            .filter(|newest| newest.start == start)
-            .map_or(0, |newest| newest.count);
-        Bucket {
-            start,
-            count: saved + reading.saturating_sub(self.last.unwrap_or(0)),
-            partial: true,
-        }
-    }
-
     /// The completed buckets from the hour starting at `since` on,
     /// oldest first.
     pub fn since(&self, since: u64) -> impl Iterator<Item = &Bucket> {
@@ -156,9 +138,6 @@ pub struct LbRings {
 /// and nothing else.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Stats {
-    /// When this process started, unix seconds: the hour it falls in
-    /// is the one a start cut short.
-    pub started_at: u64,
     /// By pool id. A provider that left the pool keeps its rings until
     /// its newest hour is older than a ring holds.
     pub providers: HashMap<String, ProviderRings>,
@@ -166,11 +145,11 @@ pub struct Stats {
 }
 
 impl Stats {
-    /// The rings the last process left in `file`, or none; either way
-    /// with this process's start. A file that does not parse is
-    /// reported and left behind: the next save replaces it.
+    /// The rings the last process left in `file`, or none. A file that
+    /// does not parse is reported and left behind: the next save
+    /// replaces it.
     pub fn load(file: &Path) -> Self {
-        let mut stats = match std::fs::read(file) {
+        match std::fs::read(file) {
             Ok(bytes) => match serde_json::from_slice::<Self>(&bytes) {
                 Ok(stats) => stats,
                 Err(error) => {
@@ -186,9 +165,7 @@ impl Stats {
                 tracing::warn!(file = %file.display(), %error, "the stats file cannot be read: starting without history");
                 Self::default()
             }
-        };
-        stats.started_at = now();
-        stats
+        }
     }
 
     /// Writes the rings whole, through a temporary file and a rename,
@@ -357,18 +334,6 @@ mod tests {
     }
 
     #[test]
-    fn the_hour_in_progress_is_read_against_the_last_tick() {
-        let mut ring = Ring::default();
-        assert_eq!(
-            ring.partial(T0, 4),
-            bucket(T0, 4, true),
-            "before any tick, everything since the start"
-        );
-        ring.tick(T0, 10);
-        assert_eq!(ring.partial(T0 + HOUR, 13), bucket(T0 + HOUR, 3, true));
-    }
-
-    #[test]
     fn since_cuts_at_the_hour_and_keeps_the_order() {
         let mut ring = Ring::default();
         for i in 0..5 {
@@ -412,7 +377,6 @@ mod tests {
             vec![bucket(T0, 10, true), bucket(T0 + HOUR, 15, false)]
         );
         assert_eq!(ring.last, None, "a fresh process's counters start at zero");
-        assert!(loaded.started_at > 0);
         assert!(
             Stats::load(&file).providers.is_empty(),
             "no file is no history"
@@ -435,11 +399,6 @@ mod tests {
             buckets: ring.buckets.clone(),
             last: None,
         };
-        assert_eq!(
-            restored.partial(T0 + HOUR, 3),
-            bucket(T0 + HOUR, 8, true),
-            "the hour in progress counts what the stop saved"
-        );
         restored.tick(T0 + HOUR, 7);
         assert_eq!(
             buckets(&restored, 0),

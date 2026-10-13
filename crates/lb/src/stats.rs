@@ -65,15 +65,42 @@ impl Ring {
     /// partial hour, since the counter began at zero when the process
     /// did.
     pub fn tick(&mut self, start: u64, reading: u64) {
+        self.close(start, reading, false);
+    }
+
+    /// Closes the hour in progress at a stop, as a partial bucket, so
+    /// what was served since the last tick is not lost with the
+    /// process.
+    pub fn stop(&mut self, start: u64, reading: u64) {
+        self.close(start, reading, true);
+    }
+
+    /// A tick or, with `stopping`, a stop. If the newest bucket is the
+    /// same hour, which a restart inside the hour leaves behind (the
+    /// stop closed it, the first tick after closes it again), the
+    /// counts are added to it and it stays partial; otherwise a new
+    /// bucket.
+    pub fn close(&mut self, start: u64, reading: u64, stopping: bool) {
+        let count = reading.saturating_sub(self.last.unwrap_or(0));
+        let partial = stopping || self.last.is_none();
+        self.last = Some(reading);
+        if let Some(newest) = self
+            .buckets
+            .back_mut()
+            .filter(|newest| newest.start == start)
+        {
+            newest.count += count;
+            newest.partial = true;
+            return;
+        }
         if self.buckets.len() == HOURS {
             self.buckets.pop_front();
         }
         self.buckets.push_back(Bucket {
             start,
-            count: reading.saturating_sub(self.last.unwrap_or(0)),
-            partial: self.last.is_none(),
+            count,
+            partial,
         });
-        self.last = Some(reading);
     }
 
     /// The start of the newest completed hour, if any.
@@ -81,11 +108,19 @@ impl Ring {
         self.buckets.back().map(|bucket| bucket.start)
     }
 
-    /// The hour in progress, from the last tick to the reading given.
+    /// The hour in progress: what the reading grew by since the last
+    /// tick. After a restart inside this hour the newest saved bucket
+    /// is this same hour, closed by the stop; its count is added, so
+    /// the hour reads as one whole.
     pub fn partial(&self, start: u64, reading: u64) -> Bucket {
+        let saved = self
+            .buckets
+            .back()
+            .filter(|newest| newest.start == start)
+            .map_or(0, |newest| newest.count);
         Bucket {
             start,
-            count: reading.saturating_sub(self.last.unwrap_or(0)),
+            count: saved + reading.saturating_sub(self.last.unwrap_or(0)),
             partial: true,
         }
     }
@@ -168,25 +203,7 @@ impl Stats {
     /// pool as it is now. A provider seen for the first time gets its
     /// rings here, so its first bucket is partial.
     pub fn tick(&mut self, start: u64, pool: &Pool) {
-        for provider in pool.snapshot().iter() {
-            let rings = self.providers.entry(provider.id.clone()).or_default();
-            rings
-                .served
-                .tick(start, provider.served_total.load(Ordering::Relaxed));
-            rings
-                .transport_failures
-                .tick(start, provider.transport_failures.load(Ordering::Relaxed));
-        }
-        let outcomes = &pool.lb_outcomes;
-        self.lb
-            .no_healthy_provider
-            .tick(start, outcomes.no_healthy_provider.load(Ordering::Relaxed));
-        self.lb
-            .timed_out
-            .tick(start, outcomes.timed_out.load(Ordering::Relaxed));
-        self.lb
-            .no_provider_answered
-            .tick(start, outcomes.no_provider_answered.load(Ordering::Relaxed));
+        self.close(start, pool, false);
         // A provider gone for longer than a ring holds has nothing
         // left to show.
         let oldest_kept = start.saturating_sub(HOURS as u64 * HOUR);
@@ -196,6 +213,41 @@ impl Stats {
                 .newest()
                 .is_some_and(|newest| newest >= oldest_kept)
         });
+    }
+
+    /// Closes the hour in progress at a stop, for every counter.
+    pub fn stop(&mut self, start: u64, pool: &Pool) {
+        self.close(start, pool, true);
+    }
+
+    fn close(&mut self, start: u64, pool: &Pool, stopping: bool) {
+        for provider in pool.snapshot().iter() {
+            let rings = self.providers.entry(provider.id.clone()).or_default();
+            rings.served.close(
+                start,
+                provider.served_total.load(Ordering::Relaxed),
+                stopping,
+            );
+            rings.transport_failures.close(
+                start,
+                provider.transport_failures.load(Ordering::Relaxed),
+                stopping,
+            );
+        }
+        let outcomes = &pool.lb_outcomes;
+        self.lb.no_healthy_provider.close(
+            start,
+            outcomes.no_healthy_provider.load(Ordering::Relaxed),
+            stopping,
+        );
+        self.lb
+            .timed_out
+            .close(start, outcomes.timed_out.load(Ordering::Relaxed), stopping);
+        self.lb.no_provider_answered.close(
+            start,
+            outcomes.no_provider_answered.load(Ordering::Relaxed),
+            stopping,
+        );
     }
 }
 
@@ -209,8 +261,8 @@ pub fn now() -> u64 {
 
 /// The tick task: at every boundary of `period` on the wall clock,
 /// closes the bucket that just ended and saves the rings; at a stop
-/// it saves them once more. The period is an hour, except in tests,
-/// and whole seconds either way.
+/// it closes the hour in progress and saves once more. The period is
+/// an hour, except in tests, and whole seconds either way.
 pub async fn run(
     stats: Arc<Mutex<Stats>>,
     pool: Arc<Pool>,
@@ -226,6 +278,11 @@ pub async fn run(
         tokio::select! {
             _ = wait => {}
             _ = shutdown.changed() => {
+                let start = now / period_secs * period_secs;
+                stats
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .stop(start, &pool);
                 save(&stats, &file);
                 return;
             }
@@ -359,6 +416,40 @@ mod tests {
         assert!(
             Stats::load(&file).providers.is_empty(),
             "no file is no history"
+        );
+    }
+
+    #[test]
+    fn a_stop_closes_the_hour_in_progress_and_the_next_process_adds_to_it() {
+        let mut ring = Ring::default();
+        ring.tick(T0, 10);
+        // Stopped twenty minutes into the next hour, with five served.
+        ring.stop(T0 + HOUR, 15);
+        assert_eq!(
+            buckets(&ring, 0),
+            vec![bucket(T0, 10, true), bucket(T0 + HOUR, 5, true)]
+        );
+
+        // The file read by a fresh process: counters from zero again.
+        let mut restored = Ring {
+            buckets: ring.buckets.clone(),
+            last: None,
+        };
+        assert_eq!(
+            restored.partial(T0 + HOUR, 3),
+            bucket(T0 + HOUR, 8, true),
+            "the hour in progress counts what the stop saved"
+        );
+        restored.tick(T0 + HOUR, 7);
+        assert_eq!(
+            buckets(&restored, 0),
+            vec![bucket(T0, 10, true), bucket(T0 + HOUR, 12, true)],
+            "one bucket for the hour, both processes' counts, still partial"
+        );
+        restored.tick(T0 + 2 * HOUR, 9);
+        assert_eq!(
+            buckets(&restored, T0 + 2 * HOUR),
+            vec![bucket(T0 + 2 * HOUR, 2, false)]
         );
     }
 

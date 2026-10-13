@@ -595,3 +595,69 @@ async fn a_start_reads_the_rings_back_from_the_file() {
     assert_eq!(counts, vec![10, 15], "the history is there before any tick");
     assert!(stats.started_at > 7_200, "under this process's start");
 }
+
+#[tokio::test]
+async fn a_stop_keeps_what_the_hour_in_progress_served() {
+    let (provider_addr, _provider) = common::fake_provider::rpc_provider(CHAIN_ID).await;
+    let mut config = config();
+    config.health.disable_probing = true;
+    config.providers = vec![Provider {
+        id: "p0".into(),
+        url: format!("http://{provider_addr}"),
+    }];
+    config.stats.period = Some(Duration::from_secs(1));
+    let request =
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]});
+    let client = reqwest::Client::new();
+
+    // Two served, then a stop, most likely before any tick.
+    let service = lb::service::start(config.clone())
+        .await
+        .expect("service boots");
+    service.pool.snapshot()[0].set_health(true);
+    let public = format!("http://{}", service.public_addr);
+    for _ in 0..2 {
+        client
+            .post(&public)
+            .json(&request)
+            .send()
+            .await
+            .expect("answered");
+    }
+    service.shutdown().await;
+
+    // One more from the next process; a tick later, all three are in
+    // the buckets, and no hour appears twice.
+    let service = lb::service::start(config)
+        .await
+        .expect("service boots again");
+    service.pool.snapshot()[0].set_health(true);
+    let public = format!("http://{}", service.public_addr);
+    client
+        .post(&public)
+        .json(&request)
+        .send()
+        .await
+        .expect("answered");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let served = loop {
+        let served: Vec<lb::stats::Bucket> = service.stats.lock().expect("stats").providers["p0"]
+            .served
+            .since(0)
+            .copied()
+            .collect();
+        if served.iter().map(|bucket| bucket.count).sum::<u64>() == 3 {
+            break served;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the stop's two and the restart's one never added up: {served:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(
+        served.windows(2).all(|pair| pair[1].start > pair[0].start),
+        "one bucket per hour: {served:?}"
+    );
+    service.shutdown().await;
+}

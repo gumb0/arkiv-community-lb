@@ -84,6 +84,10 @@ A backend upserts by `(lb, id, hour)`, sums partial buckets like the
 rest, and leaves them out of anything that compares hours with each
 other.
 
+A stop saves what was counted up to the moment it starts; requests
+that finish during the stop are not in the file. A crash loses the
+hour in progress.
+
 ## What the backend does
 
 It polls `/stats` on every LB about once an hour (and `/nodes` for a

@@ -207,6 +207,11 @@ pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
         flip_after: config.health.flip_after,
     });
 
+    let stats = Arc::new(Mutex::new(stats::Stats::load(&config.stats.file)));
+    let lb_address = agent
+        .as_ref()
+        .map(|agent| format!("{:#x}", agent.identity().address));
+
     let (shutdown, _) = watch::channel(false);
     let mut tasks = vec![
         serve(public, proxy::router(state), shutdown.subscribe()),
@@ -218,6 +223,8 @@ pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
                 forwarder,
                 &config.proxy,
                 agent.clone().map(|agent| agent as Arc<dyn Agreements>),
+                stats.clone(),
+                lb_address,
             ),
             shutdown.subscribe(),
         ),
@@ -228,7 +235,6 @@ pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
     if let Some(checker) = checker {
         tasks.push(tokio::spawn(checker.run(shutdown.subscribe())));
     }
-    let stats = Arc::new(Mutex::new(stats::Stats::load(&config.stats.file)));
     tasks.push(tokio::spawn(stats::run(
         stats.clone(),
         pool.clone(),

@@ -660,3 +660,137 @@ async fn a_stop_keeps_what_the_hour_in_progress_served() {
     );
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn the_stats_route_serves_the_hourly_buckets() {
+    let (provider_addr, _provider) = common::fake_provider::rpc_provider(CHAIN_ID).await;
+    let mut config = config();
+    config.health.disable_probing = true;
+    config.providers = vec![Provider {
+        id: "p0".into(),
+        url: format!("http://{provider_addr}"),
+    }];
+    config.stats.period = Some(Duration::from_secs(1));
+    let service = lb::service::start(config).await.expect("service boots");
+    service.pool.snapshot()[0].set_health(true);
+    let public = format!("http://{}", service.public_addr);
+    let admin = format!("http://{}", service.admin_addr);
+    let client = reqwest::Client::new();
+
+    let request =
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]});
+    for _ in 0..2 {
+        client
+            .post(&public)
+            .json(&request)
+            .send()
+            .await
+            .expect("answered");
+    }
+    // One answered by the LB itself: nobody eligible.
+    service.pool.snapshot()[0].set_health(false);
+    client
+        .post(&public)
+        .json(&request)
+        .send()
+        .await
+        .expect("refused");
+    service.pool.snapshot()[0].set_health(true);
+
+    // Wait for a closed bucket to carry the two, then read the report.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let report: serde_json::Value = loop {
+        let report: serde_json::Value = client
+            .get(format!("{admin}/stats"))
+            .send()
+            .await
+            .expect("stats answers")
+            .json()
+            .await
+            .expect("json");
+        // The provider appears at its first completed hour; two
+        // buckets with both served means the start's cut hour closed
+        // and a whole one after it.
+        let buckets = report["providers"][0]["buckets"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let served: u64 = buckets
+            .iter()
+            .map(|bucket| bucket["served"].as_u64().expect("served"))
+            .sum();
+        if buckets.len() >= 2 && served == 2 {
+            break report;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no tick with both served: {report}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    assert_eq!(
+        report["lb"],
+        serde_json::Value::Null,
+        "no marketplace, no address"
+    );
+    assert_eq!(report["bucket"], "1h");
+    assert_eq!(report["since"], "1970-01-01T00:00:00Z");
+    let generated = report["generated_at"].as_str().expect("generated_at");
+    assert!(
+        generated.ends_with('Z') && generated.len() == 20,
+        "{generated}"
+    );
+    let provider = &report["providers"][0];
+    assert_eq!(provider["id"], "p0");
+    assert_eq!(provider["agreement_id"], serde_json::Value::Null);
+    let buckets = provider["buckets"].as_array().expect("buckets");
+    assert_eq!(
+        buckets[0]["partial"], true,
+        "the first hour is cut by the start"
+    );
+    assert!(
+        buckets[1..]
+            .iter()
+            .all(|bucket| bucket["partial"].is_null()),
+        "whole hours after it: {buckets:?}"
+    );
+    assert!(
+        buckets.iter().all(
+            |bucket| bucket["hour"].as_str().expect("hour").ends_with(":00Z")
+                || bucket["hour"].as_str().expect("hour").len() == 20
+        ),
+        "hours as ISO: {buckets:?}"
+    );
+    let refused: u64 = report["lb_outcomes"]
+        .as_array()
+        .expect("lb_outcomes")
+        .iter()
+        .map(|row| row["no_healthy_provider"].as_u64().expect("count"))
+        .sum();
+    assert_eq!(refused, 1, "{}", report["lb_outcomes"]);
+
+    // since cuts; a bad since is refused.
+    let later: serde_json::Value = client
+        .get(format!("{admin}/stats?since=2100-01-01T00:00:00Z"))
+        .send()
+        .await
+        .expect("answers")
+        .json()
+        .await
+        .expect("json");
+    assert!(
+        later["providers"][0]["buckets"]
+            .as_array()
+            .expect("buckets")
+            .is_empty()
+    );
+    let status = client
+        .get(format!("{admin}/stats?since=yesterday"))
+        .send()
+        .await
+        .expect("answers")
+        .status();
+    assert_eq!(status, 400);
+    service.shutdown().await;
+}

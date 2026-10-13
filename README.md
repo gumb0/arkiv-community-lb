@@ -15,9 +15,10 @@ not operator-chosen.
   failover over a configured provider list. Health probing quarantines
   and readmits providers automatically, checks chain identity and
   chain head lag, and backs off from dead providers. An admin API
-  serves health and pool views on `/health` and `/nodes`, plus pinned
-  forwarding to one provider on `/node/{id}`, including providers
-  outside rotation. To run it locally: copy `config.example.toml` to
+  serves health and pool views on `/health` and `/nodes`, hourly
+  per-provider stats on `/stats` ([docs/STATS.md](docs/STATS.md)), plus
+  pinned forwarding to one provider on `/node/{id}`, including
+  providers outside rotation. To run it locally: copy `config.example.toml` to
   `config.toml`, list your providers, `cargo run --bin arkiv-lb`.
   The client contract is [docs/ENDPOINT.md](docs/ENDPOINT.md); the
   architecture note is [docs/PROXY.md](docs/PROXY.md).

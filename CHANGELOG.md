@@ -4,6 +4,18 @@ Notable changes per release, newest first. The LB box deploys a tag:
 `git checkout <tag> && docker compose up -d --build`
 ([docs/RUNBOOK.md](docs/RUNBOOK.md)).
 
+## Unreleased
+
+- Hourly stats for a dashboard: `GET /stats` on the admin listener
+  serves, per provider and per hour, the requests answered and the
+  attempts that produced no answer, and per hour the requests the LB
+  answered itself, for the last 31 days ([docs/STATS.md](docs/STATS.md)).
+  The rings are saved to a file (`stats.file`, in a named volume in
+  the stack) at every hour and at a stop, so a restart keeps them;
+  only a crash loses the hour in progress. `/nodes` shows
+  `served_period` and `served_total` where it showed `served`.
+- The startup line names the version.
+
 ## v0.3.0
 
 Integrity: a provider serving wrong data is found and taken out of

@@ -15,6 +15,8 @@
 - [LIMITATIONS.md](LIMITATIONS.md) — everything this version does not
   do, by area, with what an operator does about each and the issue
   where one exists.
+- [STATS.md](STATS.md) — the hourly per-provider buckets `/stats`
+  serves, for a dashboard's backend.
 
 ## How it works
 

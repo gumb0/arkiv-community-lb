@@ -2,7 +2,7 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -11,7 +11,7 @@ use std::{
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, State, rejection::BytesRejection},
+    extract::{DefaultBodyLimit, Path, Query, State, rejection::BytesRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -26,6 +26,7 @@ use crate::{
     marketplace::admission::{Agreements, Op, Token, decide_admission},
     pool::{Pool, Provider, Source},
     proxy,
+    stats::{self, Stats},
 };
 
 #[derive(Clone)]
@@ -36,6 +37,10 @@ struct AdminState {
     attempt_timeout: Duration,
     /// The live agreements, when the marketplace is configured.
     agreements: Option<Arc<dyn Agreements>>,
+    stats: Arc<Mutex<Stats>>,
+    /// The LB's address on the chain, when the marketplace is
+    /// configured; the stats name it.
+    lb_address: Option<String>,
 }
 
 pub fn router(
@@ -44,10 +49,13 @@ pub fn router(
     forwarder: Forwarder,
     proxy: &config::Proxy,
     agreements: Option<Arc<dyn Agreements>>,
+    stats: Arc<Mutex<Stats>>,
+    lb_address: Option<String>,
 ) -> Router {
     let mut router = Router::new()
         .route("/health", get(health))
         .route("/nodes", get(nodes))
+        .route("/stats", get(stats_report))
         .route("/node/{id}", post(forward_to_node));
     // The admission route exists only with the marketplace: without it
     // there are no agreements to admit against, and the tunnel server's
@@ -64,6 +72,8 @@ pub fn router(
             ready,
             forwarder,
             attempt_timeout: proxy.attempt_timeout,
+            stats,
+            lb_address,
             agreements,
         })
 }
@@ -302,6 +312,38 @@ impl From<&Provider> for NodeView {
             integrity_height: provider.last_verdict().map(|(_, height)| height),
         }
     }
+}
+
+/// `since` is an hour's start as `YYYY-MM-DDTHH:MM:SSZ`; absent, every
+/// hour kept.
+#[derive(Deserialize)]
+struct StatsQuery {
+    since: Option<String>,
+}
+
+async fn stats_report(
+    State(state): State<AdminState>,
+    Query(query): Query<StatsQuery>,
+) -> Response {
+    let since = match &query.since {
+        None => 0,
+        Some(text) => match stats::parse_iso(text) {
+            Some(since) => since,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "since must be an hour's start as YYYY-MM-DDTHH:MM:SSZ\n",
+                )
+                    .into_response();
+            }
+        },
+    };
+    let report = state
+        .stats
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .report(since, stats::now(), state.lb_address.as_deref());
+    Json(report).into_response()
 }
 
 /// A fresh, lock-free view over every configured provider entry.

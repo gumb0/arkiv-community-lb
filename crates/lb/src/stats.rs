@@ -4,7 +4,7 @@
 //! tick task at the end hands them the hour and the readings.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, atomic::Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -143,9 +143,9 @@ pub struct LbRings {
 /// and nothing else.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Stats {
-    /// By pool id. A provider that left the pool keeps its rings until
-    /// its newest hour is older than a ring holds.
-    pub providers: HashMap<String, ProviderRings>,
+    /// By pool id, in id order. A provider that left the pool keeps
+    /// its rings until its newest hour is older than a ring holds.
+    pub providers: BTreeMap<String, ProviderRings>,
     pub lb: LbRings,
 }
 
@@ -234,6 +234,98 @@ impl Stats {
     }
 }
 
+/// The stats as the route serves them: the completed buckets from
+/// `since` on, per provider and for the LB's own answers.
+#[derive(Debug, Serialize)]
+pub struct Report {
+    /// The LB's address on the chain; null without the marketplace.
+    pub lb: Option<String>,
+    pub generated_at: String,
+    /// The bucket length; `1h`.
+    pub bucket: String,
+    pub since: String,
+    pub providers: Vec<ProviderReport>,
+    pub lb_outcomes: Vec<LbRow>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderReport {
+    /// The pool id, as in `/nodes`: a marketplace provider's address.
+    pub id: String,
+    pub agreement_id: Option<String>,
+    pub buckets: Vec<ProviderRow>,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct ProviderRow {
+    pub hour: String,
+    pub served: u64,
+    pub transport_failures: u64,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct LbRow {
+    pub hour: String,
+    pub no_healthy_provider: u64,
+    pub timed_out: u64,
+    pub no_provider_answered: u64,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
+}
+
+impl Stats {
+    /// The report at `now`: the completed hours from the one starting
+    /// at `since` on. The hour in progress is not in it; `/nodes` has
+    /// the live counts.
+    pub fn report(&self, since: u64, now: u64, lb: Option<&str>) -> Report {
+        let providers = self
+            .providers
+            .iter()
+            .map(|(id, rings)| ProviderReport {
+                id: id.clone(),
+                agreement_id: rings.agreement_id.clone(),
+                // The two rings tick together, so their buckets pair up
+                // one to one.
+                buckets: rings
+                    .served
+                    .since(since)
+                    .zip(rings.transport_failures.since(since))
+                    .map(|(served, failures)| ProviderRow {
+                        hour: iso(served.start),
+                        served: served.count,
+                        transport_failures: failures.count,
+                        partial: served.partial,
+                    })
+                    .collect(),
+            })
+            .collect();
+        let lb_outcomes = self
+            .lb
+            .no_healthy_provider
+            .since(since)
+            .zip(self.lb.timed_out.since(since))
+            .zip(self.lb.no_provider_answered.since(since))
+            .map(|((no_healthy, timed_out), unanswered)| LbRow {
+                hour: iso(no_healthy.start),
+                no_healthy_provider: no_healthy.count,
+                timed_out: timed_out.count,
+                no_provider_answered: unanswered.count,
+                partial: no_healthy.partial,
+            })
+            .collect();
+        Report {
+            lb: lb.map(str::to_string),
+            generated_at: iso(now),
+            bucket: "1h".into(),
+            since: iso(since),
+            providers,
+            lb_outcomes,
+        }
+    }
+}
+
 /// `secs` as `YYYY-MM-DDTHH:MM:SSZ`.
 pub fn iso(secs: u64) -> String {
     humantime::format_rfc3339_seconds(UNIX_EPOCH + Duration::from_secs(secs)).to_string()
@@ -256,9 +348,9 @@ pub fn now() -> u64 {
 }
 
 /// The tick task: at every boundary of `period` on the wall clock,
-/// closes the bucket that just ended and saves the rings; at a stop
-/// it closes the hour in progress and saves once more. The period is
-/// an hour, except in tests, and whole seconds either way.
+/// closes the bucket that just ended and saves the rings; at a stop it
+/// closes the hour in progress and saves once more. The period is an
+/// hour, except in tests, and whole seconds either way.
 pub async fn run(
     stats: Arc<Mutex<Stats>>,
     pool: Arc<Pool>,

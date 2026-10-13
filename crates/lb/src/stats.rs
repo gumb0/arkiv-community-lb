@@ -360,13 +360,13 @@ pub async fn run(
 ) {
     let period_secs = period.as_secs();
     loop {
-        let now = now();
-        let next = (now / period_secs + 1) * period_secs;
-        let wait = tokio::time::sleep(Duration::from_secs(next - now));
+        let at = now();
+        let next = (at / period_secs + 1) * period_secs;
+        let wait = tokio::time::sleep(Duration::from_secs(next - at));
         tokio::select! {
             _ = wait => {}
             _ = shutdown.changed() => {
-                let start = now / period_secs * period_secs;
+                let start = now() / period_secs * period_secs;
                 stats
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)

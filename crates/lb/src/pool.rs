@@ -523,6 +523,20 @@ pub struct LbOutcomes {
     pub no_provider_answered: AtomicU64,
 }
 
+impl LbOutcomes {
+    pub fn record_no_healthy_provider(&self) {
+        self.no_healthy_provider.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_timed_out(&self) {
+        self.timed_out.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_no_provider_answered(&self) {
+        self.no_provider_answered.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 impl Pool {
     pub fn new(providers: &[config::Provider]) -> Result<Self, InvalidUrl> {
         let mut members = Members::with_capacity(providers.len());

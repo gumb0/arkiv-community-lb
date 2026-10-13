@@ -228,6 +228,19 @@ impl Stats {
     }
 }
 
+/// `secs` as `YYYY-MM-DDTHH:MM:SSZ`.
+pub fn iso(secs: u64) -> String {
+    humantime::format_rfc3339_seconds(UNIX_EPOCH + Duration::from_secs(secs)).to_string()
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` as unix seconds; none for anything else.
+pub fn parse_iso(text: &str) -> Option<u64> {
+    let time = humantime::parse_rfc3339(text).ok()?;
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|since| since.as_secs())
+}
+
 /// Unix seconds now.
 pub fn now() -> u64 {
     SystemTime::now()
@@ -410,6 +423,29 @@ mod tests {
             buckets(&restored, T0 + 2 * HOUR),
             vec![bucket(T0 + 2 * HOUR, 2, false)]
         );
+    }
+
+    #[test]
+    fn times_print_and_parse_as_iso_utc() {
+        // Checked against `date -u`.
+        for (secs, text) in [
+            (0, "1970-01-01T00:00:00Z"),
+            (951_782_400, "2000-02-29T00:00:00Z"),
+            (1_759_996_800, "2025-10-09T08:00:00Z"),
+            (1_760_000_000, "2025-10-09T08:53:20Z"),
+            (4_102_444_800, "2100-01-01T00:00:00Z"),
+        ] {
+            assert_eq!(iso(secs), text);
+            assert_eq!(parse_iso(text), Some(secs), "{text}");
+        }
+        for bad in [
+            "2025-10-09",
+            "2025-10-09T08:00:00",
+            "2025-13-09T08:00:00Z",
+            "x",
+        ] {
+            assert_eq!(parse_iso(bad), None, "{bad}");
+        }
     }
 
     #[test]

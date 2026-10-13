@@ -427,12 +427,26 @@ the addresses of the first two as network values, like genesis.
 | Where it lives | `writer.key` on this box, mounted into the sidecar as a secret, never in an environment | Given to a settle run per invocation; never on this box | `ARKIV_API_KEY` in `.env` on this box and on the settle machine |
 | What it must hold | Gas on Arkiv, for the writes ([Day to day](#day-to-day)) | The GLM owed, and gas on both chains: the payout chain for the transfers, Arkiv for the receipts | Quota ([What normal operation costs](#what-normal-operation-costs)) |
 | If it leaks | Anyone can write records as the LB: forge agreements, alter counts. Rotate at once | Anyone can spend the GLM in it, and write receipts that mark records paid. Rotate at once | Anyone can spend the quota. Rotate at the endpoint |
-| Rotating it | A new key is a new LB: the tooling ships the new address, every agreement expires unrefreshed, every provider re-onboards with a new offer. Settle the old key's records first. Announce it like a host move | Add the old address to `SETTLE_PREVIOUS_ADDRESSES` on the settle machine, so its receipts still mark records paid, and have the provider tooling ship it as a previous settle address, so a provider's `status` keeps showing the old payouts. Then switch the key. A provider on an older tooling release sees the old payouts as missing until it updates; nothing is paid twice | Edit `.env`, then `docker compose up -d` here and nothing on the settle machine beyond its own `.env` |
+| Rotating it | A new key is a new LB: the tooling ships the new address, every agreement expires unrefreshed, every provider re-onboards with a new offer. Settle the old key's records first. Announce it like a host move | In two steps, below: [Rotating the settle key](#rotating-the-settle-key) | Edit `.env`, then `docker compose up -d` here and nothing on the settle machine beyond its own `.env` |
 
 The provider's key is the operator's own: it posts the offer, signs
 the tunnel token and receives the payouts, and the node repository's
 README covers it. The admin API has no key; it is loopback-only, and
 that is its whole protection.
+
+### Rotating the settle key
+
+Settle reads a record as paid when a receipt from its own address
+names it, so the new key has to be told about the old one's receipts.
+
+1. Release the provider tooling with the new key's address as the
+   settle address and the old one as a previous settle address. A
+   provider's `status` then shows the payouts of both keys.
+2. On the settle machine, in one change: switch to the new key, and
+   add the old key's address to `SETTLE_PREVIOUS_ADDRESSES` in `.env`
+   (and set `SETTLE_ADDRESS` to the new address, if it is set). Do
+   both before the next run: a run with the new key and without the
+   old address pays again every record the old key paid.
 
 ## Troubleshooting
 

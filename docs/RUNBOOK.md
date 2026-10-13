@@ -39,8 +39,8 @@ them:
   `node` user, uid 1000, so the file must belong to that uid:
   `chown 1000:1000 writer.key && chmod 600 writer.key`. Root still
   edits it; nobody else on the box can read it. There is no example
-  file: create it with the key's text, and keep the key funded (see Day
-  to day)
+  file: create it with the key's text, and keep the key funded (see
+  [Day to day](#day-to-day))
 
 One named volume, `lb-state`, holds the LB's hourly stats file
 (`stats.file` in the config): the last 31 days of hourly buckets per
@@ -79,7 +79,9 @@ deployment, not to a later one.
 ## First deployment
 
 1. Firewall first: inbound allow TCP 22, 7000, and 8545 (or 443,
-   with the reverse proxy above in front); everything else denied.
+   with the reverse proxy in front, see
+   [What the stack leaves to you](#what-the-stack-leaves-to-you));
+   everything else denied.
    ICMP is your choice — nothing here depends on ping either way.
 2. Install Docker with the compose plugin:
    <https://docs.docker.com/engine/install/>.
@@ -121,7 +123,8 @@ each step leaves a line in `docker compose logs lb`:
    the offer is seen again at each poll while it lives.
 2. `tunnel admitted` — the operator ran `start-tunnel` and the tunnel
    server let the client in. A refused client reads the reason in its
-   own tunnel log; the reasons are under Troubleshooting.
+   own tunnel log; the reasons are under
+  [Troubleshooting](#troubleshooting).
 3. `admission: the probes passed, the agreement record is extended` —
    the node passed its probes, and the integrity check when
    `[integrity]` is configured, and is in rotation. From here its
@@ -316,7 +319,8 @@ not expect the fleet to re-price: a provider moves to the new rate
 when its agreement expires and it posts a new offer. With a lowered
 rate that is only when the provider leaves and comes back; with a
 raised one, operators under agreement may ask to end their agreement
-early and re-post (Day to day, "Ending an agreement early").
+early and re-post ([Day to day](#day-to-day), "Ending an agreement
+early").
 
 **A network reset** deletes every record. Before an announced reset,
 run settle: what was counted and not paid by then cannot be paid
@@ -421,7 +425,7 @@ the addresses of the first two as network values, like genesis.
 |---|---|---|---|
 | What it does | Signs every record the LB writes: the listing, agreements, counter records. Its address is the LB's identity: what the tooling trusts records by | Sends the GLM transfers on the payout chain and writes the receipts on Arkiv, one address on both chains, so a receipt's creator is the transfer's sender | Opens the metered reference endpoint for the LB, the sidecar and settle |
 | Where it lives | `writer.key` on this box, mounted into the sidecar as a secret, never in an environment | Given to a settle run per invocation; never on this box | `ARKIV_API_KEY` in `.env` on this box and on the settle machine |
-| What it must hold | Gas on Arkiv, for the writes (Day to day) | The GLM owed, and gas on both chains: the payout chain for the transfers, Arkiv for the receipts | Quota (Day to day) |
+| What it must hold | Gas on Arkiv, for the writes ([Day to day](#day-to-day)) | The GLM owed, and gas on both chains: the payout chain for the transfers, Arkiv for the receipts | Quota ([What normal operation costs](#what-normal-operation-costs)) |
 | If it leaks | Anyone can write records as the LB: forge agreements, alter counts. Rotate at once | Anyone can spend the GLM in it, and write receipts that mark records paid. Rotate at once | Anyone can spend the quota. Rotate at the endpoint |
 | Rotating it | A new key is a new LB: the tooling ships the new address, every agreement expires unrefreshed, every provider re-onboards with a new offer. Settle the old key's records first. Announce it like a host move | Add the old address to `SETTLE_PREVIOUS_ADDRESSES` on the settle machine, so its receipts still mark records paid, and have the provider tooling ship it as a previous settle address, so a provider's `status` keeps showing the old payouts. Then switch the key. A provider on an older tooling release sees the old payouts as missing until it updates; nothing is paid twice | Edit `.env`, then `docker compose up -d` here and nothing on the settle machine beyond its own `.env` |
 
@@ -497,7 +501,8 @@ Symptom, then where to look.
 - **Clients get `no healthy provider`.** No provider is eligible;
   `/nodes` says why for each, as above.
 - **The LB exits at start.** A config error names the field. A config
-  the container cannot read is the file-permission rule above.
+  the container cannot read is the file-permission rule in
+  [What runs where](#what-runs-where).
 - **After a crash** (the process killed, an out-of-memory stop, a host
   reboot): Docker starts the LB again, and nothing is to be done by
   hand. Started again, the LB reads its agreements and their open

@@ -116,9 +116,14 @@ impl Ring {
     }
 }
 
-/// One provider's rings.
+/// One provider's rings, with its agreement, kept here so a provider
+/// that left the pool is still named in the report.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProviderRings {
+    /// The agreement record's key of a marketplace provider; none for
+    /// a static one.
+    #[serde(default)]
+    pub agreement_id: Option<String>,
     pub served: Ring,
     pub transport_failures: Ring,
 }
@@ -200,6 +205,7 @@ impl Stats {
     fn close(&mut self, start: u64, pool: &Pool, stopping: bool) {
         for provider in pool.snapshot().iter() {
             let rings = self.providers.entry(provider.id.clone()).or_default();
+            rings.agreement_id = provider.agreement_id().map(|key| format!("{key:#x}"));
             rings.served.close(
                 start,
                 provider.served_total.load(Ordering::Relaxed),

@@ -484,9 +484,9 @@ async fn served_counts(fleet: &Fleet) -> Vec<u64> {
         .nodes()
         .iter()
         .map(|node| {
-            provider(&nodes, &node.id)["served"]
+            provider(&nodes, &node.id)["served_total"]
                 .as_u64()
-                .expect("served is a number")
+                .expect("served_total is a number")
         })
         .collect()
 }
@@ -801,7 +801,7 @@ async fn liar(lie: relay::Lie, check: &str) {
     );
 
     // The public endpoint serves through the honest two only.
-    let served_before = provider(&nodes, "liar")["served"].clone();
+    let served_before = provider(&nodes, "liar")["served_total"].clone();
     let stats = load::run(
         &format!("http://{LB_PUBLIC}"),
         4,
@@ -813,7 +813,7 @@ async fn liar(lie: relay::Lie, check: &str) {
     assert!(stats.ok > 0, "the load ran");
     let nodes = fetch_nodes().await;
     assert_eq!(
-        provider(&nodes, "liar")["served"],
+        provider(&nodes, "liar")["served_total"],
         served_before,
         "no traffic to the liar"
     );

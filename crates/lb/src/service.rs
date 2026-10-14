@@ -126,7 +126,14 @@ pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
     // One client for everything outbound to providers — forwards,
     // probes and integrity reads go to the same hosts, so they share
     // one connection pool.
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        // A provider is not trusted to send the LB anywhere: a followed
+        // 307 or 308 would repeat the client's POST to an address of
+        // the provider's choosing, the writer sidecar on loopback
+        // included. A redirect is a non-2xx answer, so it fails over.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("the client builds");
     let ready = Arc::new(AtomicBool::new(false));
     let checker = match (&config.integrity, &config.reference) {
         (Some(integrity), Some(url)) => {

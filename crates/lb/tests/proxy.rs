@@ -244,6 +244,34 @@ async fn provider_error_is_an_answer_not_retried() {
 }
 
 #[tokio::test]
+async fn a_redirect_is_not_followed() {
+    use axum::http::{StatusCode, header};
+
+    // A provider answers with a 308 to another address, where the LB's
+    // own sidecar could be listening; the request must not go there.
+    let (target, target_fake) = fake_provider(b"{}", Duration::ZERO).await;
+    let redirecting = Router::new().fallback(move || async move {
+        (
+            StatusCode::PERMANENT_REDIRECT,
+            [(header::LOCATION, format!("http://{target}/"))],
+        )
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let redirector = listener.local_addr().expect("addr");
+    tokio::spawn(async move { axum::serve(listener, redirecting).await.expect("serve") });
+    let answer = br#"{"jsonrpc":"2.0","id":9,"result":"ok"}"#;
+    let (live, _live_fake) = fake_provider(answer, Duration::ZERO).await;
+    let (_service, public) = start_lb(&[redirector, live]).await;
+
+    let (status, body) = post(&public, request(9)).await;
+    assert_eq!(status, 200, "a redirect fails over like any non-2xx");
+    assert_eq!(body["result"], "ok");
+    assert_eq!(target_fake.requests(), 0, "the redirect was not followed");
+}
+
+#[tokio::test]
 async fn http_error_status_fails_over() {
     use axum::http::StatusCode;
 

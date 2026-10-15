@@ -120,9 +120,9 @@ impl Stats {
         self
     }
 
-    /// One line: the rate over `elapsed`, the counts, and the
-    /// latency of the `ok` requests.
-    pub fn line(&self, elapsed: Duration) -> String {
+    /// One line with everything: the counts, the rate over `elapsed`,
+    /// and the latency of the `ok` requests.
+    pub fn summary(&self, elapsed: Duration) -> String {
         let mut line = format!(
             "{} requests in {:.1}s ({:.0}/s), {} ok, {} failed",
             self.sent,
@@ -144,6 +144,25 @@ impl Stats {
         }
         line
     }
+
+    /// One row of the summary a run with several steps prints: the
+    /// rate, p50, p99 and the failed count.
+    pub fn table_row(&self, elapsed: Duration) -> String {
+        let mut latencies = self.latencies.clone();
+        latencies.sort_unstable();
+        let at = |fraction: usize| {
+            latencies
+                .get(latencies.len() * fraction / 100)
+                .map_or("-".to_string(), |d| ms(*d))
+        };
+        format!(
+            "{:<11} {:<8} {:<8} {}",
+            format!("{:.0}", self.sent as f64 / elapsed.as_secs_f64()),
+            at(50),
+            at(99),
+            self.failed
+        )
+    }
 }
 
 /// Milliseconds with one decimal: on loopback a request takes a
@@ -156,7 +175,7 @@ fn ms(duration: Duration) -> String {
 /// or `stop` turns true; every worker loops as fast as its answers
 /// come back, and finishes its request in flight before stopping.
 /// With `progress`, a line every that often with the window's own
-/// numbers, so a run shows its knee as it happens.
+/// numbers, so a run shows when its latency starts to rise.
 pub async fn run(
     target: &str,
     requests: Requests,
@@ -212,7 +231,7 @@ pub async fn run(
                 None => break,
             },
             _ = lines.tick(), if progress.is_some() => {
-                println!("rig: window: {}", window.line(window_started.elapsed()));
+                println!("rig: window: {}", window.summary(window_started.elapsed()));
                 total = total.merge(std::mem::take(&mut window));
                 window_started = Instant::now();
             }

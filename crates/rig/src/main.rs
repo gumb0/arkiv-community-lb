@@ -115,7 +115,7 @@ async fn all() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--requests cheap|query] [--concurrency N] [--duration SECONDS]\n       rig relay --listen <host:port> --upstream <url> [--lie entity|block|frozen-head]",
+        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--requests cheap|query] [--concurrency N[,N...]] [--duration SECONDS]\n       rig relay --listen <host:port> --upstream <url> [--lie entity|block|frozen-head]",
         SCENARIOS.join(" | ")
     );
     std::process::exit(2);
@@ -124,7 +124,9 @@ fn usage() -> ! {
 async fn load_command(mut args: impl Iterator<Item = String>) {
     let mut target = None;
     let mut requests = load::Requests::Cheap;
-    let mut concurrency = 4;
+    // The concurrencies to run, one step each in turn, every step for
+    // the duration, with one summary row per step at the end.
+    let mut concurrency_steps = vec![4];
     let mut duration = Duration::from_secs(10);
     while let Some(flag) = args.next() {
         let value = args.next().unwrap_or_else(|| usage());
@@ -137,7 +139,12 @@ async fn load_command(mut args: impl Iterator<Item = String>) {
                     _ => usage(),
                 }
             }
-            "--concurrency" => concurrency = value.parse().unwrap_or_else(|_| usage()),
+            "--concurrency" => {
+                concurrency_steps = value
+                    .split(',')
+                    .map(|n| n.trim().parse().unwrap_or_else(|_| usage()))
+                    .collect()
+            }
             "--duration" => {
                 duration = Duration::from_secs(value.parse().unwrap_or_else(|_| usage()))
             }
@@ -146,9 +153,6 @@ async fn load_command(mut args: impl Iterator<Item = String>) {
     }
     let Some(target) = target else { usage() };
 
-    println!(
-        "rig: load on {target}: {requests:?} requests, {concurrency} workers for {duration:?}"
-    );
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     tokio::spawn(async move {
@@ -156,22 +160,36 @@ async fn load_command(mut args: impl Iterator<Item = String>) {
             flag.store(true, Ordering::Relaxed);
         }
     });
-    let started = Instant::now();
-    let stats = load::run(
-        &target,
-        requests,
-        concurrency,
-        duration,
-        Some(Duration::from_secs(10)),
-        stop.clone(),
-    )
-    .await;
-    report(&stats, started.elapsed());
-    if stop.load(Ordering::Relaxed) {
-        println!("rig: interrupted");
-        std::process::exit(130);
+    let mut rows = Vec::new();
+    for &concurrency in &concurrency_steps {
+        println!(
+            "rig: load on {target}: {requests:?} requests, {concurrency} workers for {duration:?}"
+        );
+        let started = Instant::now();
+        let stats = load::run(
+            &target,
+            requests,
+            concurrency,
+            duration,
+            Some(Duration::from_secs(10)),
+            stop.clone(),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        report(&stats, elapsed);
+        rows.push((concurrency, stats, elapsed));
+        if stop.load(Ordering::Relaxed) {
+            println!("rig: interrupted");
+            std::process::exit(130);
+        }
     }
-    if stats.failed > 0 {
+    if concurrency_steps.len() > 1 {
+        println!("rig: workers  requests/s  p50      p99      failed");
+        for (concurrency, stats, elapsed) in &rows {
+            println!("rig: {concurrency:<8} {}", stats.table_row(*elapsed));
+        }
+    }
+    if rows.iter().any(|(_, stats, _)| stats.failed > 0) {
         std::process::exit(1);
     }
 }
@@ -209,7 +227,7 @@ async fn relay_command(mut args: impl Iterator<Item = String>) {
 }
 
 fn report(stats: &load::Stats, elapsed: Duration) {
-    println!("rig: {}", stats.line(elapsed));
+    println!("rig: {}", stats.summary(elapsed));
     for (kind, (count, reason)) in &stats.failures {
         println!("rig: failed: {kind}: {count}, first: {reason}");
     }

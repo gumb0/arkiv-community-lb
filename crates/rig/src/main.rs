@@ -931,7 +931,7 @@ async fn offer_accepted() {
         let status = tooling.run("status");
         let printed = provider::text(&status);
         assert!(status.status.success(), "status failed: {printed}");
-        if printed.contains("Counting: 0 requests since block") {
+        if printed.contains("Counting: 0 requests as of the last write") {
             break printed;
         }
         assert!(

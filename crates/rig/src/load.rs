@@ -4,6 +4,7 @@
 //! point the same command at a deployed one.
 
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -57,30 +58,52 @@ impl Requests {
 
 /// A request is `ok` only when it comes back HTTP 200 with a JSON-RPC
 /// `result`; everything else — transport errors, other statuses, error
-/// envelopes — is `failed`, with the first reason kept for diagnosis.
-/// Latencies are the round-trip times of the `ok` requests.
+/// envelopes — is `failed`, counted by kind, with the first reason of
+/// each kind kept for diagnosis. Latencies are the round-trip times of
+/// the `ok` requests.
 #[derive(Default)]
 pub struct Stats {
     pub sent: u64,
     pub ok: u64,
     pub failed: u64,
-    pub first_failure: Option<String>,
+    /// By kind: `timeout`, `connect`, `transport`, `HTTP 503`, an LB
+    /// error's message (`lb: no healthy provider`), a provider error's
+    /// code (`rpc error -32601`), `bad body`. The count, and the first
+    /// reason seen.
+    pub failures: BTreeMap<String, (u64, String)>,
     pub latencies: Vec<Duration>,
 }
 
+/// Why a request failed: the kind it is counted under, and the reason
+/// in full.
+pub struct Failure {
+    kind: String,
+    reason: String,
+}
+
+impl Failure {
+    fn new(kind: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
 impl Stats {
-    fn record(&mut self, outcome: Result<Duration, String>) {
+    fn record(&mut self, outcome: Result<Duration, Failure>) {
         self.sent += 1;
         match outcome {
             Ok(latency) => {
                 self.ok += 1;
                 self.latencies.push(latency);
             }
-            Err(reason) => {
+            Err(failure) => {
                 self.failed += 1;
-                if self.first_failure.is_none() {
-                    self.first_failure = Some(reason);
-                }
+                self.failures
+                    .entry(failure.kind)
+                    .or_insert((0, failure.reason))
+                    .0 += 1;
             }
         }
     }
@@ -89,8 +112,8 @@ impl Stats {
         self.sent += other.sent;
         self.ok += other.ok;
         self.failed += other.failed;
-        if self.first_failure.is_none() {
-            self.first_failure = other.first_failure;
+        for (kind, (count, reason)) in other.failures {
+            self.failures.entry(kind).or_insert((0, reason)).0 += count;
         }
         self.latencies.extend(other.latencies);
         self
@@ -141,7 +164,7 @@ async fn one_request(
     client: &reqwest::Client,
     target: &str,
     body: &Value,
-) -> Result<Duration, String> {
+) -> Result<Duration, Failure> {
     // Named in the failure reasons.
     let method = body["method"].as_str().unwrap_or("?");
     let started = Instant::now();
@@ -150,19 +173,37 @@ async fn one_request(
         .json(body)
         .send()
         .await
-        .map_err(|error| format!("{method}: {error}"))?;
+        .map_err(|error| {
+            let kind = if error.is_timeout() {
+                "timeout"
+            } else if error.is_connect() {
+                "connect"
+            } else {
+                "transport"
+            };
+            Failure::new(kind, format!("{method}: {error}"))
+        })?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         let body = body.get(..200).unwrap_or(&body);
-        return Err(format!("{method}: HTTP {status}: {body}"));
+        return Err(Failure::new(
+            format!("HTTP {}", status.as_u16()),
+            format!("{method}: HTTP {status}: {body}"),
+        ));
     }
     let body: Value = response
         .json()
         .await
-        .map_err(|error| format!("{method}: bad body: {error}"))?;
+        .map_err(|error| Failure::new("bad body", format!("{method}: bad body: {error}")))?;
     if body.get("result").is_none() {
-        return Err(format!("{method}: {body}"));
+        // The LB's own errors carry a fixed message, which names the
+        // kind better than the code; a provider's error is its code.
+        let kind = match body["error"]["message"].as_str() {
+            Some(message) if message.starts_with("lb: ") => message.to_string(),
+            _ => format!("rpc error {}", body["error"]["code"]),
+        };
+        return Err(Failure::new(kind, format!("{method}: {body}")));
     }
     Ok(started.elapsed())
 }

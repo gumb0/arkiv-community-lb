@@ -220,8 +220,8 @@ fn report(stats: &load::Stats, elapsed: Duration) {
             latencies[latencies.len() * 99 / 100].as_millis(),
         );
     }
-    if let Some(reason) = &stats.first_failure {
-        println!("rig: first failure: {reason}");
+    for (kind, (count, reason)) in &stats.failures {
+        println!("rig: failed: {kind}: {count}, first: {reason}");
     }
 }
 

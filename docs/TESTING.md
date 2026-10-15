@@ -151,7 +151,9 @@ real. A future rig improvement would run both ends of the tunnel.
 `rig load --target <url> [--requests cheap|query] [--concurrency N]
 [--duration SECONDS]`. It runs the same request loop the scenarios
 use, against any endpoint you point it at; a run with failures exits
-nonzero and reports the first failure's reason. `cheap` (the default)
+nonzero and reports them by kind (a timeout, a refused connection, an
+HTTP status, an LB error, a provider error), with the first reason of
+each. `cheap` (the default)
 cycles four reads every node answers at once, to find the ceiling of
 the path; `query` asks for a full page of live entities with their
 payloads, the heaviest read a client makes.

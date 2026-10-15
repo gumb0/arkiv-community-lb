@@ -13,6 +13,7 @@ use std::{
 };
 
 use serde_json::{Value, json};
+use tokio::sync::mpsc;
 
 /// Cheap reads every node answers, cycled through in order.
 const METHODS: [&str; 4] = [
@@ -118,16 +119,50 @@ impl Stats {
         self.latencies.extend(other.latencies);
         self
     }
+
+    /// One line: the rate over `elapsed`, the counts, and the
+    /// latency of the `ok` requests.
+    pub fn line(&self, elapsed: Duration) -> String {
+        let mut line = format!(
+            "{} requests in {:.1}s ({:.0}/s), {} ok, {} failed",
+            self.sent,
+            elapsed.as_secs_f64(),
+            self.sent as f64 / elapsed.as_secs_f64(),
+            self.ok,
+            self.failed
+        );
+        let mut latencies = self.latencies.clone();
+        if !latencies.is_empty() {
+            latencies.sort_unstable();
+            let avg = latencies.iter().sum::<Duration>() / latencies.len() as u32;
+            line.push_str(&format!(
+                "; latency avg {}, p50 {}, p99 {}",
+                ms(avg),
+                ms(latencies[latencies.len() / 2]),
+                ms(latencies[latencies.len() * 99 / 100]),
+            ));
+        }
+        line
+    }
+}
+
+/// Milliseconds with one decimal: on loopback a request takes a
+/// fraction of one.
+fn ms(duration: Duration) -> String {
+    format!("{:.1} ms", duration.as_secs_f64() * 1e3)
 }
 
 /// Runs `concurrency` workers against `target` until `duration` is up
 /// or `stop` turns true; every worker loops as fast as its answers
 /// come back, and finishes its request in flight before stopping.
+/// With `progress`, a line every that often with the window's own
+/// numbers, so a run shows its knee as it happens.
 pub async fn run(
     target: &str,
     requests: Requests,
     concurrency: usize,
     duration: Duration,
+    progress: Option<Duration>,
     stop: Arc<AtomicBool>,
 ) -> Stats {
     let client = reqwest::Client::builder()
@@ -140,27 +175,50 @@ pub async fn run(
         .expect("client");
     let deadline = Instant::now() + duration;
 
-    let workers = (0..concurrency).map(|_| {
+    // Every outcome goes through one channel, so the windows can be
+    // cut by time across all workers.
+    let (outcomes, mut collected) = mpsc::unbounded_channel();
+    for _ in 0..concurrency {
         let client = client.clone();
         let target = target.to_string();
         let stop = stop.clone();
+        let outcomes = outcomes.clone();
         tokio::spawn(async move {
-            let mut stats = Stats::default();
             let mut turn = 0usize;
             while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
                 let body = requests.body(turn);
                 turn += 1;
-                stats.record(one_request(&client, &target, &body).await);
+                if outcomes
+                    .send(one_request(&client, &target, &body).await)
+                    .is_err()
+                {
+                    return;
+                }
             }
-            stats
-        })
-    });
+        });
+    }
+    drop(outcomes);
 
     let mut total = Stats::default();
-    for worker in workers.collect::<Vec<_>>() {
-        total = total.merge(worker.await.expect("worker panicked"));
+    let mut window = Stats::default();
+    let mut window_started = Instant::now();
+    // The period does not matter without progress: the branch is off.
+    let every = progress.unwrap_or(Duration::from_secs(1));
+    let mut lines = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    loop {
+        tokio::select! {
+            outcome = collected.recv() => match outcome {
+                Some(outcome) => window.record(outcome),
+                None => break,
+            },
+            _ = lines.tick(), if progress.is_some() => {
+                println!("rig: window: {}", window.line(window_started.elapsed()));
+                total = total.merge(std::mem::take(&mut window));
+                window_started = Instant::now();
+            }
+        }
     }
-    total
+    total.merge(window)
 }
 
 async fn one_request(

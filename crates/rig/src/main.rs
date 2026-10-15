@@ -157,7 +157,15 @@ async fn load_command(mut args: impl Iterator<Item = String>) {
         }
     });
     let started = Instant::now();
-    let stats = load::run(&target, requests, concurrency, duration, stop.clone()).await;
+    let stats = load::run(
+        &target,
+        requests,
+        concurrency,
+        duration,
+        Some(Duration::from_secs(10)),
+        stop.clone(),
+    )
+    .await;
     report(&stats, started.elapsed());
     if stop.load(Ordering::Relaxed) {
         println!("rig: interrupted");
@@ -201,25 +209,7 @@ async fn relay_command(mut args: impl Iterator<Item = String>) {
 }
 
 fn report(stats: &load::Stats, elapsed: Duration) {
-    println!(
-        "rig: {} requests in {:.1}s ({:.0}/s), {} ok, {} failed",
-        stats.sent,
-        elapsed.as_secs_f64(),
-        stats.sent as f64 / elapsed.as_secs_f64(),
-        stats.ok,
-        stats.failed
-    );
-    let mut latencies = stats.latencies.clone();
-    if !latencies.is_empty() {
-        latencies.sort_unstable();
-        let avg: Duration = latencies.iter().sum::<Duration>() / latencies.len() as u32;
-        println!(
-            "rig: latency: avg {} ms, p50 {} ms, p99 {} ms",
-            avg.as_millis(),
-            latencies[latencies.len() / 2].as_millis(),
-            latencies[latencies.len() * 99 / 100].as_millis(),
-        );
-    }
+    println!("rig: {}", stats.line(elapsed));
     for (kind, (count, reason)) in &stats.failures {
         println!("rig: failed: {kind}: {count}, first: {reason}");
     }
@@ -290,6 +280,7 @@ async fn kill_recover() {
             load::Requests::Cheap,
             4,
             Duration::from_secs(15),
+            None,
             Arc::new(AtomicBool::new(false)),
         )
         .await
@@ -345,6 +336,7 @@ async fn distribution() {
         load::Requests::Cheap,
         4,
         Duration::from_secs(5),
+        None,
         Arc::new(AtomicBool::new(false)),
     )
     .await;
@@ -819,6 +811,7 @@ async fn liar(lie: relay::Lie, check: &str) {
         load::Requests::Cheap,
         4,
         Duration::from_secs(3),
+        None,
         Arc::new(AtomicBool::new(false)),
     )
     .await;

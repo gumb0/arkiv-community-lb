@@ -15,6 +15,11 @@ Notable changes per release, newest first. The LB box deploys a tag:
   only a crash loses the hour in progress. `/nodes` shows
   `served_period` and `served_total` where it showed `served`.
 - The startup line names the version.
+- The stack raises the open-files limit of the LB and the tunnel
+  server to 65536. Docker's default of 1024 ran out at about 500
+  client requests in flight: the LB could reach no provider, counted
+  the failures against every provider's health, and stopped accepting
+  connections.
 
 ## v0.3.0
 

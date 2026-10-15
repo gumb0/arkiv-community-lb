@@ -41,6 +41,14 @@ services:
     # to the chain first, which waits for the receipt. Docker's default
     # grace is 10 s.
     stop_grace_period: 200s
+    # Every client request in flight holds two sockets, its own and the
+    # one to the provider. Docker's default soft limit of 1024 open
+    # files runs out at about 500 requests in flight: the LB then
+    # cannot connect to any provider, and stops accepting.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     logging:
       driver: json-file
       options:
@@ -88,6 +96,12 @@ services:
     volumes:
       - ./tunnel/frps.toml:/etc/frp/frps.toml:ro
     restart: unless-stopped
+    # One socket per tunneled connection from the LB, so the same limit
+    # as the LB's.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     logging:
       driver: json-file
       options:

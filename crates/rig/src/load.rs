@@ -1,5 +1,5 @@
-//! The load generator: concurrent workers sending a fixed mix of read
-//! requests at one target URL, counting outcomes. Target-agnostic on
+//! The load generator: concurrent workers sending read requests of one
+//! kind at one target URL, counting outcomes. Target-agnostic on
 //! purpose — the scenarios point it at the rig's LB, an operator can
 //! point the same command at a deployed one.
 
@@ -20,6 +20,40 @@ const METHODS: [&str; 4] = [
     "eth_gasPrice",
     "net_version",
 ];
+
+/// What the workers ask.
+#[derive(Clone, Copy, Debug)]
+pub enum Requests {
+    /// The cheap reads, in turn: what a node answers fastest, so the
+    /// load finds the ceiling of the path rather than of the node.
+    Cheap,
+    /// One `arkiv_query` for a full page of live entities with their
+    /// payloads, the heaviest read a client makes: what fills the LB's
+    /// memory and the tunnel.
+    Query,
+}
+
+impl Requests {
+    /// The request body for the worker's `turn`th request.
+    fn body(self, turn: usize) -> Value {
+        match self {
+            Self::Cheap => {
+                let method = METHODS[turn % METHODS.len()];
+                json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": []})
+            }
+            Self::Query => json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "arkiv_query",
+                "params": [
+                    "$expiresAt > u64(0)",
+                    // The node's page maximum, 200 rows.
+                    {"select": {"key": true, "payload": true, "attributes": true}, "limit": "0xc8"},
+                ],
+            }),
+        }
+    }
+}
 
 /// A request is `ok` only when it comes back HTTP 200 with a JSON-RPC
 /// `result`; everything else — transport errors, other statuses, error
@@ -68,6 +102,7 @@ impl Stats {
 /// come back, and finishes its request in flight before stopping.
 pub async fn run(
     target: &str,
+    requests: Requests,
     concurrency: usize,
     duration: Duration,
     stop: Arc<AtomicBool>,
@@ -87,9 +122,9 @@ pub async fn run(
             let mut stats = Stats::default();
             let mut turn = 0usize;
             while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
-                let method = METHODS[turn % METHODS.len()];
+                let body = requests.body(turn);
                 turn += 1;
-                stats.record(one_request(&client, &target, method).await);
+                stats.record(one_request(&client, &target, &body).await);
             }
             stats
         })
@@ -105,13 +140,14 @@ pub async fn run(
 async fn one_request(
     client: &reqwest::Client,
     target: &str,
-    method: &str,
+    body: &Value,
 ) -> Result<Duration, String> {
-    let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": []});
+    // Named in the failure reasons.
+    let method = body["method"].as_str().unwrap_or("?");
     let started = Instant::now();
     let response = client
         .post(target)
-        .json(&body)
+        .json(body)
         .send()
         .await
         .map_err(|error| format!("{method}: {error}"))?;

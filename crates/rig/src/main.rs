@@ -115,7 +115,7 @@ async fn all() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--concurrency N] [--duration SECONDS]\n       rig relay --listen <host:port> --upstream <url> [--lie entity|block|frozen-head]",
+        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--requests cheap|query] [--concurrency N] [--duration SECONDS]\n       rig relay --listen <host:port> --upstream <url> [--lie entity|block|frozen-head]",
         SCENARIOS.join(" | ")
     );
     std::process::exit(2);
@@ -123,12 +123,20 @@ fn usage() -> ! {
 
 async fn load_command(mut args: impl Iterator<Item = String>) {
     let mut target = None;
+    let mut requests = load::Requests::Cheap;
     let mut concurrency = 4;
     let mut duration = Duration::from_secs(10);
     while let Some(flag) = args.next() {
         let value = args.next().unwrap_or_else(|| usage());
         match flag.as_str() {
             "--target" => target = Some(value),
+            "--requests" => {
+                requests = match value.as_str() {
+                    "cheap" => load::Requests::Cheap,
+                    "query" => load::Requests::Query,
+                    _ => usage(),
+                }
+            }
             "--concurrency" => concurrency = value.parse().unwrap_or_else(|_| usage()),
             "--duration" => {
                 duration = Duration::from_secs(value.parse().unwrap_or_else(|_| usage()))
@@ -138,7 +146,9 @@ async fn load_command(mut args: impl Iterator<Item = String>) {
     }
     let Some(target) = target else { usage() };
 
-    println!("rig: load on {target}: {concurrency} workers for {duration:?}");
+    println!(
+        "rig: load on {target}: {requests:?} requests, {concurrency} workers for {duration:?}"
+    );
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     tokio::spawn(async move {
@@ -147,7 +157,7 @@ async fn load_command(mut args: impl Iterator<Item = String>) {
         }
     });
     let started = Instant::now();
-    let stats = load::run(&target, concurrency, duration, stop.clone()).await;
+    let stats = load::run(&target, requests, concurrency, duration, stop.clone()).await;
     report(&stats, started.elapsed());
     if stop.load(Ordering::Relaxed) {
         println!("rig: interrupted");
@@ -277,6 +287,7 @@ async fn kill_recover() {
     let load = tokio::spawn(async {
         load::run(
             &format!("http://{LB_PUBLIC}"),
+            load::Requests::Cheap,
             4,
             Duration::from_secs(15),
             Arc::new(AtomicBool::new(false)),
@@ -331,6 +342,7 @@ async fn distribution() {
     let started = Instant::now();
     let stats = load::run(
         &format!("http://{LB_PUBLIC}"),
+        load::Requests::Cheap,
         4,
         Duration::from_secs(5),
         Arc::new(AtomicBool::new(false)),
@@ -804,6 +816,7 @@ async fn liar(lie: relay::Lie, check: &str) {
     let served_before = provider(&nodes, "liar")["served_total"].clone();
     let stats = load::run(
         &format!("http://{LB_PUBLIC}"),
+        load::Requests::Cheap,
         4,
         Duration::from_secs(3),
         Arc::new(AtomicBool::new(false)),

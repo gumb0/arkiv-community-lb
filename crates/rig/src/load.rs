@@ -131,8 +131,11 @@ pub async fn run(
     stop: Arc<AtomicBool>,
 ) -> Stats {
     let client = reqwest::Client::builder()
-        // A hung target must not stall a worker past the run.
-        .timeout(Duration::from_secs(10))
+        // Above the LB's request_timeout (30 s by default), so what is
+        // counted is the LB's answer, its own timeout error included,
+        // never the generator giving up first. A hung target still
+        // cannot stall a worker past the run.
+        .timeout(Duration::from_secs(35))
         .build()
         .expect("client");
     let deadline = Instant::now() + duration;

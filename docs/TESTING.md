@@ -148,8 +148,8 @@ than running frp, which every provider that connects exercises for
 real. A future rig improvement would run both ends of the tunnel.
 
 `rig load` is the load generator as its own command:
-`rig load --target <url> [--requests cheap|query] [--concurrency
-N[,N...]] [--duration SECONDS]`. It runs the same request loop the scenarios
+`rig load --target <url> [--requests cheap|query] [--query FILTER]
+[--concurrency N[,N...]] [--duration SECONDS]`. It runs the same request loop the scenarios
 use, against any endpoint you point it at; a run with failures exits
 nonzero and reports them by kind (a timeout, a refused connection, an
 HTTP status, an LB error, a provider error), with the first reason of
@@ -159,8 +159,12 @@ concurrency values are run in turn, each for the duration, and the
 run ends with one row per step (rate, p50, p99, failures), which
 shows at what concurrency the latency starts to rise. `cheap` (the default)
 cycles four reads every node answers at once, to find the ceiling of
-the path; `query` asks for a full page of live entities with their
-payloads, the heaviest read a client makes.
+the path; `query` asks for a full page of entities with their
+payloads, the heaviest read a client makes, selected by `--query`
+(every live entity when not given). The filter decides how much of
+the time is the node's own: a range over every entity is a scan the
+node pays for on each request, a match on one attribute is a lookup,
+so the second is the one that measures the path.
 
 ## Conventions
 

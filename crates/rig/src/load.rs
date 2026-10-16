@@ -23,32 +23,38 @@ const METHODS: [&str; 4] = [
     "net_version",
 ];
 
+/// Every live entity: the filter the query asks with when none is
+/// given.
+pub const ALL_ENTITIES: &str = "$expiresAt > u64(0)";
+
 /// What the workers ask.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Requests {
     /// The cheap reads, in turn: what a node answers fastest, so the
     /// load finds the ceiling of the path rather than of the node.
     Cheap,
-    /// One `arkiv_query` for a full page of live entities with their
-    /// payloads, the heaviest read a client makes: what fills the LB's
-    /// memory and the tunnel.
-    Query,
+    /// One `arkiv_query` with this filter for a full page of entities
+    /// with their payloads, the heaviest read a client makes: what
+    /// fills the LB's memory and the tunnel. The filter decides how
+    /// much of the time is the node's own: a range over every entity
+    /// is a scan, a match on one attribute is a lookup.
+    Query(String),
 }
 
 impl Requests {
     /// The request body for the worker's `turn`th request.
-    fn body(self, turn: usize) -> Value {
+    fn body(&self, turn: usize) -> Value {
         match self {
             Self::Cheap => {
                 let method = METHODS[turn % METHODS.len()];
                 json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": []})
             }
-            Self::Query => json!({
+            Self::Query(filter) => json!({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "arkiv_query",
                 "params": [
-                    "$expiresAt > u64(0)",
+                    filter,
                     // The node's page maximum, 200 rows.
                     {"select": {"key": true, "payload": true, "attributes": true}, "limit": "0xc8"},
                 ],
@@ -199,6 +205,7 @@ pub async fn run(
     let (outcomes, mut collected) = mpsc::unbounded_channel();
     for _ in 0..concurrency {
         let client = client.clone();
+        let requests = requests.clone();
         let target = target.to_string();
         let stop = stop.clone();
         let outcomes = outcomes.clone();

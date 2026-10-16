@@ -115,7 +115,7 @@ async fn all() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--requests cheap|query] [--concurrency N[,N...]] [--duration SECONDS]\n       rig relay --listen <host:port> --upstream <url> [--lie entity|block|frozen-head]",
+        "usage: rig all\n       rig <scenario>   ({})\n       rig load --target <url> [--requests cheap|query] [--query FILTER] [--concurrency N[,N...]] [--duration SECONDS]\n       rig relay --listen <host:port> --upstream <url> [--lie entity|block|frozen-head]",
         SCENARIOS.join(" | ")
     );
     std::process::exit(2);
@@ -124,6 +124,7 @@ fn usage() -> ! {
 async fn load_command(mut args: impl Iterator<Item = String>) {
     let mut target = None;
     let mut requests = load::Requests::Cheap;
+    let mut filter = load::ALL_ENTITIES.to_string();
     // The concurrencies to run, one step each in turn, every step for
     // the duration, with one summary row per step at the end.
     let mut concurrency_steps = vec![4];
@@ -135,10 +136,12 @@ async fn load_command(mut args: impl Iterator<Item = String>) {
             "--requests" => {
                 requests = match value.as_str() {
                     "cheap" => load::Requests::Cheap,
-                    "query" => load::Requests::Query,
+                    // The filter is read after the flags: either order.
+                    "query" => load::Requests::Query(String::new()),
                     _ => usage(),
                 }
             }
+            "--query" => filter = value,
             "--concurrency" => {
                 concurrency_steps = value
                     .split(',')
@@ -152,6 +155,9 @@ async fn load_command(mut args: impl Iterator<Item = String>) {
         }
     }
     let Some(target) = target else { usage() };
+    if let load::Requests::Query(query) = &mut requests {
+        *query = filter;
+    }
 
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
@@ -168,7 +174,7 @@ async fn load_command(mut args: impl Iterator<Item = String>) {
         let started = Instant::now();
         let stats = load::run(
             &target,
-            requests,
+            requests.clone(),
             concurrency,
             duration,
             Some(Duration::from_secs(10)),

@@ -14,7 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::{config::Proxy, pool::Provider};
+use crate::{chain::transport_causes, config::Proxy, pool::Provider};
 
 /// Cloning shares the connection pool: the client inside is an `Arc`.
 #[derive(Clone)]
@@ -58,7 +58,11 @@ impl Forwarder {
         let mut response = match sent {
             Ok(response) => response,
             Err(error) => {
-                tracing::debug!(provider = %provider.id, %error, "attempt failed");
+                tracing::debug!(
+                    provider = %provider.id,
+                    error = %transport_causes(&error),
+                    "attempt failed"
+                );
                 return Outcome::NoAnswer;
             }
         };
@@ -89,7 +93,11 @@ impl Forwarder {
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    tracing::debug!(provider = %provider.id, %error, "body read failed");
+                    tracing::debug!(
+                        provider = %provider.id,
+                        error = %transport_causes(&error),
+                        "body read failed"
+                    );
                     return Outcome::NoAnswer;
                 }
             }

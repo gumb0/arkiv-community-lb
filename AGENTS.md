@@ -179,8 +179,8 @@ first-class concern, not an add-on.
   `scripts/dev-node.sh` — never the Docker API directly. Shipped
   components (the binary, the config format) are used as they are,
   never reimplemented for tests. It runs by hand (`cargo run -p rig --
-  all`) or through the on-demand `rig` CI workflow; it is not part of
-  the push gate. Scenarios that need the real provider tooling will
+  all`) or through the `rig` CI workflow, on demand and weekly; it is
+  not part of the push gate. Scenarios that need the real provider tooling will
   take it from `arkiv-community-node` checked out at `../node`.
 - In the TS writer package, `src/` is what ships (the writer module and the
   HTTP service) and `probes/` holds the scripts that are run by hand against a

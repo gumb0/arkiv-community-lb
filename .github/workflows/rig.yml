@@ -1,9 +1,13 @@
 # The rig tier: every scenario against real dev-node containers under
-# the shipped binary. On demand only — it boots a full stack per
-# scenario and takes minutes, so it is a button, not a gate; the gate
-# stays tests/ci.sh in ci.yml.
+# the shipped binary. It boots a full stack per scenario and takes
+# minutes, so it is not a gate; the gate stays tests/ci.sh in ci.yml.
+# It runs on demand, and once a week: the dev-node images and the
+# companion repository move without a push here.
 name: rig
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'   # every Monday at 06:00 UTC
 
 jobs:
   rig:

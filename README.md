@@ -77,7 +77,7 @@ not operator-chosen.
   `--lie entity` or `--lie block` alters the entities or the blocks it
   serves, to watch the integrity checks catch a provider, or with
   `--lie frozen-head` looks stuck behind the chain. Runs locally and
-  as an on-demand CI workflow. The testing approach across the
+  as a CI workflow, on demand and weekly. The testing approach across the
   repository is [docs/TESTING.md](docs/TESTING.md).
 
 The node-operator side lives in the companion repo,

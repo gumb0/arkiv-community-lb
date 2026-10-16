@@ -46,9 +46,9 @@ sidecar up.
 
 **3. The rig.** Real containers, the shipped `arkiv-lb` binary as a
 separate process, a real config file, real sockets. It runs by hand or
-through the on-demand `rig` CI workflow;
-it is deliberately not a gate — it boots a full stack per scenario
-and takes minutes.
+through the `rig` CI workflow, on demand and once a week; it is
+deliberately not a gate — it boots a full stack per scenario and takes
+minutes.
 
 ## The rig
 

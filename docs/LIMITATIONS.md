@@ -46,6 +46,14 @@ for the market. How to operate with them is [RUNBOOK.md](RUNBOOK.md).
   traffic however slow it is; one slower than the probe timeout leaves
   rotation entirely. A slow provider is visible in `/nodes` and
   nothing acts on it.
+- **A slow provider holds the clients sent to it.** Round-robin gives
+  every provider an equal share and nothing limits what one has in
+  flight, so under load the clients pile up on the slowest provider
+  while the fast ones run out of work: the endpoint's tail is the
+  slowest provider's latency, and for heavy responses its uplink
+  bounds the whole fleet's rate. A cap on requests in flight per
+  provider is
+  [#54](https://github.com/gumb0/arkiv-community-lb/issues/54).
 - **Lag is measured against the reference.** While the reference is
   unreachable, a provider falling behind goes unnoticed; a reference
   that is itself behind shows every provider as lagging

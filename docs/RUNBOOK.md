@@ -263,6 +263,20 @@ under a day of the second, so size it to the fleet. Settle spends its
 own key: one receipt (~96,000 gas on Arkiv) per closed counter
 record, and the transfers' gas on the payout chain.
 
+**The box.** Measured under load in October 2026 on a two-core
+machine: the LB uses little memory whatever is in flight (about 100
+MiB), and cheap reads run at thousands a second until the two cores
+are full, most of that in the kernel moving each request across the
+box twice, once on the client's socket and once on the tunnel's. So
+the box wants cores before memory, and a bigger fleet or more clients
+means more cores, not a bigger LB. Heavy responses (a page of entities
+with payloads) are bounded by the providers' uplinks, the slowest
+first ([LIMITATIONS.md](LIMITATIONS.md#health)), not by the box. The
+log is the one cost that grows with traffic: one line per request, so
+at thousands of requests a second the stack's five 50 MB files hold a
+few minutes of history; raise `max-size` in `compose.yaml` if you need
+longer.
+
 ## Releases and updates
 
 A release is a git tag with its notes on GitHub. Deploy one with

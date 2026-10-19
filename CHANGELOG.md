@@ -20,6 +20,10 @@ Notable changes per release, newest first. The LB box deploys a tag:
   client requests in flight: the LB could reach no provider, counted
   the failures against every provider's health, and stopped accepting
   connections.
+- `attempt_timeout` defaults to 15 s (was 10 s), half the request
+  timeout. Under load a heavy page from a provider on a slow uplink
+  takes over ten seconds; at 10 s the attempt failed over and counted
+  against the provider's health while it was answering.
 
 ## v0.3.0
 

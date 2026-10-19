@@ -47,8 +47,12 @@ chainid_check_interval = "5m"
 lag_tolerance_blocks = 30
 
 [proxy]
-# Timeout for each attempt against one provider.
-attempt_timeout = "10s"
+# Timeout for each attempt against one provider. Half the request
+# timeout, so a failover still gets a full attempt. A provider that
+# is slow but answering gets this long before the attempt counts
+# against its health: under load a heavy page on a slow uplink takes
+# over ten seconds.
+attempt_timeout = "15s"
 # Total timeout for the user's request; in case of failover
 # each attempt gets min(attempt_timeout, remaining).
 request_timeout = "30s"

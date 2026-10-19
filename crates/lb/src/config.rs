@@ -179,7 +179,7 @@ pub struct Proxy {
 impl Default for Proxy {
     fn default() -> Self {
         Self {
-            attempt_timeout: Duration::from_secs(10),
+            attempt_timeout: Duration::from_secs(15),
             request_timeout: Duration::from_secs(30),
             max_retries: 2,
             max_request_size: ByteSize::mib(2),

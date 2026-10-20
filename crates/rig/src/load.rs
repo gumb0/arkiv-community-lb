@@ -31,7 +31,8 @@ pub const ALL_ENTITIES: &str = "$expiresAt > u64(0)";
 #[derive(Clone, Debug)]
 pub enum Requests {
     /// The cheap reads, in turn: what a node answers fastest, so the
-    /// load finds the ceiling of the path rather than of the node.
+    /// load finds how much the LB and the tunnels forward, not how
+    /// much the node computes.
     Cheap,
     /// One `arkiv_query` with this filter for a full page of entities
     /// with their payloads, the heaviest read a client makes: what
@@ -279,10 +280,15 @@ async fn one_request(
             format!("{method}: HTTP {status}: {body}"),
         ));
     }
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|error| Failure::new("bad body", format!("{method}: bad body: {error}")))?;
+    let body: Value = response.json().await.map_err(|error| {
+        // The client timeout can run out while the body is still
+        // arriving; that is a timeout, not a body the LB got wrong.
+        if error.is_timeout() {
+            Failure::new("timeout", format!("{method}: {error}"))
+        } else {
+            Failure::new("bad body", format!("{method}: bad body: {error}"))
+        }
+    })?;
     if body.get("result").is_none() {
         // The LB's own errors carry a fixed message, which names the
         // kind better than the code; a provider's error is its code.

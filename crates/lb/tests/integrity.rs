@@ -31,7 +31,6 @@ use common::{
 };
 
 const CHAIN_ID: u64 = 1337;
-const LAG_TOLERANCE: u64 = 30;
 /// Long enough that the timer never fires during a test: the tests
 /// call `round()` themselves, and the one test of the timer only
 /// watches for the first round.
@@ -102,7 +101,6 @@ fn checker(
             interval: INTERVAL,
             confirm_after: CONFIRM_AFTER,
         },
-        LAG_TOLERANCE,
         ATTEMPT_TIMEOUT,
         ready.clone(),
     )
@@ -159,6 +157,11 @@ async fn a_wrong_entity_is_a_divergence_after_a_second_look() {
     assert_eq!(
         fleet.providers[0].asked_keys.lock().expect("asked").len(),
         2
+    );
+    assert_eq!(
+        fleet.chain.pinned_at().len(),
+        1,
+        "the reference once: the second look asks the provider again"
     );
 }
 
@@ -235,28 +238,6 @@ async fn a_provider_hiding_the_block_its_head_is_past_is_a_divergence() {
 }
 
 #[tokio::test]
-async fn a_provider_answering_the_entity_far_behind_its_own_head_is_a_divergence() {
-    let fleet = fleet(1).await;
-    let provider = entry(&fleet.pool, 0);
-    provider.record_height(fleet.chain.head());
-    // The block is served, but the entity is answered at a block
-    // further behind its own head than the lag tolerance.
-    fleet.providers[0]
-        .entity_blocks_behind
-        .store(LAG_TOLERANCE + 5, Ordering::Relaxed);
-    fleet.checker.round().await;
-    assert!(!provider.eligible());
-    assert_eq!(
-        provider.last_verdict().map(|(v, _)| v),
-        Some(Verdict::Divergence)
-    );
-    assert!(
-        fleet.chain.pinned_at().is_empty(),
-        "no metered read for an answer judged by the provider's own head"
-    );
-}
-
-#[tokio::test]
 async fn a_dead_reference_judges_nobody() {
     let fleet = fleet(2).await;
     fleet.providers[1].lie_block.store(true, Ordering::Relaxed);
@@ -285,45 +266,32 @@ async fn a_divergence_is_confirmed_while_the_chain_moves_on() {
     assert_eq!(
         entry(&fleet.pool, 0).last_verdict().map(|(v, _)| v),
         Some(Verdict::Divergence),
-        "the second look is judged against the head as it is then"
+        "the second look is at the round's finalized height, wherever the head is then"
     );
 }
 
 #[tokio::test]
-async fn a_block_landing_during_the_reads_is_not_an_unknown() {
-    let fleet = fleet(1).await;
-    // The provider answers slowly, and a block lands while it does.
-    fleet.providers[0].delay_ms.store(200, Ordering::Relaxed);
-    let (chain, provider) = (fleet.chain.clone(), fleet.providers[0].clone());
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        chain.advance(1);
-        provider.height.store(chain.head(), Ordering::Relaxed);
-    });
+async fn a_provider_ahead_of_the_reference_is_judged_like_any_other() {
+    // Its head is past the reference's, as a node that gets blocks
+    // first is for a moment, or as a liar claims to be. The reads are
+    // at the finalized height, which both have, so the head does not
+    // matter: honest is a match, lying is a divergence.
+    let fleet = fleet(2).await;
+    for provider in &fleet.providers {
+        provider
+            .height
+            .store(fleet.chain.head() + 1, Ordering::Relaxed);
+    }
+    fleet.providers[1].lie_entity.store(true, Ordering::Relaxed);
     fleet.checker.round().await;
+    let honest = entry(&fleet.pool, 0);
+    let liar = entry(&fleet.pool, 1);
+    assert!(honest.eligible());
+    assert_eq!(honest.last_verdict().map(|(v, _)| v), Some(Verdict::Match));
+    assert!(!liar.eligible());
     assert_eq!(
-        entry(&fleet.pool, 0).last_verdict().map(|(v, _)| v),
-        Some(Verdict::Match)
-    );
-    assert_eq!(
-        fleet.chain.pinned_at(),
-        vec![fleet.chain.head()],
-        "pinned at the block the provider answered at, the new head"
-    );
-}
-
-#[tokio::test]
-async fn a_provider_a_block_ahead_of_the_reference_is_unknown_this_round() {
-    let fleet = fleet(1).await;
-    fleet.providers[0]
-        .height
-        .store(fleet.chain.head() + 1, Ordering::Relaxed);
-    fleet.checker.round().await;
-    let provider = entry(&fleet.pool, 0);
-    assert!(provider.eligible());
-    assert_eq!(
-        provider.last_verdict().map(|(v, _)| v),
-        Some(Verdict::Unknown)
+        liar.last_verdict().map(|(v, _)| v),
+        Some(Verdict::Divergence)
     );
 }
 
@@ -351,14 +319,12 @@ async fn a_block_that_matches_while_the_sample_is_unknown_is_not_a_pass() {
     fleet.checker.round().await;
     let provider = entry(&fleet.pool, 0);
     assert!(!provider.eligible());
-    // Honest again, but a block ahead: the block read matches, the
-    // sample cannot be judged.
+    // Honest again, but the reference cannot answer the entity read:
+    // the block read matches, the sample cannot be judged.
     fleet.providers[0]
         .lie_entity
         .store(false, Ordering::Relaxed);
-    fleet.providers[0]
-        .height
-        .store(fleet.chain.head() + 1, Ordering::Relaxed);
+    fleet.chain.fail_queries("queries down");
     fleet.checker.round().await;
     assert!(!provider.eligible(), "a pass needs both reads");
     assert_eq!(
@@ -430,15 +396,22 @@ async fn the_first_round_runs_when_the_boot_window_closes() {
 }
 
 #[tokio::test]
-async fn the_reference_is_asked_at_the_block_the_provider_answered_at() {
-    // A provider a few blocks behind, within tolerance, answers the
-    // entity at its own height; the reference is pinned there, not at
-    // the head, or two-second drift alone could make the two differ.
+async fn both_sides_are_read_at_the_finalized_height() {
+    // A provider a few blocks behind the head, as two nodes asked at
+    // the same moment often are: asked at its own head, the two could
+    // differ by drift alone; asked at the finalized height, they must
+    // agree.
     let fleet = fleet(1).await;
-    let behind = fleet.chain.head() - 5;
-    fleet.providers[0].height.store(behind, Ordering::Relaxed);
+    let finalized = fleet.chain.head() - FINALITY_LAG;
+    fleet.providers[0]
+        .height
+        .store(fleet.chain.head() - 5, Ordering::Relaxed);
     fleet.checker.round().await;
-    assert_eq!(fleet.chain.pinned_at(), vec![behind]);
+    assert_eq!(fleet.chain.pinned_at(), vec![finalized]);
+    assert_eq!(
+        *fleet.providers[0].asked_at.lock().expect("asked"),
+        vec![finalized]
+    );
     assert_eq!(
         entry(&fleet.pool, 0).last_verdict().map(|(v, _)| v),
         Some(Verdict::Match)
@@ -446,50 +419,37 @@ async fn the_reference_is_asked_at_the_block_the_provider_answered_at() {
 }
 
 #[tokio::test]
-async fn a_provider_with_the_block_but_answering_far_back_is_stale() {
+async fn a_provider_far_behind_the_head_but_past_the_finalized_height_matches() {
+    // Behind the head by more than any lag tolerance, with the
+    // finalized block: lag is the Monitor's to notice, and what the
+    // provider serves at that height is right.
     let fleet = fleet(1).await;
-    // Past the finalized height, so it has the block, but further
-    // behind the head than the lag tolerance allows.
-    let behind = LAG_TOLERANCE + 5;
-    assert!(behind < FINALITY_LAG);
+    let behind = FINALITY_LAG / 2;
     fleet.providers[0]
         .height
         .store(fleet.chain.head() - behind, Ordering::Relaxed);
     let provider = entry(&fleet.pool, 0);
     provider.record_height(fleet.chain.head() - behind);
     fleet.checker.round().await;
-    // Staleness is ignored by the integrity round; it is the Monitor's
-    // probes' job to detect it.
     assert!(provider.eligible());
     assert_eq!(
         provider.last_verdict().map(|(v, _)| v),
-        Some(Verdict::Stale)
-    );
-    assert_eq!(
-        fleet.providers[0].blocks.load(Ordering::Relaxed),
-        1,
-        "the block was read"
-    );
-    assert!(
-        fleet.chain.pinned_at().is_empty(),
-        "no metered read for a comparison that will not happen"
+        Some(Verdict::Match)
     );
 }
 
 #[tokio::test]
-async fn the_reference_is_read_once_per_block_the_fleet_answered_at() {
+async fn the_reference_is_read_once_a_round_whatever_the_fleet_is_at() {
     let fleet = fleet(3).await;
-    // Two at the head, one a block behind: two pinned reads, not three.
+    // Two at the head, one a block behind: one pinned read, not three.
     fleet.providers[2]
         .height
         .store(fleet.chain.head() - 1, Ordering::Relaxed);
     fleet.checker.round().await;
-    let mut pinned = fleet.chain.pinned_at();
-    pinned.sort_unstable();
     assert_eq!(
-        pinned,
-        vec![fleet.chain.head() - 1, fleet.chain.head()],
-        "once per block, not per provider"
+        fleet.chain.pinned_at(),
+        vec![fleet.chain.head() - FINALITY_LAG],
+        "once a round, not per provider"
     );
     for i in 0..3 {
         assert!(entry(&fleet.pool, i).eligible());
@@ -508,7 +468,6 @@ async fn rounds_keep_the_configured_cadence_and_stop_at_shutdown() {
             interval,
             confirm_after: Duration::from_millis(10),
         },
-        LAG_TOLERANCE,
         ATTEMPT_TIMEOUT,
         fleet.ready.clone(),
     );

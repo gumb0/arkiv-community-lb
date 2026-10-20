@@ -7,15 +7,15 @@
 pub enum Verdict {
     /// Both reads answered and both agreed with the reference.
     Match,
-    /// Behind the chain: no block at the height, or the entity answered
-    /// too far back. The lag path's business, not integrity's.
+    /// Behind the chain: no block at the finalized height yet. The lag
+    /// path's business, not integrity's.
     Stale,
     /// Different from the reference in either read. From one look it is
     /// provisional; a round records it only once a second look agrees
     /// with the first. The evidence event says which read.
     Divergence,
     /// Nothing could be judged: the reference or the provider did not
-    /// answer, or answered at a block the other side did not have.
+    /// answer.
     Unknown,
 }
 
@@ -31,7 +31,6 @@ impl Verdict {
 }
 
 use std::{
-    collections::HashMap,
     future::Future,
     pin::Pin,
     sync::{
@@ -81,9 +80,10 @@ impl<R: ChainReader + 'static> IntegrityCheck for IntegrityChecker<R> {
 }
 
 /// The integrity checker: one round every interval over the providers
-/// whose health is fine, each round two reads per provider compared
-/// against the reference, and one verdict per provider recorded on its
-/// entry (`docs/INTEGRITY.md`).
+/// whose health is fine, each round two reads per provider at the
+/// reference's finalized height, compared against the reference's own,
+/// and one verdict per provider recorded on its entry
+/// (`docs/INTEGRITY.md`).
 pub struct IntegrityChecker<R> {
     pool: Arc<Pool>,
     /// The client providers are read with, the probe client; the
@@ -91,11 +91,8 @@ pub struct IntegrityChecker<R> {
     client: reqwest::Client,
     reference: R,
     config: config::Integrity,
-    /// A provider answering the sample this far behind the reference's
-    /// head is stale, not judged: `health.lag_tolerance_blocks`.
-    lag_tolerance: u64,
-    /// Provider reads are client-shaped, a block and an entity, so they
-    /// get the client's timeout, not the probe's.
+    /// Provider reads are a block and an entity, heavier than a probe,
+    /// so they get the client's timeout, not the probe's.
     attempt_timeout: Duration,
     /// The Monitor's: the first round waits for the boot window.
     ready: Arc<AtomicBool>,
@@ -128,14 +125,21 @@ enum Evidence {
     },
     Entity {
         key: EntityKey,
-        /// The block the provider answered at, and the reference was
-        /// pinned to.
-        at: u64,
-        /// `None` when the reference was not asked: the answer was too
-        /// far behind the provider's own head.
-        reference: Option<Vec<ArkivEntity>>,
+        reference: Vec<ArkivEntity>,
         provider: Vec<ArkivEntity>,
     },
+}
+
+/// What the reference answered this round: its finalized block, and
+/// the sampled entity read at that height. Every provider is asked the
+/// same two reads at the same height, so the answers are comparable as
+/// they are, whatever block either side is at by then.
+struct Expected {
+    finalized: BlockFields,
+    key: EntityKey,
+    /// `Err` when the reference's entity read failed: the entity is
+    /// unknown for every provider this round; the block is still judged.
+    rows: Result<Vec<ArkivEntity>, ()>,
 }
 
 /// The fields of two blocks that differ, each with both values, as a
@@ -224,16 +228,14 @@ struct KeyPage {
     read_at: Option<std::time::Instant>,
 }
 
-/// What a provider answered, before the reference is asked.
+/// What a provider answered.
 struct Answers {
     provider: Arc<Provider>,
-    /// The key it was asked for.
-    key: EntityKey,
     block: Result<Option<BlockFields>, ()>,
     /// The rows a query by key answered, one or none from an honest
     /// node, kept as answered so the comparison is exactly what the two
-    /// nodes said; and the block they were answered at.
-    rows: Result<(Vec<ArkivEntity>, u64), ()>,
+    /// nodes said.
+    rows: Result<Vec<ArkivEntity>, ()>,
 }
 
 impl<R: ChainReader> IntegrityChecker<R> {
@@ -242,7 +244,6 @@ impl<R: ChainReader> IntegrityChecker<R> {
         client: reqwest::Client,
         reference: R,
         config: config::Integrity,
-        lag_tolerance: u64,
         attempt_timeout: Duration,
         ready: Arc<AtomicBool>,
     ) -> Self {
@@ -251,7 +252,6 @@ impl<R: ChainReader> IntegrityChecker<R> {
             client,
             reference,
             config,
-            lag_tolerance,
             attempt_timeout,
             ready,
             keys: Mutex::new(KeyPage::default()),
@@ -292,9 +292,9 @@ impl<R: ChainReader> IntegrityChecker<R> {
     }
 
     /// One round: the finalized block and the reference's head, a key,
-    /// every healthy provider read at once, the reference pinned at each
-    /// block the providers answered at, the comparisons, a second look
-    /// at any mismatch, and a verdict per provider.
+    /// the reference's entity at the finalized height, every healthy
+    /// provider read at once at that height, the comparisons, a second
+    /// look at any mismatch, and a verdict per provider.
     pub async fn round(&self) {
         let providers: Vec<Arc<Provider>> = self
             .pool
@@ -329,16 +329,25 @@ impl<R: ChainReader> IntegrityChecker<R> {
             return;
         };
 
-        let mut findings = self.check(&providers, &finalized, key).await;
-        self.confirm(&mut findings, &finalized, key).await;
-        self.record(&findings, finalized.number);
+        let rows = self.reference_rows(key, finalized.number).await;
+        let expected = Expected {
+            finalized,
+            key,
+            rows,
+        };
+
+        let mut findings = self.check(&providers, &expected).await;
+        self.confirm(&mut findings, &expected).await;
+        self.record(&findings, expected.finalized.number);
     }
 
-    /// A divergence from one look is looked at again after a wait: a
-    /// reorganisation of the tip has resolved by then, a liar has not.
-    /// The second look is the finding, whatever it said: a confirmed
-    /// divergence is logged with the answers the verdict rests on.
-    async fn confirm(&self, findings: &mut [Finding], finalized: &BlockFields, key: EntityKey) {
+    /// A divergence from one look is looked at again after a wait, and
+    /// only a second mismatch counts: one wrong read is not a verdict.
+    /// The provider is asked again; the reference's answers are the
+    /// round's, since a finalized height does not change. The second
+    /// look is the finding, whatever it said: a confirmed divergence is
+    /// logged with the answers the verdict rests on.
+    async fn confirm(&self, findings: &mut [Finding], expected: &Expected) {
         let doubtful: Vec<Arc<Provider>> = findings
             .iter()
             .filter(|finding| finding.verdict == Verdict::Divergence)
@@ -348,7 +357,7 @@ impl<R: ChainReader> IntegrityChecker<R> {
             return;
         }
         tokio::time::sleep(self.config.confirm_after).await;
-        for second in self.check(&doubtful, finalized, key).await {
+        for second in self.check(&doubtful, expected).await {
             let first = findings
                 .iter_mut()
                 .find(|finding| Arc::ptr_eq(&finding.provider, &second.provider))
@@ -397,7 +406,6 @@ impl<R: ChainReader> IntegrityChecker<R> {
                     ),
                     Evidence::Entity {
                         key,
-                        at,
                         reference,
                         provider: served,
                     } => tracing::warn!(
@@ -407,10 +415,7 @@ impl<R: ChainReader> IntegrityChecker<R> {
                         probed_head = provider.last_height(),
                         check = "entity",
                         key = %key,
-                        at,
-                        reference = reference
-                            .as_deref()
-                            .map_or_else(|| "not read".to_owned(), describe),
+                        reference = describe(reference),
                         served = describe(served),
                         "integrity: divergence confirmed"
                     ),
@@ -527,72 +532,27 @@ impl<R: ChainReader> IntegrityChecker<R> {
         Some(alive[rand::random_range(0..alive.len())])
     }
 
-    /// Every provider read at once, then the reference's head, then the
-    /// reference once per block the providers answered the entity at,
-    /// then the comparison.
-    async fn check(
-        &self,
-        providers: &[Arc<Provider>],
-        finalized: &BlockFields,
-        key: EntityKey,
-    ) -> Vec<Finding> {
-        let answers: Vec<Answers> = futures::stream::iter(providers.iter().cloned())
-            .map(|provider| async move { self.ask(provider, finalized.number, key).await })
+    /// The sampled entity as the reference has it at the finalized
+    /// height: the one metered entity read of a round, which every
+    /// provider's answer is compared with.
+    async fn reference_rows(&self, key: EntityKey, height: u64) -> Result<Vec<ArkivEntity>, ()> {
+        let query = Query::by_key(key).at_block(height);
+        self.reference
+            .query(&query)
+            .await
+            .map(|page| page.entities)
+            .map_err(|error| {
+                tracing::warn!(%error, height, "integrity: the reference's entity could not be read, no entity is judged");
+            })
+    }
+
+    /// Every provider read at once, then the comparison.
+    async fn check(&self, providers: &[Arc<Provider>], expected: &Expected) -> Vec<Finding> {
+        futures::stream::iter(providers.iter().cloned())
+            .map(|provider| async move { self.ask(provider, expected).await })
             .buffer_unordered(CONCURRENT_READS)
-            .collect()
-            .await;
-
-        // The head is read after the providers answered, not before: a
-        // block lands every two seconds, and the second look comes
-        // after a wait of many, so a head from before the reads would
-        // leave every answer past it unknown, a divergence's second
-        // look first of all.
-        let head = match self.reference.block_number().await {
-            Ok(head) => head,
-            Err(error) => {
-                tracing::warn!(%error, "integrity: the reference's head could not be read, nobody is judged");
-                return answers
-                    .into_iter()
-                    .map(|answer| Finding {
-                        provider: answer.provider,
-                        verdict: Verdict::Unknown,
-                        evidence: None,
-                    })
-                    .collect();
-            }
-        };
-
-        // The reference pinned at each distinct block, read once. Not
-        // for a block the reference does not have yet, nor for one
-        // further back than the lag tolerance: those answers are
-        // unknown or stale before any comparison, and the read is
-        // metered.
-        let mut pinned: HashMap<u64, Result<Vec<ArkivEntity>, ()>> = HashMap::new();
-        for answer in &answers {
-            let Ok((_, block)) = &answer.rows else {
-                continue;
-            };
-            if *block > head
-                || block.saturating_add(self.lag_tolerance) < head
-                || pinned.contains_key(block)
-            {
-                continue;
-            }
-            let query = Query::by_key(key).at_block(*block);
-            let rows = match self.reference.query(&query).await {
-                Ok(page) => Ok(page.entities),
-                Err(error) => {
-                    tracing::warn!(%error, block, "integrity: the reference could not be read at the provider's block");
-                    Err(())
-                }
-            };
-            pinned.insert(*block, rows);
-        }
-
-        answers
-            .into_iter()
             .map(|answer| {
-                let (verdict, evidence) = self.judge(&answer, finalized, head, &pinned);
+                let (verdict, evidence) = judge(&answer, expected);
                 Finding {
                     provider: answer.provider,
                     verdict,
@@ -600,120 +560,90 @@ impl<R: ChainReader> IntegrityChecker<R> {
                 }
             })
             .collect()
+            .await
     }
 
-    /// One provider's two reads, as a client would make them. The reader
-    /// is the shared client, which holds the connections, with this
-    /// provider's URL and the attempt timeout: cheap to make, and made
-    /// once per provider per look.
-    async fn ask(&self, provider: Arc<Provider>, height: u64, key: EntityKey) -> Answers {
+    /// One provider's two reads, both at the finalized height: the block
+    /// there, and the entity pinned to it. The reader is the shared
+    /// client, which holds the connections, with this provider's URL and
+    /// the attempt timeout: cheap to make, and made once per provider
+    /// per look.
+    async fn ask(&self, provider: Arc<Provider>, expected: &Expected) -> Answers {
         let reader = Reader::new(
             self.client.clone(),
             provider.url.clone(),
             None,
             self.attempt_timeout,
         );
+        let height = expected.finalized.number;
         let block = reader.block(BlockAt::Number(height)).await.map_err(|error| {
             tracing::debug!(provider = %provider.id, %error, "integrity: the block read failed");
         });
         let rows = reader
-            .query(&Query::by_key(key))
+            .query(&Query::by_key(expected.key).at_block(height))
             .await
-            .map(|page| (page.entities, page.block))
+            .map(|page| page.entities)
             .map_err(|error| {
                 tracing::debug!(provider = %provider.id, %error, "integrity: the entity read failed");
             });
         Answers {
             provider,
-            key,
             block,
             rows,
         }
     }
+}
 
-    /// The outcome from what the provider and the reference answered.
-    /// One look's verdict, and the two answers that differed when it is
-    /// a divergence. Only both reads answered and agreed is a match;
-    /// stale wins over unknown, since it says something.
-    fn judge(
-        &self,
-        answer: &Answers,
-        finalized: &BlockFields,
-        head: u64,
-        pinned: &HashMap<u64, Result<Vec<ArkivEntity>, ()>>,
-    ) -> (Verdict, Option<Evidence>) {
-        let probed = answer.provider.last_height();
-        let block = match &answer.block {
-            Err(()) => return (Verdict::Unknown, None),
-            Ok(None) => {
-                return match probed {
-                    // Its probes reported a head at or past the
-                    // finalized height, and it says it has no block
-                    // there: it refused a block older than its own head.
-                    // This is not lag. Counted as stale, it would let a
-                    // provider avoid ever being judged.
-                    Some(probed) if probed >= finalized.number => (
-                        Verdict::Divergence,
-                        Some(Evidence::Block {
-                            reference: Box::new(finalized.clone()),
-                            provider: None,
-                        }),
-                    ),
-                    _ => (Verdict::Stale, None),
-                };
-            }
-            Ok(Some(block)) => block,
-        };
-        if block != finalized {
-            return (
-                Verdict::Divergence,
-                Some(Evidence::Block {
-                    reference: Box::new(finalized.clone()),
-                    provider: Some(Box::new(block.clone())),
-                }),
-            );
+/// The outcome from what the provider and the reference answered. One
+/// look's verdict, and the two answers that differed when it is a
+/// divergence. Only both reads answered and agreed is a match; stale
+/// wins over unknown, since it says something.
+fn judge(answer: &Answers, expected: &Expected) -> (Verdict, Option<Evidence>) {
+    let finalized = &expected.finalized;
+    let block = match &answer.block {
+        Err(()) => return (Verdict::Unknown, None),
+        Ok(None) => {
+            return match answer.provider.last_height() {
+                // Its probes reported a head at or past the finalized
+                // height, and it says it has no block there: it refused
+                // a block older than its own head. This is not lag.
+                // Counted as stale, it would let a provider avoid ever
+                // being judged.
+                Some(probed) if probed >= finalized.number => (
+                    Verdict::Divergence,
+                    Some(Evidence::Block {
+                        reference: Box::new(finalized.clone()),
+                        provider: None,
+                    }),
+                ),
+                _ => (Verdict::Stale, None),
+            };
         }
-        let (rows, at) = match &answer.rows {
-            Err(()) => return (Verdict::Unknown, None),
-            Ok(answer) => answer,
-        };
-        // It answered the entity at a block further behind its own
-        // probed head than the lag tolerance: an old answer from a node
-        // that has newer blocks, not lag.
-        if let Some(probed) = probed
-            && at.saturating_add(self.lag_tolerance) < probed
-        {
-            return (
-                Verdict::Divergence,
-                Some(Evidence::Entity {
-                    key: answer.key,
-                    at: *at,
-                    reference: None,
-                    provider: rows.clone(),
-                }),
-            );
-        }
-        if at.saturating_add(self.lag_tolerance) < head {
-            return (Verdict::Stale, None);
-        }
-        if *at > head {
-            // A block ahead of the reference: nothing to compare with
-            // until the reference has it.
-            return (Verdict::Unknown, None);
-        }
-        match pinned.get(at) {
-            Some(Ok(reference)) if reference == rows => (Verdict::Match, None),
-            Some(Ok(reference)) => (
-                Verdict::Divergence,
-                Some(Evidence::Entity {
-                    key: answer.key,
-                    at: *at,
-                    reference: Some(reference.clone()),
-                    provider: rows.clone(),
-                }),
-            ),
-            _ => (Verdict::Unknown, None),
-        }
+        Ok(Some(block)) => block,
+    };
+    if block != finalized {
+        return (
+            Verdict::Divergence,
+            Some(Evidence::Block {
+                reference: Box::new(finalized.clone()),
+                provider: Some(Box::new(block.clone())),
+            }),
+        );
+    }
+    let (Ok(rows), Ok(reference)) = (&answer.rows, &expected.rows) else {
+        return (Verdict::Unknown, None);
+    };
+    if rows == reference {
+        (Verdict::Match, None)
+    } else {
+        (
+            Verdict::Divergence,
+            Some(Evidence::Entity {
+                key: expected.key,
+                reference: reference.clone(),
+                provider: rows.clone(),
+            }),
+        )
     }
 }
 

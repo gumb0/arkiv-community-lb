@@ -48,8 +48,10 @@ pub struct FakeProvider {
     chain: FakeChain,
     /// Block reads answered, one of the two integrity reads.
     pub blocks: AtomicU64,
-    /// The key of every entity read, the other one, in order.
+    /// The key of every entity read, the other one, in order, and the
+    /// block each was answered at.
     pub asked_keys: std::sync::Mutex<Vec<B256>>,
+    pub asked_at: std::sync::Mutex<Vec<u64>>,
     /// Lies, while the switch is on. A wrong block: every block
     /// answered with another hash. A wrong entity: every entity
     /// answered with an altered payload. Every, not one: a lie that
@@ -60,9 +62,6 @@ pub struct FakeProvider {
     /// Null for every block, whatever its height: a way to be stale at
     /// will while the probes see a head at the chain's.
     pub hide_blocks: AtomicBool,
-    /// Entity reads answered this many blocks behind its height, while
-    /// its probes see the height itself; zero answers at the height.
-    pub entity_blocks_behind: AtomicU64,
     /// Block and entity reads held back this long, to time them out
     /// while the probes, which have the shorter timeout, stay quick.
     pub delay_ms: AtomicU64,
@@ -88,10 +87,10 @@ async fn serve(chain: FakeChain) -> (SocketAddr, Arc<FakeProvider>) {
         chain,
         blocks: AtomicU64::new(0),
         asked_keys: std::sync::Mutex::new(Vec::new()),
+        asked_at: std::sync::Mutex::new(Vec::new()),
         lie_block: AtomicBool::new(false),
         lie_entity: AtomicBool::new(false),
         hide_blocks: AtomicBool::new(false),
-        entity_blocks_behind: AtomicU64::new(0),
         delay_ms: AtomicU64::new(0),
     });
     let state = rpc.clone();
@@ -180,14 +179,12 @@ impl FakeProvider {
         let text = params[0].as_str().expect("a query text");
         let at = match params[1]["atBlock"].as_str() {
             Some(hex) => parse_hex(hex),
-            None => self
-                .height
-                .load(Ordering::Relaxed)
-                .saturating_sub(self.entity_blocks_behind.load(Ordering::Relaxed)),
+            None => self.height.load(Ordering::Relaxed),
         };
         let entities = if let Some(key) = argument(text, "$key = key(") {
             let key = B256::from_str(key).expect("a key");
             self.asked_keys.lock().expect("asked keys").push(key);
+            self.asked_at.lock().expect("asked at").push(at);
             self.chain.entity(key).into_iter().collect()
         } else if let Some(head) = argument(text, "$expiresAt > u64(") {
             let head: u64 = head.parse().expect("a height");

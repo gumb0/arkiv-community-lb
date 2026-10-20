@@ -2806,7 +2806,6 @@ async fn checked() -> Checked {
             interval: Duration::from_secs(3600),
             confirm_after: Duration::from_millis(50),
         },
-        30,
         Duration::from_millis(500),
         Arc::new(std::sync::atomic::AtomicBool::new(true)),
     ));

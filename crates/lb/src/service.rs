@@ -151,7 +151,6 @@ pub async fn start_with<R: ChainReader + 'static, W: ChainWriter + 'static>(
                 client.clone(),
                 reference,
                 integrity.clone(),
-                config.health.lag_tolerance_blocks,
                 config.proxy.attempt_timeout,
                 ready.clone(),
             )))

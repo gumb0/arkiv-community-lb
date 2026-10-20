@@ -6,6 +6,15 @@ Notable changes per release, newest first. The LB box deploys a tag:
 
 ## Unreleased
 
+- The integrity check reads the entity at the finalized height on both
+  sides: the provider's read is pinned there like the reference's. The
+  provider used to be asked with no block parameter, and an answer at
+  a block the reference did not have yet could not be judged, so a
+  provider answering ahead of the reference every time was never
+  judged at all. There is no stale verdict for an entity answered far
+  back any more: a provider with the finalized block is compared at
+  it, and lag is the health check's business
+  ([docs/INTEGRITY.md](docs/INTEGRITY.md)).
 - Hourly stats for a dashboard: `GET /stats` on the admin listener
   serves, per provider and per hour, the requests answered and the
   attempts that produced no answer, and per hour the requests the LB

@@ -87,14 +87,13 @@ the next step can be chosen knowing its cost.
   LB and then polls the receipt through it, so a provider lying about
   receipts breaks clients' writes while passing every check.
 - **A provider that lies to clients and not to the checks.** The checks
-  are made to look like client traffic, and the entity check is an
-  ordinary query by key with no block parameter, exactly as a client
-  sends one, under a random request id like any client's. But a
-  provider can still tell them apart in the aggregate: the checks are
-  rare, regular, and shaped alike, where client traffic is not. A
-  provider that serves honest answers to anything that looks like a
-  check and cheap error envelopes to everything else stays eligible and
-  paid.
+  reach a provider as a client does, under a random request id like any
+  client's, but a provider can tell them apart: the entity read is
+  pinned to the finalized height where most client reads are not, the
+  two reads come as a pair, and the checks are rare and regular where
+  client traffic is not. A provider that serves honest answers to
+  anything that looks like a check and cheap error envelopes to
+  everything else stays eligible and paid.
 - **Wrong blocks at any other height.** The block check reads one
   block per integrity round, the finalized one. A node that serves that
   block right and wrong ones above it, at the tip, or below it, in

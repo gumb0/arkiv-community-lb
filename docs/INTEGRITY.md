@@ -32,13 +32,12 @@ reference                        LB                          provider
     │                             │                               │
     │◄── a page of live keys ─────│                               │  3. once a day
     │─── keys ───────────────────►│   one picked at random        │
-    │                             │─── arkiv_query by key ───────►│  4. no block given,
-    │                             │◄── the entity, at block B ────│     as a client asks
-    │◄── the same query, at B ────│                               │  5. pinned to the
-    │─── the entity at B ────────►│   compared whole              │     provider's block
+    │◄── arkiv_query by key at H ─│                               │  4. once a round
+    │─── the entity at H ────────►│─── the same query at H ──────►│  5. every provider,
+    │                             │◄── its entity at H ───────────│     compared whole
     │                             │                               │
-    │                             │   mismatch: wait, repeat 4–5  │  6. a reorg resolves,
-    │                             │   still different: out of     │     a liar does not
+    │                             │   mismatch: wait, repeat 2, 5 │  6. one wrong read
+    │                             │   still different: out of     │     is not a verdict
     │                             │   rotation, evidence logged   │
 ```
 
@@ -59,32 +58,27 @@ client than the providers. Every honest node has the same block at a
 finalized height, so a provider that does not is on a fork or on another
 chain.
 
-**One entity, read the way a client reads it.** The LB picks one entity
-key and asks every provider for it with an ordinary query by key, with
-no block parameter, exactly as a client would. Each answer says which
-block it was served at. The LB then asks the reference for the same key
-pinned at that block, and compares the two entities field by field:
-creator, creation and expiry heights, payload, attributes.
+**One entity, at the same height.** The LB picks one entity key, asks
+the reference for it with a query by key pinned at the finalized
+height, then asks every provider the same query pinned the same way,
+and compares the two entities field by field: creator, creation and
+expiry heights, payload, attributes.
 
-Pinning the reference to the provider's own block is what makes the
-comparison exact. Blocks are two seconds apart, and two nodes asked at
-the same moment are often a block apart; asked at the same block, they
-must agree. The provider is never asked a pinned read, so one check
-looks like one client's request; what can still give the checks away
-is their cadence, which is regular where client traffic is not (see
-below).
+Pinning both sides to one height is what makes the comparison exact.
+Blocks are two seconds apart, and two nodes asked at the same moment
+are often a block apart; asked at the same block, they must agree. The
+finalized height is the one every eligible provider has, since the
+block check demands it, and the one no reorganisation of the tip can
+change. Asking the provider with no block parameter, as most clients
+do, would leave the choice of block to the provider: an answer at a
+block the reference does not have yet cannot be compared, and a
+provider could answer there every time. The price is that the entity
+read does not look like most clients' reads (see below).
 
 One key serves the whole fleet each round, and the reference is asked
-once per block the providers answered at, not once per provider. The
-fleet answers at one or two blocks, since one provider is at most a
-block ahead of the rest, so a round costs the reference one block read,
-two reads of its head and one or two entity reads whatever the size of
-the fleet, and every reference call is metered. The head is read again
-after the providers have answered, since blocks land while they do, and
-the block a provider answered at is judged against that. The reference
-is not asked at a block it does not have even then, nor at one further
-behind its head than the lag tolerance: those answers are unknown or
-stale before any comparison.
+once, not once per provider, so a round costs the reference one block
+read, one read of its head and one entity read whatever the size of
+the fleet, and every reference call is metered.
 
 ## Where the key comes from
 
@@ -112,33 +106,30 @@ Each provider gets one of four verdicts per round.
   block that matches while the entity read could not be judged is not
   one, or a provider serving right blocks and wrong entities would be
   let back in on the strength of its blocks.
-- **stale** — the provider does not have the finalized block yet, or
-  answered the entity at a block further behind the reference than the
-  lag tolerance allows. This is not lying and is not treated as such: the
-  ordinary health check already notices a lagging provider within seconds
-  and takes it out of rotation until it catches up. The round only logs
-  the verdict. The distance check matters because a provider stuck in
-  the past would otherwise agree with the reference at its own old block.
-  Stale is measured against the provider's own head, as its probes last
-  reported it, not only against the reference: a provider whose head was
-  past the finalized height and has no block there, or that answers the
-  entity further behind its own head than the lag tolerance, is not
-  behind the chain. That is a divergence, or stale would be a verdict a
-  provider can choose and never be judged.
+- **stale** — the provider does not have the finalized block yet. This
+  is not lying and is not treated as such: the ordinary health check
+  already notices a lagging provider within seconds and takes it out of
+  rotation until it catches up. The round only logs the verdict. A
+  provider that has the finalized block and is behind the head by any
+  distance is compared at that block like any other; how far behind it
+  is remains the health check's business. Stale is measured against
+  the provider's own head, as its probes last reported it, not only
+  against the reference: a provider whose head was past the finalized
+  height and has no block there is not behind the chain. That is a
+  divergence, or stale would be a verdict a provider can choose and
+  never be judged.
 - **divergence** — the block differs, or the entity differs. The round
-  does not act on the first mismatch. It waits `confirm_after`, asks both
-  sides again the same way, and only a second mismatch counts. The wait
-  lets a reorganisation of the chain's tip resolve; a provider that was
-  briefly on the losing side of one matches on the second try. A liar
-  does not.
+  does not act on the first mismatch. It waits `confirm_after`, asks
+  the provider again the same way, and only a second mismatch counts:
+  one wrong read is not a verdict. The reference is not asked again,
+  since at a finalized height its answers do not change.
 - **unknown** — the reference could not be reached or has no finalized
-  block, so nobody is judged; or the reference could not be read at the
-  block a provider answered at, or does not have that block yet, so
-  that provider waits for the next round; or a provider did not answer
-  a round's read in time, which is unknown for that provider and not
-  unhealthy, since liveness is the health check's job and a round must
-  not count the same failure twice. An unknown changes nothing, in
-  either direction.
+  block, so nobody is judged; or the reference could not answer the
+  entity read, so no entity is judged this round and the blocks alone
+  are; or a provider did not answer a round's read in time, which is
+  unknown for that provider and not unhealthy, since liveness is the
+  health check's job and a round must not count the same failure
+  twice. An unknown changes nothing, in either direction.
 
 Every round logs one line with the count of each verdict, so a quiet
 fleet still leaves a record that it was checked. Per provider, a match
@@ -203,9 +194,8 @@ work. Two fields, documented in `config.example.toml`:
 - `interval`, how often a round runs. Every round costs the reference a
   few metered calls, so this is the knob to turn if the reference's quota
   is short, the same way as the health check's reference sampling.
-- `confirm_after`, how long the LB waits before asking again after a
-  mismatch. Longer if the chain shows deeper reorganisations than
-  expected.
+- `confirm_after`, how long the LB waits before asking a provider again
+  after a mismatch.
 
 ## What this does not catch
 
@@ -227,9 +217,14 @@ work. Two fields, documented in `config.example.toml`:
   never broadcasts it answers nothing a read can see.
 - **A provider that serves wrong data to some clients and not others.**
   The checks reach a provider the way clients do, so it cannot tell them
-  apart by origin; it can by cadence, since the rounds are regular and
-  client traffic is not, and a provider that lies at random is caught
-  only as often as the sampled read lands on a lie.
+  apart by origin; it can by shape and cadence. The entity read is
+  pinned to a block where most client reads are not, the two reads
+  come as a pair, and the rounds are regular where client traffic is
+  not. A provider that answers what looks like a check honestly and
+  lies to the rest passes every round; one that lies at random is
+  caught only as often as the sampled read lands on a lie. Only
+  replaying client requests catches the first, and for this version
+  it is a known limitation.
 - **A provider that fails the round's reads on purpose.** A read that
   errors or times out is unknown, never a verdict, since liveness is the
   health check's job. A provider that answers its probes and errors on

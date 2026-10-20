@@ -52,7 +52,7 @@ not operator-chosen.
 - **The integrity checker** (`crates/lb/src/integrity.rs`): with the
   `[integrity]` section configured, the LB compares what each provider
   serves against the reference endpoint, once a round: the block at
-  the finalized height, and one entity read the way a client reads it.
+  the finalized height, and one entity read at that height.
   A provider whose answers differ, twice, is taken out of rotation
   with both answers logged side by side, and only a passing round
   brings it back. The design and what it cannot catch are

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="340" viewBox="0 0 880 340" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+<rect width="880" height="340" fill="#ffffff"/>
+<text x="20.0" y="26.0" text-anchor="start" font-size="14" fill="#333" font-weight="600">32 clients sending the full-scan query for three minutes, with 16 clients sending cheap reads beside them</text>
+<text x="295.0" y="46.0" text-anchor="middle" font-size="13" fill="#333" font-weight="600">p50 per 10 s window</text>
+<line x1="60" y1="280.0" x2="530" y2="280.0" stroke="#e6e3dc"/>
+<text x="54.0" y="284.0" text-anchor="end" font-size="12" fill="#6a6a6a">0 s</text>
+<line x1="60" y1="201.4" x2="530" y2="201.4" stroke="#e6e3dc"/>
+<text x="54.0" y="205.4" text-anchor="end" font-size="12" fill="#6a6a6a">5 s</text>
+<line x1="60" y1="122.9" x2="530" y2="122.9" stroke="#e6e3dc"/>
+<text x="54.0" y="126.9" text-anchor="end" font-size="12" fill="#6a6a6a">10 s</text>
+<rect x="63.9" y="178.2" width="18.3" height="101.8" fill="#d9d5cc"/>
+<rect x="90.0" y="194.5" width="18.3" height="85.5" fill="#d9d5cc"/>
+<rect x="116.1" y="120.5" width="18.3" height="159.5" fill="#d9d5cc"/>
+<rect x="142.2" y="196.1" width="18.3" height="83.9" fill="#d9d5cc"/>
+<rect x="168.4" y="199.7" width="18.3" height="80.3" fill="#d9d5cc"/>
+<rect x="194.5" y="200.3" width="18.3" height="79.7" fill="#d9d5cc"/>
+<rect x="220.6" y="123.7" width="18.3" height="156.3" fill="#d9d5cc"/>
+<rect x="246.7" y="198.5" width="18.3" height="81.5" fill="#d9d5cc"/>
+<rect x="272.8" y="199.4" width="18.3" height="80.6" fill="#d9d5cc"/>
+<rect x="298.9" y="201.9" width="18.3" height="78.1" fill="#d9d5cc"/>
+<rect x="325.0" y="201.4" width="18.3" height="78.6" fill="#d9d5cc"/>
+<rect x="351.1" y="127.0" width="18.3" height="153.0" fill="#d9d5cc"/>
+<rect x="377.2" y="196.9" width="18.3" height="83.1" fill="#d9d5cc"/>
+<rect x="403.4" y="200.4" width="18.3" height="79.6" fill="#d9d5cc"/>
+<rect x="429.5" y="196.7" width="18.3" height="83.3" fill="#d9d5cc"/>
+<rect x="455.6" y="126.4" width="18.3" height="153.6" fill="#d9d5cc"/>
+<rect x="481.7" y="117.8" width="18.3" height="162.2" fill="#d9d5cc"/>
+<rect x="507.8" y="201.2" width="18.3" height="78.8" fill="#d9d5cc"/>
+<polyline points="73.1,278.5 99.2,278.5 125.3,278.5 151.4,278.5 177.5,278.5 203.6,278.5 229.7,278.5 255.8,278.5 281.9,278.4 308.1,278.1 334.2,277.3 360.3,278.5 386.4,278.5 412.5,278.4 438.6,278.4 464.7,278.5 490.8,278.5 516.9,278.5" fill="none" stroke="#b4411a" stroke-width="2"/>
+<line x1="60" y1="280" x2="530" y2="280" stroke="#9a9a9a"/>
+<text x="73.1" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">0 s</text>
+<text x="229.7" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">60 s</text>
+<text x="386.4" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">120 s</text>
+<text x="516.9" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">170 s</text>
+<rect x="70" y="68" width="14" height="10" fill="#d9d5cc"/>
+<text x="90.0" y="77.0" text-anchor="start" font-size="12" fill="#6a6a6a">the scans, 5 to 10 s</text>
+<line x1="70" y1="94" x2="84" y2="94" stroke="#b4411a" stroke-width="2"/>
+<text x="90.0" y="98.0" text-anchor="start" font-size="12" fill="#6a6a6a">the cheap reads, 95 to 170 ms, as without the storm</text>
+<text x="725.0" y="46.0" text-anchor="middle" font-size="13" fill="#333" font-weight="600">providers eligible, of 5</text>
+<line x1="600" y1="280.0" x2="850" y2="280.0" stroke="#e6e3dc"/>
+<text x="594.0" y="284.0" text-anchor="end" font-size="12" fill="#6a6a6a">0</text>
+<line x1="600" y1="236.0" x2="850" y2="236.0" stroke="#e6e3dc"/>
+<text x="594.0" y="240.0" text-anchor="end" font-size="12" fill="#6a6a6a">1</text>
+<line x1="600" y1="192.0" x2="850" y2="192.0" stroke="#e6e3dc"/>
+<text x="594.0" y="196.0" text-anchor="end" font-size="12" fill="#6a6a6a">2</text>
+<line x1="600" y1="148.0" x2="850" y2="148.0" stroke="#e6e3dc"/>
+<text x="594.0" y="152.0" text-anchor="end" font-size="12" fill="#6a6a6a">3</text>
+<line x1="600" y1="104.0" x2="850" y2="104.0" stroke="#e6e3dc"/>
+<text x="594.0" y="108.0" text-anchor="end" font-size="12" fill="#6a6a6a">4</text>
+<line x1="600" y1="60.0" x2="850" y2="60.0" stroke="#e6e3dc"/>
+<text x="594.0" y="64.0" text-anchor="end" font-size="12" fill="#6a6a6a">5</text>
+<polyline points="600.0,60.0 638.6,60.0 638.6,148.0 671.6,148.0 671.6,60.0 690.9,60.0 690.9,148.0 722.7,148.0 722.7,60.0 743.2,60.0 743.2,104.0 761.4,104.0 761.4,148.0 773.9,148.0 773.9,104.0 790.9,104.0 790.9,60.0 794.3,60.0 794.3,104.0 812.5,104.0 812.5,148.0 825.0,148.0 825.0,104.0 842.0,104.0 842.0,60.0 850.0,60.0 850.0,60.0" fill="none" stroke="#b4411a" stroke-width="2"/>
+<line x1="600" y1="280" x2="850" y2="280" stroke="#9a9a9a"/>
+<text x="600.0" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">12:31</text>
+<text x="668.2" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">12:32</text>
+<text x="736.4" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">12:33</text>
+<text x="804.5" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">12:34</text>
+<text x="440.0" y="324.0" text-anchor="middle" font-size="12" fill="#6a6a6a">The two slowest providers leave rotation when their scans pass the attempt timeout and come back at their next probe; the other three never leave.</text>
+</svg>

@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="340" viewBox="0 0 880 340" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+<rect width="880" height="340" fill="#ffffff"/>
+<text x="20.0" y="26.0" text-anchor="start" font-size="14" fill="#333" font-weight="600">The same full-scan query every 25 s: one node answering on its own port, and the LB box asking all three tunnel ports</text>
+<line x1="60" y1="280.0" x2="850" y2="280.0" stroke="#e6e3dc"/>
+<text x="54.0" y="284.0" text-anchor="end" font-size="12" fill="#6a6a6a">0 s</text>
+<line x1="60" y1="231.1" x2="850" y2="231.1" stroke="#e6e3dc"/>
+<text x="54.0" y="235.1" text-anchor="end" font-size="12" fill="#6a6a6a">10 s</text>
+<line x1="60" y1="182.2" x2="850" y2="182.2" stroke="#e6e3dc"/>
+<text x="54.0" y="186.2" text-anchor="end" font-size="12" fill="#6a6a6a">20 s</text>
+<line x1="60" y1="133.3" x2="850" y2="133.3" stroke="#e6e3dc"/>
+<text x="54.0" y="137.3" text-anchor="end" font-size="12" fill="#6a6a6a">30 s</text>
+<line x1="60" y1="84.4" x2="850" y2="84.4" stroke="#e6e3dc"/>
+<text x="54.0" y="88.4" text-anchor="end" font-size="12" fill="#6a6a6a">40 s</text>
+<text x="85.5" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">13:15</text>
+<text x="238.4" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">13:18</text>
+<text x="391.3" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">13:21</text>
+<text x="544.2" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">13:24</text>
+<text x="697.1" y="297.0" text-anchor="middle" font-size="12" fill="#6a6a6a">13:27</text>
+<line x1="60" y1="280" x2="850" y2="280" stroke="#9a9a9a"/>
+<circle cx="76.1" cy="232.3" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="76.1" cy="196.4" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="76.1" cy="128.4" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="119.5" cy="260.3" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="119.5" cy="240.2" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="119.5" cy="232.5" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="144.1" cy="261.2" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="144.1" cy="257.8" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="144.1" cy="233.9" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="169.6" cy="261.5" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="169.6" cy="257.5" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="169.6" cy="232.6" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="194.2" cy="261.4" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="194.2" cy="257.6" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="194.2" cy="223.9" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="221.4" cy="261.8" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="221.4" cy="257.3" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="221.4" cy="232.2" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="246.9" cy="262.4" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="246.9" cy="257.0" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="246.9" cy="234.8" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="271.5" cy="262.5" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="271.5" cy="256.3" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="271.5" cy="232.6" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="297.0" cy="260.8" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="297.0" cy="257.3" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="297.0" cy="231.0" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="322.5" cy="261.1" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="322.5" cy="232.2" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="322.5" cy="165.3" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="359.0" cy="261.6" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="359.0" cy="254.3" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="359.0" cy="232.7" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="384.5" cy="260.5" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="384.5" cy="257.4" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="384.5" cy="231.4" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="410.0" cy="259.2" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="410.0" cy="257.3" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="410.0" cy="234.3" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="434.6" cy="260.0" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="434.6" cy="257.5" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="434.6" cy="237.5" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="459.2" cy="259.7" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="459.2" cy="257.6" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="459.2" cy="232.7" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="484.7" cy="261.1" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="484.7" cy="255.1" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="484.7" cy="235.5" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="509.4" cy="261.0" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="509.4" cy="257.8" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="509.4" cy="234.1" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="534.0" cy="262.1" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="534.0" cy="258.0" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="534.0" cy="234.9" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="558.6" cy="261.8" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="558.6" cy="257.0" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="558.6" cy="231.2" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="584.1" cy="261.7" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="584.1" cy="257.4" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="584.1" cy="234.9" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="609.6" cy="260.6" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="609.6" cy="236.3" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="609.6" cy="232.8" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="634.2" cy="261.2" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="634.2" cy="226.1" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="634.2" cy="76.2" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="686.9" cy="260.2" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="686.9" cy="236.5" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="686.9" cy="167.2" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="723.4" cy="259.5" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="723.4" cy="237.8" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="723.4" cy="148.9" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="763.4" cy="258.6" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="763.4" cy="235.8" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="763.4" cy="170.2" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="799.9" cy="258.1" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="799.9" cy="254.0" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="799.9" cy="231.2" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="825.4" cy="258.3" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="825.4" cy="256.9" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<circle cx="825.4" cy="238.0" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<polyline points="95.7,258.2 116.9,249.0 139.0,256.2 160.2,258.0 181.5,257.9 201.9,257.9 223.1,258.0 243.5,258.3 264.7,258.2 285.1,258.0 306.3,73.2 359.0,255.8 380.2,258.2 401.5,258.2 421.9,258.3 443.1,258.3 463.5,258.2 483.9,255.8 505.1,257.5 526.4,257.9 547.6,258.0 568.0,258.7 589.2,258.2 609.6,238.3 634.2,72.6 686.9,167.2 723.4,148.9 763.4,170.2 799.0,254.2 821.1,257.5" fill="none" stroke="#b4411a" stroke-width="2"/>
+<circle cx="95.7" cy="258.2" r="3" fill="#b4411a"/>
+<circle cx="116.9" cy="249.0" r="3" fill="#b4411a"/>
+<circle cx="139.0" cy="256.2" r="3" fill="#b4411a"/>
+<circle cx="160.2" cy="258.0" r="3" fill="#b4411a"/>
+<circle cx="181.5" cy="257.9" r="3" fill="#b4411a"/>
+<circle cx="201.9" cy="257.9" r="3" fill="#b4411a"/>
+<circle cx="223.1" cy="258.0" r="3" fill="#b4411a"/>
+<circle cx="243.5" cy="258.3" r="3" fill="#b4411a"/>
+<circle cx="264.7" cy="258.2" r="3" fill="#b4411a"/>
+<circle cx="285.1" cy="258.0" r="3" fill="#b4411a"/>
+<circle cx="306.3" cy="73.2" r="3" fill="#b4411a"/>
+<circle cx="359.0" cy="255.8" r="3" fill="#b4411a"/>
+<circle cx="380.2" cy="258.2" r="3" fill="#b4411a"/>
+<circle cx="401.5" cy="258.2" r="3" fill="#b4411a"/>
+<circle cx="421.9" cy="258.3" r="3" fill="#b4411a"/>
+<circle cx="443.1" cy="258.3" r="3" fill="#b4411a"/>
+<circle cx="463.5" cy="258.2" r="3" fill="#b4411a"/>
+<circle cx="483.9" cy="255.8" r="3" fill="#b4411a"/>
+<circle cx="505.1" cy="257.5" r="3" fill="#b4411a"/>
+<circle cx="526.4" cy="257.9" r="3" fill="#b4411a"/>
+<circle cx="547.6" cy="258.0" r="3" fill="#b4411a"/>
+<circle cx="568.0" cy="258.7" r="3" fill="#b4411a"/>
+<circle cx="589.2" cy="258.2" r="3" fill="#b4411a"/>
+<circle cx="609.6" cy="238.3" r="3" fill="#b4411a"/>
+<circle cx="634.2" cy="72.6" r="3" fill="#b4411a"/>
+<circle cx="686.9" cy="167.2" r="3" fill="#b4411a"/>
+<circle cx="723.4" cy="148.9" r="3" fill="#b4411a"/>
+<circle cx="763.4" cy="170.2" r="3" fill="#b4411a"/>
+<circle cx="799.0" cy="254.2" r="3" fill="#b4411a"/>
+<circle cx="821.1" cy="257.5" r="3" fill="#b4411a"/>
+<line x1="380" y1="46" x2="410" y2="46" stroke="#b4411a" stroke-width="2"/><circle cx="395" cy="46" r="3" fill="#b4411a"/>
+<text x="416.0" y="50.0" text-anchor="start" font-size="12" fill="#6a6a6a">the node, on its own RPC port</text>
+<circle cx="625" cy="46" r="3.5" fill="#9a9a9a" fill-opacity="0.75"/>
+<text x="636.0" y="50.0" text-anchor="start" font-size="12" fill="#6a6a6a">the LB box, via the three tunnels</text>
+<text x="455.0" y="324.0" text-anchor="middle" font-size="12" fill="#6a6a6a">Every slow answer of the node's has a tunnel measurement ending at the same moment: the time is the node's.</text>
+</svg>

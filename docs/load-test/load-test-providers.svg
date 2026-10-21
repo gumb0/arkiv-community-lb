@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="300" viewBox="0 0 880 300" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+<rect width="880" height="300" fill="#ffffff"/>
+<text x="20.0" y="26.0" text-anchor="start" font-size="14" fill="#333" font-weight="600">The heavy page at 256 clients, as the LB saw each provider in one minute (clients waiting: rate × latency)</text>
+<text x="128.0" y="78.0" text-anchor="end" font-size="12" fill="#6a6a6a">A (data centre)</text>
+<text x="128.0" y="112.0" text-anchor="end" font-size="12" fill="#6a6a6a">B (data centre)</text>
+<text x="128.0" y="146.0" text-anchor="end" font-size="12" fill="#6a6a6a">C (data centre)</text>
+<text x="128.0" y="180.0" text-anchor="end" font-size="12" fill="#6a6a6a">D (slower uplink)</text>
+<text x="128.0" y="214.0" text-anchor="end" font-size="12" fill="#6a6a6a">E (slower uplink)</text>
+<text x="220.0" y="50.0" text-anchor="middle" font-size="13" fill="#333" font-weight="600">rate (answered ÷ 60 s)</text>
+<rect x="145" y="66" width="149.6" height="20" fill="#d9d5cc"/>
+<text x="300.6" y="80.0" text-anchor="start" font-size="12" fill="#333">22.7/s</text>
+<rect x="145" y="100" width="149.3" height="20" fill="#d9d5cc"/>
+<text x="300.3" y="114.0" text-anchor="start" font-size="12" fill="#333">22.7/s</text>
+<rect x="145" y="134" width="149.7" height="20" fill="#d9d5cc"/>
+<text x="300.7" y="148.0" text-anchor="start" font-size="12" fill="#333">22.8/s</text>
+<rect x="145" y="168" width="150.0" height="20" fill="#b4411a"/>
+<text x="301.0" y="182.0" text-anchor="start" font-size="12" fill="#333">22.8/s</text>
+<rect x="145" y="202" width="111.6" height="20" fill="#b4411a"/>
+<text x="262.6" y="216.0" text-anchor="start" font-size="12" fill="#333">17.0/s</text>
+<text x="475.0" y="50.0" text-anchor="middle" font-size="13" fill="#333" font-weight="600">average latency</text>
+<rect x="400" y="66" width="3.8" height="20" fill="#d9d5cc"/>
+<text x="409.8" y="80.0" text-anchor="start" font-size="12" fill="#333">202 ms</text>
+<rect x="400" y="100" width="1.9" height="20" fill="#d9d5cc"/>
+<text x="407.9" y="114.0" text-anchor="start" font-size="12" fill="#333">104 ms</text>
+<rect x="400" y="134" width="4.3" height="20" fill="#d9d5cc"/>
+<text x="410.3" y="148.0" text-anchor="start" font-size="12" fill="#333">228 ms</text>
+<rect x="400" y="168" width="66.6" height="20" fill="#b4411a"/>
+<text x="472.6" y="182.0" text-anchor="start" font-size="12" fill="#333">3.6 s</text>
+<rect x="400" y="202" width="150.0" height="20" fill="#b4411a"/>
+<text x="556.0" y="216.0" text-anchor="start" font-size="12" fill="#333">8.0 s</text>
+<text x="730.0" y="50.0" text-anchor="middle" font-size="13" fill="#333" font-weight="600">clients waiting on it, of 256</text>
+<rect x="655" y="66" width="5.5" height="20" fill="#d9d5cc"/>
+<text x="666.5" y="80.0" text-anchor="start" font-size="12" fill="#333">5</text>
+<rect x="655" y="100" width="2.2" height="20" fill="#d9d5cc"/>
+<text x="663.2" y="114.0" text-anchor="start" font-size="12" fill="#333">2</text>
+<rect x="655" y="134" width="5.5" height="20" fill="#d9d5cc"/>
+<text x="666.5" y="148.0" text-anchor="start" font-size="12" fill="#333">5</text>
+<rect x="655" y="168" width="89.3" height="20" fill="#b4411a"/>
+<text x="750.3" y="182.0" text-anchor="start" font-size="12" fill="#333">81</text>
+<rect x="655" y="202" width="150.0" height="20" fill="#b4411a"/>
+<text x="811.0" y="216.0" text-anchor="start" font-size="12" fill="#333">136</text>
+<text x="440.0" y="270.0" text-anchor="middle" font-size="12" fill="#6a6a6a">Equal shares of the requests, unequal shares of the clients: 217 of 256 waited on D and E, two to five on each of A, B and C.</text>
+</svg>

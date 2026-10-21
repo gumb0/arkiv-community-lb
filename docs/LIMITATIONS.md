@@ -16,11 +16,18 @@ for the market. How to operate with them is [RUNBOOK.md](RUNBOOK.md).
 - **Nothing limits a client.** No cap on how many requests one client
   may send or how many run at once; the only bounds are per request,
   2 MiB in and 64 MiB out (`max_request_size`, `max_response_size`),
-  so memory scales with concurrency times 64 MiB. The rate limiter in
-  front of the LB is the answer
-  ([RUNBOOK.md](RUNBOOK.md#what-the-stack-leaves-to-you)); a cap on
-  requests in flight is
-  [#54](https://github.com/gumb0/arkiv-community-lb/issues/54).
+  so memory scales with concurrency times 64 MiB. One client sending
+  an expensive query on a few dozen connections slows that query to
+  seconds for every client and makes the slowest providers flap, and
+  when every node is slow at once it empties the rotation
+  ([LOAD_TEST.md](LOAD_TEST.md#an-expensive-query-storm)). The rate
+  limiter in front of the LB
+  ([RUNBOOK.md](RUNBOOK.md#what-the-stack-leaves-to-you)) bounds a
+  client's requests, not their cost; a cap on requests in flight per
+  provider is
+  [#54](https://github.com/gumb0/arkiv-community-lb/issues/54), and
+  the quarantine of a provider that is slow but answering is
+  [#62](https://github.com/gumb0/arkiv-community-lb/issues/62).
 - **Method filtering is a text search** over the request body, not a
   JSON parse: a request that merely mentions a refused method name is
   refused, and requests cannot be counted per method

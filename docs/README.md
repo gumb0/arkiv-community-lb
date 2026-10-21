@@ -17,6 +17,9 @@
   where one exists.
 - [STATS.md](STATS.md) — the hourly per-provider buckets `/stats`
   serves, for a dashboard's backend.
+- [LOAD_TEST.md](LOAD_TEST.md) — what a box and a fleet serve under
+  load, measured in October 2026, what gives out first on each kind
+  of request, and how to run the test against your own deployment.
 
 ## How it works
 

@@ -164,7 +164,9 @@ payloads, the heaviest read a client makes, selected by `--query`
 (every live entity when not given). The filter decides how much of
 the time is the node's own: a range over every entity is a scan the
 node pays for on each request, a match on one attribute is a lookup,
-so the second is the one that measures the path.
+so the second is the one that measures the forwarding. A full run against
+a deployment, what to watch on the box and how to read the result:
+[LOAD_TEST.md](LOAD_TEST.md).
 
 ## Conventions
 

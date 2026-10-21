@@ -24,6 +24,11 @@ Notable changes per release, newest first. The LB box deploys a tag:
   timeout. Under load a heavy page from a provider on a slow uplink
   takes over ten seconds; at 10 s the attempt failed over and counted
   against the provider's health while it was answering.
+- `rig load` takes several concurrency steps in one run, with a line
+  every 10 s and a table of the steps at the end, counts failures by
+  kind, and takes the query's filter as `--query`. The load test it
+  ran, its results and how to run it again are in
+  [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
 
 ## v0.3.0
 

@@ -6,6 +6,11 @@ Notable changes per release, newest first. The LB box deploys a tag:
 
 ## Unreleased
 
+- The integrity checker reads a provider's answers up to 4 MiB and
+  refuses the rest; an answer over that is a divergence, since the
+  reference's answer to the same read is a small fraction of it. A
+  provider could answer a check with a valid envelope of any size and
+  take the LB down with it, round after round.
 - The integrity check reads the entity at the finalized height on both
   sides: the provider's read is pinned there like the reference's. The
   provider used to be asked with no block parameter, and an answer at

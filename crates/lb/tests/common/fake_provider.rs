@@ -62,6 +62,10 @@ pub struct FakeProvider {
     /// Null for every block, whatever its height: a way to be stale at
     /// will while the probes see a head at the chain's.
     pub hide_blocks: AtomicBool,
+    /// Block and entity answers padded past the integrity checker's
+    /// size cap, with a field the reader does not decode: valid
+    /// answers too large to read.
+    pub pad_answers: AtomicBool,
     /// Block and entity reads held back this long, to time them out
     /// while the probes, which have the shorter timeout, stay quick.
     pub delay_ms: AtomicU64,
@@ -91,6 +95,7 @@ async fn serve(chain: FakeChain) -> (SocketAddr, Arc<FakeProvider>) {
         lie_block: AtomicBool::new(false),
         lie_entity: AtomicBool::new(false),
         hide_blocks: AtomicBool::new(false),
+        pad_answers: AtomicBool::new(false),
         delay_ms: AtomicU64::new(0),
     });
     let state = rpc.clone();
@@ -167,7 +172,15 @@ impl FakeProvider {
         if self.lie_block.load(Ordering::Relaxed) {
             block.hash = keccak256(block.hash);
         }
-        render_block(&block)
+        self.padded(render_block(&block))
+    }
+
+    /// The answer as it is, or with the padding field when switched on.
+    fn padded(&self, mut answer: Value) -> Value {
+        if self.pad_answers.load(Ordering::Relaxed) {
+            answer["padding"] = Value::String("A".repeat(lb::integrity::RESPONSE_CAP));
+        }
+        answer
     }
 
     /// `arkiv_query`, in the two shapes the LB sends: one entity by
@@ -207,7 +220,7 @@ impl FakeProvider {
                 render_entity(&entity)
             })
             .collect();
-        json!({ "data": data, "blockNumber": format!("{at:#x}") })
+        self.padded(json!({ "data": data, "blockNumber": format!("{at:#x}") }))
     }
 }
 

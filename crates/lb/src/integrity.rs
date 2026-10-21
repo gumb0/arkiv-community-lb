@@ -10,7 +10,8 @@ pub enum Verdict {
     /// Behind the chain: no block at the finalized height yet. The lag
     /// path's business, not integrity's.
     Stale,
-    /// Different from the reference in either read. From one look it is
+    /// Different from the reference in either read, or an answer over
+    /// the size cap. From one look it is
     /// provisional; a round records it only once a second look agrees
     /// with the first. The evidence event says which read.
     Divergence,
@@ -46,7 +47,7 @@ use tokio::sync::watch;
 use crate::{
     chain::{
         ChainReader,
-        reader::{BlockAt, BlockFields, Condition, Query, Reader},
+        reader::{BlockAt, BlockFields, Condition, Query, ReadError, Reader},
         records::{ArkivEntity, EntityKey},
     },
     config,
@@ -55,6 +56,13 @@ use crate::{
 
 /// Provider reads in flight at once, the probe sweep's bound.
 const CONCURRENT_READS: usize = 16;
+
+/// The most bytes a provider's answer to a check may have. The honest
+/// bound is far below it: a payload is at most 128 KiB, so the one
+/// entity a query by key answers is under 300 KiB as hex, and a block's
+/// transaction list is 66 bytes a hash. A round holds at most
+/// `CONCURRENT_READS` answers at once, 64 MiB at this cap.
+pub const RESPONSE_CAP: usize = 4 * 1024 * 1024;
 
 /// How often the page of keys to sample from is read again. A page
 /// read costs the reference as much as a sample, a page goes stale
@@ -128,6 +136,20 @@ enum Evidence {
         reference: Vec<ArkivEntity>,
         provider: Vec<ArkivEntity>,
     },
+    /// The answer to this read was over the size cap, so there is no
+    /// answer to show.
+    TooLarge { read: &'static str },
+}
+
+/// Why a provider's read gave nothing to compare.
+enum ReadFailure {
+    /// A transport error, a timeout, a bad status, an error envelope:
+    /// unknown, since liveness is the health check's job.
+    Error,
+    /// An answer over the size cap: the reference's answer to the same
+    /// read fits with room to spare, so this is not the data, and as
+    /// unknown it would let a provider pad its way past every round.
+    TooLarge,
 }
 
 /// What the reference answered this round: its finalized block, and
@@ -246,11 +268,11 @@ impl SampleKey {
 /// What a provider answered.
 struct Answers {
     provider: Arc<Provider>,
-    block: Result<Option<BlockFields>, ()>,
+    block: Result<Option<BlockFields>, ReadFailure>,
     /// The rows a query by key answered, one or none from an honest
     /// node, kept as answered so the comparison is exactly what the two
     /// nodes said.
-    rows: Result<Vec<ArkivEntity>, ()>,
+    rows: Result<Vec<ArkivEntity>, ReadFailure>,
 }
 
 impl<R: ChainReader> IntegrityChecker<R> {
@@ -434,6 +456,15 @@ impl<R: ChainReader> IntegrityChecker<R> {
                         served = describe(served),
                         "integrity: divergence confirmed"
                     ),
+                    Evidence::TooLarge { read } => tracing::warn!(
+                        provider = %provider.id,
+                        agreement = provider.agreement_id().map(|id| format!("{id:#x}")),
+                        height,
+                        probed_head = provider.last_height(),
+                        check = read,
+                        cap = RESPONSE_CAP,
+                        "integrity: divergence confirmed, the answer was over the size cap"
+                    ),
                 },
             }
             counts[verdict as usize] += 1;
@@ -589,18 +620,18 @@ impl<R: ChainReader> IntegrityChecker<R> {
             provider.url.clone(),
             None,
             self.attempt_timeout,
-        );
+        )
+        .with_response_cap(RESPONSE_CAP);
         let height = expected.finalized.number;
-        let block = reader.block(BlockAt::Number(height)).await.map_err(|error| {
-            tracing::debug!(provider = %provider.id, %error, "integrity: the block read failed");
-        });
+        let block = reader
+            .block(BlockAt::Number(height))
+            .await
+            .map_err(|error| read_failure(&provider, "block", &error));
         let rows = reader
             .query(&Query::by_key(expected.key).at_block(height))
             .await
             .map(|page| page.entities)
-            .map_err(|error| {
-                tracing::debug!(provider = %provider.id, %error, "integrity: the entity read failed");
-            });
+            .map_err(|error| read_failure(&provider, "entity", &error));
         Answers {
             provider,
             block,
@@ -613,10 +644,25 @@ impl<R: ChainReader> IntegrityChecker<R> {
 /// look's verdict, and the two answers that differed when it is a
 /// divergence. Only both reads answered and agreed is a match; stale
 /// wins over unknown, since it says something.
+/// Logs a provider's failed read and says what it means for the verdict.
+fn read_failure(provider: &Provider, read: &'static str, error: &ReadError) -> ReadFailure {
+    tracing::debug!(provider = %provider.id, read, %error, "integrity: a read failed");
+    match error {
+        ReadError::TooLarge { .. } => ReadFailure::TooLarge,
+        _ => ReadFailure::Error,
+    }
+}
+
 fn judge(answer: &Answers, expected: &Expected) -> (Verdict, Option<Evidence>) {
     let finalized = &expected.finalized;
     let block = match &answer.block {
-        Err(()) => return (Verdict::Unknown, None),
+        Err(ReadFailure::Error) => return (Verdict::Unknown, None),
+        Err(ReadFailure::TooLarge) => {
+            return (
+                Verdict::Divergence,
+                Some(Evidence::TooLarge { read: "block" }),
+            );
+        }
         Ok(None) => {
             return match answer.provider.last_height() {
                 // Its probes reported a head at or past the finalized
@@ -645,7 +691,17 @@ fn judge(answer: &Answers, expected: &Expected) -> (Verdict, Option<Evidence>) {
             }),
         );
     }
-    let (Ok(rows), Ok(reference)) = (&answer.rows, &expected.rows) else {
+    let rows = match &answer.rows {
+        Err(ReadFailure::Error) => return (Verdict::Unknown, None),
+        Err(ReadFailure::TooLarge) => {
+            return (
+                Verdict::Divergence,
+                Some(Evidence::TooLarge { read: "entity" }),
+            );
+        }
+        Ok(rows) => rows,
+    };
+    let Ok(reference) = &expected.rows else {
         return (Verdict::Unknown, None);
     };
     if rows == reference {

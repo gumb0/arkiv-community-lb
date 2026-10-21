@@ -121,11 +121,21 @@ Each provider gets one of four verdicts per round.
   height and has no block there is not behind the chain. That is a
   divergence, or stale would be a verdict a provider can choose and
   never be judged.
-- **divergence** — the block differs, or the entity differs. The round
-  does not act on the first mismatch. It waits `confirm_after`, asks
-  the provider again the same way, and only a second mismatch counts:
-  one wrong read is not a verdict. The reference is not asked again,
-  since at a finalized height its answers do not change.
+- **divergence** — any of these, from either read:
+  - the block at the finalized height differs from the reference's;
+  - the provider answers that it has no block there while its probes
+    report a head at or past that height (see stale, above);
+  - the entity differs from the reference's at that height;
+  - an answer is larger than the LB will read, 4 MiB. The reference's
+    answer to the same read is a small fraction of that (a payload is
+    at most 128 KiB), so an honest node's is too; as unknown, padding
+    would be a way past every round.
+
+  The round does not act on the first mismatch. It waits
+  `confirm_after`, asks the provider again the same way, and only a
+  second mismatch counts: one wrong read is not a verdict. The
+  reference is not asked again, since at a finalized height its
+  answers do not change.
 - **unknown** — the reference could not be reached or has no finalized
   block, so nobody is judged; or the reference could not answer the
   entity read, so no entity is judged this round and the blocks alone

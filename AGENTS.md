@@ -95,6 +95,8 @@ first-class concern, not an add-on.
   integrity-quarantined ones included. Stale is not lying: a provider
   behind the chain is left to the lag path, and an integrity read that
   fails is unknown for that round, never a health tick, and never a pass.
+  An answer over the checker's size cap is a divergence, not a failed
+  read: the reference's answer to the same read fits with room to spare.
 - **LB-generated JSON-RPC errors** use codes −32050…−32054 and every message
   starts with `lb: ` — the prefix is applied in `jsonrpc.rs` and nowhere
   else. Standard codes (−32700, −32601, …) are always a provider's answer;

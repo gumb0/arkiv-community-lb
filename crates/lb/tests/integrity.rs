@@ -239,6 +239,30 @@ async fn a_provider_hiding_the_block_its_head_is_past_is_a_divergence() {
 }
 
 #[tokio::test]
+async fn an_answer_over_the_size_cap_is_a_divergence() {
+    // Valid envelopes too large to read. The reference's answers to
+    // the same reads fit with room to spare, so these are not the
+    // data; as unknown, padding would be a way past every round.
+    let fleet = fleet(1).await;
+    fleet.providers[0]
+        .pad_answers
+        .store(true, Ordering::Relaxed);
+    let provider = entry(&fleet.pool, 0);
+    let streak = provider.health_streak.load(Ordering::Relaxed);
+    fleet.checker.round().await;
+    assert!(!provider.eligible());
+    assert_eq!(
+        provider.last_verdict().map(|(v, _)| v),
+        Some(Verdict::Divergence)
+    );
+    assert_eq!(
+        provider.health_streak.load(Ordering::Relaxed),
+        streak,
+        "no health tick from a round"
+    );
+}
+
+#[tokio::test]
 async fn a_dead_reference_judges_nobody() {
     let fleet = fleet(2).await;
     fleet.providers[1].lie_block.store(true, Ordering::Relaxed);

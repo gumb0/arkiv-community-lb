@@ -346,6 +346,7 @@ async fn integrity_fleet() -> IntegrityFleet {
         .encode(),
         Expiry::Seconds(3600),
     );
+    chain.finalize();
     let (reference_addr, reference) = rpc_provider_on(&chain).await;
     let (honest_addr, honest) = rpc_provider_on(&chain).await;
     let (liar_addr, liar) = rpc_provider_on(&chain).await;

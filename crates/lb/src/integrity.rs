@@ -224,8 +224,23 @@ fn describe(rows: &[ArkivEntity]) -> String {
 /// `None` before the first read.
 #[derive(Default)]
 struct KeyPage {
-    keys: Vec<(EntityKey, u64)>,
+    keys: Vec<SampleKey>,
     read_at: Option<std::time::Instant>,
+}
+
+/// A key on the page, with the heights its entity exists between.
+struct SampleKey {
+    key: EntityKey,
+    created_at: u64,
+    expires_at: u64,
+}
+
+impl SampleKey {
+    /// Whether a read pinned at `height` finds the entity: created at
+    /// or before it, not expired by it.
+    fn exists_at(&self, height: u64) -> bool {
+        self.created_at <= height && height < self.expires_at
+    }
 }
 
 /// What a provider answered.
@@ -291,8 +306,8 @@ impl<R: ChainReader> IntegrityChecker<R> {
         }
     }
 
-    /// One round: the finalized block and the reference's head, a key,
-    /// the reference's entity at the finalized height, every healthy
+    /// One round: the reference's finalized block, a key that exists at
+    /// that height, the reference's entity there, every healthy
     /// provider read at once at that height, the comparisons, a second
     /// look at any mismatch, and a verdict per provider.
     pub async fn round(&self) {
@@ -313,15 +328,15 @@ impl<R: ChainReader> IntegrityChecker<R> {
             tracing::info!("integrity round: no healthy provider to check");
             return;
         }
-        let Some((finalized, head)) = self.reference_state().await else {
+        let Some(finalized) = self.finalized_block().await else {
             tracing::info!(
                 providers = providers.len(),
                 "integrity round: the reference could not be read, nobody is judged"
             );
             return;
         };
-        self.load_keys_if_due(head).await;
-        let Some(key) = self.pick_key(head) else {
+        self.load_keys_if_due(finalized.number).await;
+        let Some(key) = self.pick_key(finalized.number) else {
             tracing::info!(
                 providers = providers.len(),
                 "integrity round: no live key to sample, nobody is judged"
@@ -434,43 +449,39 @@ impl<R: ChainReader> IntegrityChecker<R> {
         );
     }
 
-    /// The reference's finalized block and its head.
-    async fn reference_state(&self) -> Option<(BlockFields, u64)> {
-        let head = match self.reference.block_number().await {
-            Ok(head) => head,
-            Err(error) => {
-                tracing::warn!(%error, "integrity: the reference's head could not be read");
-                return None;
-            }
-        };
-        let finalized = match self.reference.block(BlockAt::Finalized).await {
-            Ok(Some(block)) => block,
+    /// The reference's finalized block, the height everything in a
+    /// round is read at.
+    async fn finalized_block(&self) -> Option<BlockFields> {
+        match self.reference.block(BlockAt::Finalized).await {
+            Ok(Some(block)) => Some(block),
             Ok(None) => {
                 tracing::warn!("integrity: the reference has no finalized block");
-                return None;
+                None
             }
             Err(error) => {
                 tracing::warn!(%error, "integrity: the finalized block could not be read");
-                return None;
+                None
             }
-        };
-        Some((finalized, head))
+        }
     }
 
     /// Reads one page of live entities from the reference and keeps
-    /// their keys and expiries, at the first round, once the page is a
-    /// day old, and once no key on it is alive any more. A read that
-    /// fails keeps the page as it was and is tried again at the next
-    /// round. The lock is never held across the read.
-    async fn load_keys_if_due(&self, head: u64) {
+    /// their keys with their creation and expiry heights, at the first
+    /// round, once the page is a day old, and once no key on it is
+    /// alive at the finalized height any more. A read that fails keeps
+    /// the page as it was and is tried again at the next round. The
+    /// lock is never held across the read.
+    async fn load_keys_if_due(&self, height: u64) {
         let due = {
             let page = self
                 .keys
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             // A page of short-lived entities has none left long before
-            // the day is over, and the chain has others by then.
-            let none_alive = !page.keys.iter().any(|(_, expires_at)| *expires_at > head);
+            // the day is over, and the chain has others by then. Keys
+            // too new for the height are not "none left": they are
+            // there at the next round.
+            let none_alive = !page.keys.iter().any(|key| key.expires_at > height);
             none_alive
                 || page
                     .read_at
@@ -480,20 +491,24 @@ impl<R: ChainReader> IntegrityChecker<R> {
             return;
         }
         let query = Query {
-            conditions: vec![Condition::ExpiresAfter(head)],
+            conditions: vec![Condition::ExpiresAfter(height)],
             at_block: None,
         };
         match self.reference.query(&query).await {
             Ok(page) => {
-                let keys: Vec<(EntityKey, u64)> = page
+                let keys: Vec<SampleKey> = page
                     .entities
                     .iter()
-                    .map(|entity| (entity.key, entity.expires_at))
+                    .map(|entity| SampleKey {
+                        key: entity.key,
+                        created_at: entity.created_at,
+                        expires_at: entity.expires_at,
+                    })
                     .collect();
                 tracing::info!(
                     keys = keys.len(),
-                    head,
-                    last_expiry = keys.iter().map(|(_, expires_at)| *expires_at).max(),
+                    height,
+                    last_expiry = keys.iter().map(|key| key.expires_at).max(),
                     "integrity: the page of live entities was read"
                 );
                 *self
@@ -511,11 +526,11 @@ impl<R: ChainReader> IntegrityChecker<R> {
     }
 
     /// One key to read this round, at random among the page's keys
-    /// whose entities are still alive at the head: the pick only has
-    /// to be one a provider cannot predict. Sampling an expired key
-    /// would not be wrong, only useless, since both sides would answer
-    /// that there is no such entity.
-    fn pick_key(&self, head: u64) -> Option<EntityKey> {
+    /// whose entities exist at the finalized height: the pick only has
+    /// to be one a provider cannot predict. Sampling a key expired by
+    /// then, or created after it, would not be wrong, only useless,
+    /// since both sides would answer that there is no such entity.
+    fn pick_key(&self, height: u64) -> Option<EntityKey> {
         let page = self
             .keys
             .lock()
@@ -523,8 +538,8 @@ impl<R: ChainReader> IntegrityChecker<R> {
         let alive: Vec<EntityKey> = page
             .keys
             .iter()
-            .filter(|(_, expires_at)| *expires_at > head)
-            .map(|(key, _)| *key)
+            .filter(|key| key.exists_at(height))
+            .map(|key| key.key)
             .collect();
         if alive.is_empty() {
             return None;

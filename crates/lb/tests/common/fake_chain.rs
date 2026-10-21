@@ -140,6 +140,21 @@ impl FakeChain {
         self.state().head += blocks;
     }
 
+    /// Moves the head past the finality margin, so everything written
+    /// so far exists at the finalized height, where the integrity
+    /// checks read.
+    pub fn finalize(&self) {
+        self.advance(FINALITY_LAG);
+    }
+
+    /// Moves the head until the entity has expired at the finalized
+    /// height too, so no read of the integrity checks finds it.
+    pub fn outlive(&self, key: EntityKey) {
+        let expires_at = self.entity(key).expect("stored").expires_at;
+        let mut state = self.state();
+        state.head = state.head.max(expires_at + 1 + FINALITY_LAG);
+    }
+
     pub fn set_balance(&self, balance: U256) {
         self.state().balance = balance;
     }

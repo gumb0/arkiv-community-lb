@@ -228,7 +228,7 @@ units, an `arkiv_query` about 100. At the default intervals:
 |---|---|---|
 | The Monitor's head read (`ref_height_interval`, 60 s) | every minute | ~440,000 |
 | The discovery poll (`discovery_interval`, 5 min): a head read and three queries, for the offers, the agreements and the counter records | 12 an hour | ~2,600,000 |
-| The integrity round (`integrity.interval`, 30 min): a head read, a block fetch, one pinned query, and a page of keys when the last page ran dry | 2 an hour | ~250,000 |
+| The integrity round (`integrity.interval`, 30 min): a block fetch, one pinned query, and a page of keys when the last page ran dry | 2 an hour | ~250,000 |
 | The sidecar's writes (nonce, gas, send, receipt polls per transaction) | hourly and daily | ~7,000 |
 | **Total** | | **~3,300,000** |
 

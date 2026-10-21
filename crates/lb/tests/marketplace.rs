@@ -2795,8 +2795,9 @@ async fn checked() -> Checked {
     chain.advance(200);
     let config = marketplace();
     let (addr, node) = rpc_provider_on(&chain).await;
-    node.height.store(chain.head(), Ordering::Relaxed);
     let key = seed_agreement(&chain, provider(1), addr.port(), 7200);
+    chain.finalize();
+    node.height.store(chain.head(), Ordering::Relaxed);
     let pool = Arc::new(Pool::new(&[]).expect("pool"));
     let checker = Arc::new(IntegrityChecker::new(
         pool.clone(),

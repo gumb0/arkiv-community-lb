@@ -62,6 +62,7 @@ async fn fleet(n: usize) -> Fleet {
         .encode(),
         Expiry::Seconds(3600),
     );
+    chain.finalize();
     let mut providers = Vec::new();
     let mut entries = Vec::new();
     for i in 0..n {
@@ -509,10 +510,13 @@ async fn an_expired_key_is_never_picked() {
     let fleet = fleet(1).await;
     // A second entity that expires soon; the page is read while both
     // are alive, then the chain moves past the short one's expiry.
-    let short = write_entity(&fleet.chain, 20);
+    let short = write_entity(&fleet.chain, 300);
+    fleet.chain.finalize();
+    fleet.providers[0]
+        .height
+        .store(fleet.chain.head(), Ordering::Relaxed);
     fleet.checker.round().await;
-    let expires_at = fleet.chain.entity(short).expect("stored").expires_at;
-    fleet.chain.advance(expires_at + 1 - fleet.chain.head());
+    fleet.chain.outlive(short);
     fleet.providers[0]
         .height
         .store(fleet.chain.head(), Ordering::Relaxed);
@@ -522,13 +526,40 @@ async fn an_expired_key_is_never_picked() {
     let asked = fleet.providers[0].asked_keys.lock().expect("asked").clone();
     assert_eq!(asked.len(), 11, "one key per round");
     assert!(
-        asked[1..].iter().all(|key| *key != short),
+        !asked[1..].contains(&short),
         "the expired key was picked from the old page"
     );
 }
 
 #[tokio::test]
+async fn a_key_created_after_the_finalized_block_is_not_picked() {
+    // The page is read with the new key on it, but at the finalized
+    // height the entity does not exist yet: both sides would answer
+    // "no such entity", a match that tests nothing.
+    let fleet = fleet(1).await;
+    let new = write_entity(&fleet.chain, 3600);
+    for _ in 0..10 {
+        fleet.checker.round().await;
+    }
+    let asked = fleet.providers[0].asked_keys.lock().expect("asked").clone();
+    assert_eq!(asked.len(), 10, "one key per round");
+    assert!(!asked.contains(&new), "too new to be read");
+    // Finalized past its creation: it is a candidate like the other.
+    fleet.chain.finalize();
+    fleet.providers[0]
+        .height
+        .store(fleet.chain.head(), Ordering::Relaxed);
+    for _ in 0..30 {
+        fleet.checker.round().await;
+    }
+    let asked = fleet.providers[0].asked_keys.lock().expect("asked").clone();
+    assert!(asked.contains(&new), "never picked in 30 rounds");
+}
+
+#[tokio::test]
 async fn a_page_with_no_live_key_left_is_read_again() {
+    // The fleet's chain holds one entity, alive for 3600 s; the first
+    // round reads the page and samples it.
     let fleet = fleet(1).await;
     fleet.checker.round().await;
     assert_eq!(fleet.chain.unpinned_reads(), 1);
@@ -536,9 +567,11 @@ async fn a_page_with_no_live_key_left_is_read_again() {
     // The chain moves past the expiry of the page's one entity, and
     // has another by then.
     let old = fleet.providers[0].asked_keys.lock().expect("asked")[0];
-    let expires_at = fleet.chain.entity(old).expect("stored").expires_at;
-    fleet.chain.advance(expires_at + 1 - fleet.chain.head());
-    let new = write_entity(&fleet.chain, 3600);
+    // The new one is written before the chain moves on, so that it
+    // exists at the finalized height when the page is read again, and
+    // its 7200 s outlive the old one by more than that move.
+    let new = write_entity(&fleet.chain, 7200);
+    fleet.chain.outlive(old);
     fleet.providers[0]
         .height
         .store(fleet.chain.head(), Ordering::Relaxed);
@@ -560,7 +593,8 @@ async fn a_page_with_no_live_key_left_is_read_again() {
 async fn a_chain_with_no_live_entity_skips_the_round() {
     let chain = FakeChain::new(Address::ZERO, CHAIN_ID);
     chain.advance(200);
-    let only = write_entity(&chain, 20);
+    let only = write_entity(&chain, 300);
+    chain.finalize();
     let (addr, rpc) = rpc_provider_on(&chain).await;
     rpc.height.store(chain.head(), Ordering::Relaxed);
     let pool = Arc::new(
@@ -577,8 +611,7 @@ async fn a_chain_with_no_live_entity_skips_the_round() {
     let judged_at = provider.last_verdict().map(|(_, height)| height);
     assert!(judged_at.is_some(), "the first round judged");
 
-    let expires_at = chain.entity(only).expect("stored").expires_at;
-    chain.advance(expires_at + 1 - chain.head());
+    chain.outlive(only);
     rpc.height.store(chain.head(), Ordering::Relaxed);
     checker.round().await;
     assert_eq!(

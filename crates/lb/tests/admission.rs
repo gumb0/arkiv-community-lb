@@ -397,6 +397,10 @@ async fn a_newcomer_serving_wrong_data_is_out_and_kept_on_its_window() {
     .await;
     let entry = service.pool.snapshot()[0].clone();
     let before = chain.entity(key).expect("stored").expires_at;
+    chain.finalize();
+    for rpc in [&reference_rpc, &node] {
+        rpc.height.store(chain.head(), Ordering::Relaxed);
+    }
 
     callback(
         &service,

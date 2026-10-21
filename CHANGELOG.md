@@ -14,7 +14,9 @@ Notable changes per release, newest first. The LB box deploys a tag:
   judged at all. There is no stale verdict for an entity answered far
   back any more: a provider with the finalized block is compared at
   it, and lag is the health check's business
-  ([docs/INTEGRITY.md](docs/INTEGRITY.md)).
+  ([docs/INTEGRITY.md](docs/INTEGRITY.md)). The round no longer reads
+  the reference's head: the key is picked among those whose entity
+  exists at the finalized height, one metered call less a round.
 - Hourly stats for a dashboard: `GET /stats` on the admin listener
   serves, per provider and per hour, the requests answered and the
   attempts that produced no answer, and per hour the requests the LB

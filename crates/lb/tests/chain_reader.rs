@@ -292,6 +292,73 @@ async fn an_unexpected_answer_is_reported_as_such() {
     assert!(matches!(error, ReadError::Unexpected(_)));
 }
 
+/// A node that answers every request with the same bytes, sent in
+/// chunks with no declared length, so the cap is met as the body
+/// arrives rather than in its header.
+async fn chunked(body: Vec<u8>) -> Reader {
+    let app = Router::new().route(
+        "/",
+        post(move || {
+            let chunks: Vec<Result<Bytes, std::io::Error>> = body
+                .chunks(1024)
+                .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+                .collect();
+            async move { axum::body::Body::from_stream(futures::stream::iter(chunks)) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr: SocketAddr = listener.local_addr().expect("addr");
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    Reader::new(
+        reqwest::Client::new(),
+        format!("http://{addr}/").parse().expect("url"),
+        None,
+        Duration::from_secs(2),
+    )
+}
+
+#[tokio::test]
+async fn a_capped_reader_refuses_an_answer_over_the_cap() {
+    let cap = 4 * 1024;
+    let padded = ok(json!({ "data": [], "blockNumber": "0x1", "padding": "A".repeat(2 * cap) }));
+    let query = Query::by_key(KEY.parse().expect("key"));
+
+    // Declared length over the cap: refused from the header alone.
+    let (reader, reference) = reference(padded.clone(), None).await;
+    let error = reader
+        .clone()
+        .with_response_cap(cap)
+        .query(&query)
+        .await
+        .expect_err("over the cap");
+    assert!(
+        matches!(error, ReadError::TooLarge { cap: c } if c == cap),
+        "{error}"
+    );
+    assert_eq!(reference.seen.lock().expect("seen").len(), 1, "asked once");
+    // The same answer under a higher cap, and without a cap, is read.
+    reader
+        .clone()
+        .with_response_cap(4 * cap)
+        .query(&query)
+        .await
+        .expect("under the cap");
+    reader.query(&query).await.expect("unbounded");
+
+    // No declared length: refused once the bytes read pass the cap.
+    let reader = chunked(serde_json::to_vec(&padded).expect("json")).await;
+    let error = reader
+        .clone()
+        .with_response_cap(cap)
+        .query(&query)
+        .await
+        .expect_err("over the cap");
+    assert!(matches!(error, ReadError::TooLarge { .. }), "{error}");
+    reader.query(&query).await.expect("unbounded");
+}
+
 #[tokio::test]
 async fn an_unreachable_reference_is_a_transport_error() {
     let reader = Reader::new(

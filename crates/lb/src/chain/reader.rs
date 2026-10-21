@@ -215,6 +215,8 @@ pub enum ReadError {
     Rpc { code: i64, message: String },
     #[error("the reference answered with an unexpected shape: {0}")]
     Unexpected(String),
+    #[error("the answer exceeded {cap} bytes")]
+    TooLarge { cap: usize },
 }
 
 #[derive(Deserialize)]
@@ -244,6 +246,8 @@ pub struct Reader {
     url: Url,
     key: Option<String>,
     timeout: Duration,
+    /// The most bytes an answer may have; unbounded unless set.
+    response_cap: usize,
 }
 
 impl Reader {
@@ -255,7 +259,16 @@ impl Reader {
             url,
             key,
             timeout,
+            response_cap: usize::MAX,
         }
+    }
+
+    /// Refuses an answer larger than this, by its declared length or as
+    /// it arrives, instead of buffering it. For reads of nodes that are
+    /// not trusted; the reference's reads stay unbounded.
+    pub fn with_response_cap(mut self, bytes: usize) -> Self {
+        self.response_cap = bytes;
+        self
     }
 
     /// The head height.
@@ -353,10 +366,9 @@ impl Reader {
         if !status.is_success() {
             return Err(ReadError::Status(status.as_u16()));
         }
-        let response: RpcResponse = response
-            .json()
-            .await
-            .map_err(|e| ReadError::Unexpected(e.to_string()))?;
+        let body = self.read_body(response).await?;
+        let response: RpcResponse =
+            serde_json::from_slice(&body).map_err(|e| ReadError::Unexpected(e.to_string()))?;
         if let Some(error) = response.error {
             return Err(ReadError::Rpc {
                 code: error.code,
@@ -367,6 +379,26 @@ impl Reader {
         // an absent one reads the same, and the caller's parse says
         // what it expected instead.
         Ok(response.result.unwrap_or(Value::Null))
+    }
+
+    /// The body, within the cap: a declared length over it is refused
+    /// before a byte is read, an undeclared one as soon as it passes.
+    async fn read_body(&self, mut response: reqwest::Response) -> Result<Vec<u8>, ReadError> {
+        let cap = self.response_cap;
+        if response
+            .content_length()
+            .is_some_and(|length| length > cap as u64)
+        {
+            return Err(ReadError::TooLarge { cap });
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if body.len() + chunk.len() > cap {
+                return Err(ReadError::TooLarge { cap });
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
     }
 }
 

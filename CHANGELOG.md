@@ -6,6 +6,12 @@ Notable changes per release, newest first. The LB box deploys a tag:
 
 ## Unreleased
 
+- A 2xx from a provider with an empty body or one that is not JSON, a
+  204 or an HTML page from something in front of the node, is no
+  longer passed to the client and counted as served: it fails over
+  like a non-2xx status, with the same health tick. The check is the
+  first byte, not a parse; what a well-formed body says is the
+  integrity check's business.
 - The integrity checker reads a provider's answers up to 4 MiB and
   refuses the rest; an answer over that is a divergence, since the
   reference's answer to the same read is a small fraction of it. A

@@ -27,7 +27,8 @@ pub struct Forwarder {
 pub enum Outcome {
     /// The provider answered — success or its own JSON-RPC error alike.
     Answer(Response),
-    /// No answer: transport failure, or a non-2xx status.
+    /// No answer: transport failure, a non-2xx status, or a 2xx whose
+    /// body is not JSON.
     NoAnswer,
     /// The answer exceeded the response cap.
     TooLarge,
@@ -103,6 +104,21 @@ impl Forwarder {
             }
         }
 
+        // A JSON-RPC answer is an object or, for a batch, an array. A
+        // 2xx with nothing or something else in it, a 204 or an HTML
+        // page from something in front of the node, is no more the
+        // node's answer than a non-2xx is, and fails over the same way.
+        // The first byte, not a parse: the body can be large, and what
+        // a well-formed body says is the integrity check's business.
+        if !looks_like_json(&collected) {
+            tracing::debug!(
+                provider = %provider.id,
+                bytes = collected.len(),
+                "2xx without a JSON body"
+            );
+            return Outcome::NoAnswer;
+        }
+
         Outcome::Answer(
             (
                 status,
@@ -112,4 +128,14 @@ impl Forwarder {
                 .into_response(),
         )
     }
+}
+
+/// Whether a body starts, after whitespace, as a JSON object or array.
+/// Only the first bytes are looked at, so a body of whitespace costs
+/// nothing to refuse; a node's answer has at most a newline in front.
+fn looks_like_json(body: &[u8]) -> bool {
+    body.iter()
+        .take(64)
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| *byte == b'{' || *byte == b'[')
 }

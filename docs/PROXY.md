@@ -97,7 +97,8 @@ no separate snapshot or cache.
   reset or seeded: the stats basis.
 - `transport_failures` counts public forwarding attempts that produced
   no provider answer, such as connection errors, timeouts, non-2xx
-  statuses, and incomplete response bodies.
+  statuses, 2xx answers without a JSON body, and incomplete response
+  bodies.
 - `last_probe_ms` is the round-trip time of the latest provider
   `eth_blockNumber` health probe, including failed attempts, measured
   in whole milliseconds. It is `null` before the first probe; a

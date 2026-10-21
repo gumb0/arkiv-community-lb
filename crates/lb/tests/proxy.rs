@@ -293,6 +293,45 @@ async fn http_error_status_fails_over() {
 }
 
 #[tokio::test]
+async fn a_2xx_without_a_json_body_fails_over() {
+    use axum::http::StatusCode;
+
+    // Something in front of the node answering in its place with a
+    // page, and a node answering 204 with nothing: neither is an
+    // answer, and the client never sees them.
+    let (page, page_fake) = fake_provider(b"<html>ok</html>", Duration::ZERO).await;
+    let (empty, empty_fake) = broken_provider(StatusCode::NO_CONTENT, b"", Duration::ZERO).await;
+    let answer = br#"{"jsonrpc":"2.0","id":9,"result":"ok"}"#;
+    let (live, _live_fake) = fake_provider(answer, Duration::ZERO).await;
+    let (service, public) = start_lb(&[page, empty, live]).await;
+
+    let (status, body) = post(&public, request(9)).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["result"], "ok");
+    assert_eq!(page_fake.requests(), 1);
+    assert_eq!(empty_fake.requests(), 1);
+    // Not served, and a health failure each, as for a non-2xx.
+    for entry in &service.pool.snapshot()[..2] {
+        assert_eq!(
+            entry
+                .served_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "{}",
+            entry.id
+        );
+        assert_eq!(
+            entry
+                .health_streak
+                .load(std::sync::atomic::Ordering::Relaxed),
+            -1,
+            "{}",
+            entry.id
+        );
+    }
+}
+
+#[tokio::test]
 async fn http_error_body_never_reaches_the_client() {
     use axum::http::StatusCode;
 

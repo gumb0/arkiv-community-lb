@@ -45,6 +45,18 @@ for the market. How to operate with them is [RUNBOOK.md](RUNBOOK.md).
   provider's health** as a failure
   ([#9](https://github.com/gumb0/arkiv-community-lb/issues/9)); three
   in a row on one provider quarantine it.
+- **An answer over the response cap is final.** The request gets a
+  `response too large` error with no retry elsewhere, since the same
+  query would be as large anywhere, and no health tick, since the
+  query may be at fault. A provider that declares an oversized length
+  on its client answers alone therefore turns its share of traffic
+  into errors while staying eligible; declared on the integrity
+  checker's reads too, it is a divergence and the provider is out.
+  Telling the checks apart is what makes this possible, and only
+  replaying client requests would catch it
+  ([INTEGRITY.md](INTEGRITY.md#what-this-does-not-catch)). A
+  per-provider count of such answers in `/nodes` is the first step
+  ([PROXY.md](PROXY.md#future-improvements)).
 
 ## Health
 

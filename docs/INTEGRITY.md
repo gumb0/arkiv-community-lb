@@ -242,7 +242,10 @@ work. Two fields, documented in `config.example.toml`:
   errors or times out is unknown, never a verdict, since liveness is the
   health check's job. A provider that answers its probes and errors on
   everything else is never judged here; it errors on clients too, which
-  only replaying client requests would show.
+  only replaying client requests would show. The same goes for a
+  provider that answers the checks and fails clients in any way the
+  Proxy does not fail over from, an answer over the response cap for
+  one ([LIMITATIONS.md](LIMITATIONS.md#serving)).
 
 ## Future improvements
 

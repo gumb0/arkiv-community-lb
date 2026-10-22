@@ -1,12 +1,14 @@
 // What stands between a run and paying. Run: npm test
 
-import { deepStrictEqual as deepEqual, strictEqual as equal, throws } from "node:assert/strict"
+import { deepStrictEqual as deepEqual, strictEqual as equal, rejects, throws } from "node:assert/strict"
 import { describe, it } from "node:test"
 import { settleAddress } from "../src/identity.ts"
-import { assertChain, problems } from "../src/payout.ts"
+import { assertChain, broadcast, problems } from "../src/payout.ts"
+import { Unresolved } from "../src/sent.ts"
 
 const KEY_ADDRESS = "0x411E31d7eBbfd636Af234954db5f598Cd80a878C" as const
 const OTHER_ADDRESS = "0x411E31d7eBbfd636Af234954db5f598Cd80a8780" as const
+const TX = "0x8863000000000000000000000000000000000000000000000000000000009057" as const
 
 const GLM = 10n ** 18n
 
@@ -42,6 +44,34 @@ describe("what stops a run", () => {
   it("is content with nothing owed, whatever is held", () => {
     // A run that would send nothing does not care what it holds.
     deepEqual(problems({ owedWei: 0n, glmWei: 0n, payoutGasWei: 0n, arkivGasWei: 0n }), [])
+  })
+})
+
+describe("a transfer from the broadcast on", () => {
+  it("answers with the hash once mined", async () => {
+    equal(await broadcast(TX, async () => ({ status: "success" })), TX)
+  })
+
+  it("is unresolved, with the hash and the cause, whatever fails after that", async () => {
+    // A lost reply to the send and a wait that gives up look the same
+    // from here: the transaction may have been accepted all the same,
+    // and only a person can tell. A run that called it a failure would
+    // send again.
+    await rejects(
+      broadcast(TX, async () => {
+        throw new Error("fetch failed")
+      }),
+      (error: unknown) =>
+        error instanceof Unresolved && error.tx === TX && error.message.includes("fetch failed"),
+    )
+  })
+
+  it("is a plain failure when the transaction reverted", async () => {
+    await rejects(
+      broadcast(TX, async () => ({ status: "reverted" })),
+      (error: unknown) =>
+        error instanceof Error && !(error instanceof Unresolved) && error.message.includes("reverted, and nothing moved"),
+    )
   })
 })
 

@@ -6,6 +6,11 @@ Notable changes per release, newest first. The LB box deploys a tag:
 
 ## Unreleased
 
+- Settle signs each transfer itself before broadcasting it, so the
+  transaction's hash is known before it leaves. A send whose reply is
+  lost is now `MAY HAVE PAID` with that hash, for a person to check;
+  it used to read as a failure that wrote nothing, and the next run
+  paid the same records again.
 - The CA bundles no longer trust the compromised eMudhra intermediates
   (October 2026): the writer's Node image moves to 22.23.4, and the
   LB's TLS path validation (`rustls-webpki` 0.103.16) rejects chains

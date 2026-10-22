@@ -6,9 +6,11 @@ import {
   createPublicClient,
   createWalletClient,
   defineChain,
+  encodeFunctionData,
   erc20Abi,
   formatEther,
   http,
+  keccak256,
   type Chain,
   type Hex,
 } from "viem"
@@ -61,29 +63,22 @@ export async function connectPayout(config: PayoutConfig): Promise<Payout> {
       if (wallet === undefined || account === undefined) {
         throw new Error("no payout key: this run cannot send anything")
       }
-      const hash = await wallet.writeContract({
-        address: config.token,
-        abi: erc20Abi,
-        functionName: "transfer",
-        args: [to, amountWei],
+      // Signed here, not by the node, so the hash is known before the
+      // transaction leaves. Left to the node, a send whose reply is
+      // lost would come back as a failure with no hash, and read as
+      // "nothing was sent" for a transfer that may have been.
+      const request = await wallet.prepareTransactionRequest({
         account,
         chain,
+        to: config.token,
+        data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [to, amountWei] }),
       })
-      // From here the transaction is on the wire. Waiting can fail for
-      // reasons that say nothing about it: the endpoint can go away,
-      // and viem gives up after a few minutes of a chain that is
-      // merely slow. Either way it may still be mined, so the failure
-      // carries the hash rather than reading as "nothing was sent".
-      let receipt
-      try {
-        receipt = await client.waitForTransactionReceipt({ hash })
-      } catch (error) {
-        throw new Unresolved(hash, error)
-      }
-      if (receipt.status !== "success") {
-        throw new Error(`the transfer ${hash} reverted, and nothing moved`)
-      }
-      return hash
+      const signed = await wallet.signTransaction(request)
+      const hash = keccak256(signed)
+      return broadcast(hash, async () => {
+        await client.sendRawTransaction({ serializedTransaction: signed })
+        return client.waitForTransactionReceipt({ hash })
+      })
     },
     glm: (address) =>
       client.readContract({
@@ -94,6 +89,27 @@ export async function connectPayout(config: PayoutConfig): Promise<Payout> {
       }),
     gas: (address) => client.getBalance({ address }),
   }
+}
+
+/**
+ * Sends a signed transaction and waits for it to be mined. From the
+ * broadcast on, every failure carries the hash: the send's reply can be
+ * lost with the transaction accepted, the endpoint can go away while
+ * waiting, and viem gives up after a few minutes of a chain that is
+ * merely slow, and in each case the transfer may still be mined. A
+ * reverted transaction moved nothing and is a plain failure.
+ */
+export async function broadcast(hash: Hex, send: () => Promise<{ status: string }>): Promise<Hex> {
+  let receipt
+  try {
+    receipt = await send()
+  } catch (error) {
+    throw new Unresolved(hash, error)
+  }
+  if (receipt.status !== "success") {
+    throw new Error(`the transfer ${hash} reverted, and nothing moved`)
+  }
+  return hash
 }
 
 /**

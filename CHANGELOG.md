@@ -6,6 +6,12 @@ Notable changes per release, newest first. The LB box deploys a tag:
 
 ## Unreleased
 
+- The CA bundles no longer trust the compromised eMudhra intermediates
+  (October 2026): the writer's Node image moves to 22.23.4, and the
+  LB's TLS path validation (`rustls-webpki` 0.103.16) rejects chains
+  through those keys whatever the system bundle holds. The LB image
+  takes its bundle from Debian at build time, which Docker caches:
+  build it once with `docker compose build --no-cache lb`.
 - A 2xx from a provider with an empty body or one that is not JSON, a
   204 or an HTML page from something in front of the node, is no
   longer passed to the client and counted as served: it fails over

@@ -56,7 +56,7 @@ for the market. How to operate with them is [RUNBOOK.md](RUNBOOK.md).
   replaying client requests would catch it
   ([INTEGRITY.md](INTEGRITY.md#what-this-does-not-catch)). A
   per-provider count of such answers in `/nodes` is the first step
-  ([PROXY.md](PROXY.md#future-improvements)).
+  ([#66](https://github.com/gumb0/arkiv-community-lb/issues/66)).
 
 ## Health
 

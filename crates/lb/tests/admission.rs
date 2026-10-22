@@ -58,11 +58,14 @@ fn the_providers_signature_is_admitted_at_login_and_at_its_port() {
     let token = token_of(&provider, AGREEMENT);
     let stored = agreement(&provider, 20003);
 
-    decide_admission(Op::Login, &token, Some(&stored)).expect("admitted");
-    let op = Op::NewProxy { remote_port: 20003 };
-    decide_admission(op, &token, Some(&stored)).expect("admitted at its port");
+    decide_admission(&Op::Login, &token, Some(&stored)).expect("admitted");
+    let op = Op::NewProxy {
+        remote_port: 20003,
+        name: "node-rpc-20003".into(),
+    };
+    decide_admission(&op, &token, Some(&stored)).expect("admitted at its port");
     // frpc re-registers a proxy every ~33 s; the answer is the same.
-    decide_admission(op, &token, Some(&stored)).expect("admitted again");
+    decide_admission(&op, &token, Some(&stored)).expect("admitted again");
 }
 
 #[test]
@@ -75,7 +78,7 @@ fn the_id_meta_may_be_uppercase_since_the_message_is_lowercase_anyway() {
     )
     .expect("well formed");
     assert_eq!(token.agreement, AGREEMENT);
-    decide_admission(Op::Login, &token, Some(&agreement(&provider, 20003))).expect("admitted");
+    decide_admission(&Op::Login, &token, Some(&agreement(&provider, 20003))).expect("admitted");
 }
 
 #[test]
@@ -85,7 +88,7 @@ fn a_signature_that_parses_but_cannot_be_recovered_is_not_a_signature() {
     let degenerate = format!("0x{}1b", "00".repeat(64));
     let token = Token::parse(Some(&format!("{AGREEMENT:#x}")), Some(&degenerate))
         .expect("the shape is right");
-    let error = decide_admission(Op::Login, &token, Some(&agreement(&provider, 20003)))
+    let error = decide_admission(&Op::Login, &token, Some(&agreement(&provider, 20003)))
         .expect_err("rejected");
     assert_eq!(error, Rejection::TokenNotASignature);
 }
@@ -95,7 +98,7 @@ fn another_key_over_the_same_id_is_an_impostor() {
     let provider = Signer::new(1);
     let impostor = Signer::new(2);
     let error = decide_admission(
-        Op::Login,
+        &Op::Login,
         &token_of(&impostor, AGREEMENT),
         Some(&agreement(&provider, 20003)),
     )
@@ -116,7 +119,7 @@ fn the_providers_signature_over_another_id_does_not_carry() {
         Some(&provider.token(&token_message(OTHER))),
     )
     .expect("well formed");
-    let error = decide_admission(Op::Login, &token, Some(&agreement(&provider, 20003)))
+    let error = decide_admission(&Op::Login, &token, Some(&agreement(&provider, 20003)))
         .expect_err("rejected");
     assert_eq!(error, Rejection::WrongSigner);
 }
@@ -125,7 +128,7 @@ fn the_providers_signature_over_another_id_does_not_carry() {
 fn an_unknown_agreement_is_named() {
     let provider = Signer::new(1);
     let error =
-        decide_admission(Op::Login, &token_of(&provider, OTHER), None).expect_err("rejected");
+        decide_admission(&Op::Login, &token_of(&provider, OTHER), None).expect_err("rejected");
     assert_eq!(error, Rejection::NoAgreement(OTHER));
     assert_eq!(
         error.to_string(),
@@ -137,7 +140,10 @@ fn an_unknown_agreement_is_named() {
 fn the_wrong_port_names_both_ports() {
     let provider = Signer::new(1);
     let error = decide_admission(
-        Op::NewProxy { remote_port: 20007 },
+        &Op::NewProxy {
+            remote_port: 20007,
+            name: "node-rpc-20007".into(),
+        },
         &token_of(&provider, AGREEMENT),
         Some(&agreement(&provider, 20003)),
     )
@@ -156,13 +162,60 @@ fn the_wrong_port_names_both_ports() {
 }
 
 #[test]
+fn another_agreements_name_is_refused_at_the_providers_own_port() {
+    // Proxy names are unique per tunnel server: a client registered
+    // under another provider's name would block that provider's
+    // reconnects for as long as it stays.
+    let provider = Signer::new(1);
+    let error = decide_admission(
+        &Op::NewProxy {
+            remote_port: 20003,
+            name: "node-rpc-20007".into(),
+        },
+        &token_of(&provider, AGREEMENT),
+        Some(&agreement(&provider, 20003)),
+    )
+    .expect_err("rejected");
+    assert_eq!(
+        error,
+        Rejection::WrongName {
+            requested: "node-rpc-20007".into(),
+            expected: "node-rpc-20003".into(),
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "proxy name \"node-rpc-20007\" is not this agreement's; set name = \"node-rpc-20003\" in frpc.toml"
+    );
+}
+
+#[test]
+fn the_port_is_checked_before_the_name() {
+    // Both wrong: a port fix comes first, since the name follows from it.
+    let provider = Signer::new(1);
+    let error = decide_admission(
+        &Op::NewProxy {
+            remote_port: 20007,
+            name: "node-rpc-20005".into(),
+        },
+        &token_of(&provider, AGREEMENT),
+        Some(&agreement(&provider, 20003)),
+    )
+    .expect_err("rejected");
+    assert!(matches!(error, Rejection::WrongPort { .. }));
+}
+
+#[test]
 fn the_signature_is_checked_before_the_port() {
     let provider = Signer::new(1);
     let impostor = Signer::new(2);
     // Both wrong: the operator is told about the signature first, since
     // a port fix is pointless until the key is right.
     let error = decide_admission(
-        Op::NewProxy { remote_port: 20007 },
+        &Op::NewProxy {
+            remote_port: 20007,
+            name: "node-rpc-20007".into(),
+        },
         &token_of(&impostor, AGREEMENT),
         Some(&agreement(&provider, 20003)),
     )

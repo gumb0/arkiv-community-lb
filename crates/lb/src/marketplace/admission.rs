@@ -2,8 +2,9 @@
 //! callbacks: a provider's client is let in when the signature it
 //! carries was made by the agreement's provider over the agreement id,
 //! and, at `NewProxy`, when the port it asks for is the one the
-//! agreement assigns. The decision is a pure function; the route that
-//! speaks frps's wire format is in `admin.rs`.
+//! agreement assigns and the proxy's name is the one for that port.
+//! The decision is a pure function; the route that speaks frps's wire
+//! format is in `admin.rs`.
 
 use std::{fmt, sync::Arc};
 
@@ -12,10 +13,18 @@ use alloy_primitives::Signature;
 use crate::chain::records::{Agreement, EntityKey, Stored};
 
 /// What frps is asking about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     Login,
-    NewProxy { remote_port: u16 },
+    NewProxy { remote_port: u16, name: String },
+}
+
+/// The proxy name for an assigned port, the one the provider tooling
+/// renders. Names are unique per tunnel server, so a client under
+/// another provider's name would hold it and block that provider's
+/// reconnects; admission accepts no other.
+pub fn proxy_name(remote_port: u16) -> String {
+    format!("node-rpc-{remote_port}")
 }
 
 /// Why a client is turned away. The text is what its operator reads in
@@ -32,6 +41,10 @@ pub enum Rejection {
     WrongPort {
         requested: u16,
         assigned: u16,
+    },
+    WrongName {
+        requested: String,
+        expected: String,
     },
 }
 
@@ -51,6 +64,13 @@ impl fmt::Display for Rejection {
             } => write!(
                 f,
                 "port {requested} requested, agreement assigns {assigned}"
+            ),
+            Self::WrongName {
+                requested,
+                expected,
+            } => write!(
+                f,
+                "proxy name {requested:?} is not this agreement's; set name = {expected:?} in frpc.toml"
             ),
         }
     }
@@ -98,7 +118,7 @@ impl Token {
 /// Whether to admit the client, given its token and this LB's live
 /// agreement under the token's key, if there is one.
 pub fn decide_admission(
-    op: Op,
+    op: &Op,
     token: &Token,
     agreement: Option<&Stored<Agreement>>,
 ) -> Result<(), Rejection> {
@@ -113,13 +133,20 @@ pub fn decide_admission(
     if signer != stored.record.provider {
         return Err(Rejection::WrongSigner);
     }
-    if let Op::NewProxy { remote_port } = op
-        && remote_port != stored.record.remote_port
-    {
-        return Err(Rejection::WrongPort {
-            requested: remote_port,
-            assigned: stored.record.remote_port,
-        });
+    if let Op::NewProxy { remote_port, name } = op {
+        if *remote_port != stored.record.remote_port {
+            return Err(Rejection::WrongPort {
+                requested: *remote_port,
+                assigned: stored.record.remote_port,
+            });
+        }
+        let expected = proxy_name(stored.record.remote_port);
+        if *name != expected {
+            return Err(Rejection::WrongName {
+                requested: name.clone(),
+                expected,
+            });
+        }
     }
     Ok(())
 }

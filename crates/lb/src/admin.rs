@@ -150,6 +150,7 @@ async fn admission(
             (
                 Op::NewProxy {
                     remote_port: proxy.remote_port,
+                    name: proxy.proxy_name.clone(),
                 },
                 proxy.user.metas,
                 proxy.proxy_name,
@@ -168,7 +169,7 @@ async fn admission(
     let decision =
         Token::parse(metas.agreement.as_deref(), metas.token.as_deref()).and_then(|token| {
             let stored = agreements.agreement(token.agreement);
-            decide_admission(op, &token, stored.as_ref())
+            decide_admission(&op, &token, stored.as_ref())
                 .map(|()| stored.expect("admitted, so the agreement was found"))
         });
     match decision {

@@ -6,6 +6,11 @@ Notable changes per release, newest first. The LB box deploys a tag:
 
 ## Unreleased
 
+- Tunnel admission requires the proxy's name to be the one for the
+  agreement's port, `node-rpc-<port>`, as the tooling renders it. A
+  client under another provider's name was admitted on its own port
+  and held that name, so the other provider's reconnects were refused
+  as duplicates (#67). The rejection names the fix.
 - Settle signs each transfer itself before broadcasting it, so the
   transaction's hash is known before it leaves. A send whose reply is
   lost is now `MAY HAVE PAID` with that hash, for a person to check;

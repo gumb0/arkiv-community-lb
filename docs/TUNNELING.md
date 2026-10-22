@@ -69,8 +69,13 @@ LB without naming it. frps posts every `Login` and `NewProxy` to
 `/admission` on the LB's admin listener (`httpPlugins` in the server
 config), which looks the agreement up, recovers the signer from the
 token, checks at `NewProxy` that the requested port is the one the
-agreement assigns, and answers admit or reject. frps has no token of
-its own: the route is the only gate.
+agreement assigns and that the proxy's name is `node-rpc-<port>`, the
+name the tooling renders, and answers admit or reject. The name check
+is there because frps keeps proxy names unique per server: a client
+registered under another provider's name would hold it, and that
+provider's reconnects would be refused as duplicates for as long as
+the holder stayed. frps has no token of its own: the route is the only
+gate.
 
 The interface is verified against v0.61.1: client metadata and the
 requested port arrive in the callbacks, posted to the configured path

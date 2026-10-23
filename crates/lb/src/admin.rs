@@ -243,8 +243,12 @@ async fn forward_to_node(
             tracing::info!(provider = %id, outcome = %"answered", "admin forward");
             response
         }
-        Outcome::NoAnswer | Outcome::TimedOut => {
-            tracing::info!(provider = %id, outcome = %"no_answer", "admin forward");
+        outcome @ (Outcome::NoAnswer | Outcome::TimedOut) => {
+            let outcome = match outcome {
+                Outcome::TimedOut => "timed_out",
+                _ => "no_answer",
+            };
+            tracing::info!(provider = %id, outcome = %outcome, "admin forward");
             (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({ "error": "provider did not answer" })),

@@ -6,6 +6,10 @@ Notable changes per release, newest first. The LB box deploys a tag:
 
 ## Unreleased
 
+- The integrity check compares an entity's attributes by name, not in
+  the order the node rendered them, so a client version that renders
+  them in another order on one side is not a divergence that would
+  quarantine every honest provider at once (#49).
 - A provider that is slow but answering is no longer quarantined by
   attempts that time out on it: a timeout ticks its health only when
   the provider answered nothing, request or probe, while the attempt

@@ -704,7 +704,7 @@ fn judge(answer: &Answers, expected: &Expected) -> (Verdict, Option<Evidence>) {
     let Ok(reference) = &expected.rows else {
         return (Verdict::Unknown, None);
     };
-    if rows == reference {
+    if same_entities(rows, reference) {
         (Verdict::Match, None)
     } else {
         (
@@ -716,6 +716,21 @@ fn judge(answer: &Answers, expected: &Expected) -> (Verdict, Option<Evidence>) {
             }),
         )
     }
+}
+
+/// Whether two answers carry the same entities. Attributes are compared
+/// by name, not in the order each node rendered them, so a client
+/// version that renders them in another order is not a divergence.
+/// Names are unique per entity, so the name alone orders them.
+fn same_entities(rows: &[ArkivEntity], reference: &[ArkivEntity]) -> bool {
+    fn sorted(rows: &[ArkivEntity]) -> Vec<ArkivEntity> {
+        let mut rows = rows.to_vec();
+        for row in &mut rows {
+            row.attributes.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        rows
+    }
+    sorted(rows) == sorted(reference)
 }
 
 #[cfg(test)]
@@ -801,5 +816,58 @@ mod tests {
             "the payload itself is not logged"
         );
         assert_eq!(describe(&[]), "no such entity");
+    }
+
+    #[test]
+    fn the_same_entity_with_its_attributes_in_another_order_is_a_match() {
+        let attribute = |name: &str, value: &str| ArkivAttribute {
+            name: name.into(),
+            type_tag: "str".into(),
+            value: serde_json::json!(value),
+        };
+        let reference_row = ArkivEntity {
+            key: EntityKey::repeat_byte(0x11),
+            creator: crate::chain::records::Address::repeat_byte(0x22),
+            created_at: 5,
+            expires_at: 900,
+            payload: vec![1, 2, 3].into(),
+            attributes: vec![attribute("kind", "rpc.offer"), attribute("lb", "0x01")],
+        };
+        let mut reordered = reference_row.clone();
+        reordered.attributes.reverse();
+        let mut changed = reordered.clone();
+        changed.attributes[0].value = serde_json::json!("0x02");
+
+        let finalized = BlockFields {
+            number: 7,
+            hash: B256::repeat_byte(0x01),
+            parent_hash: B256::repeat_byte(0x02),
+            state_root: B256::repeat_byte(0x03),
+            transactions_root: B256::repeat_byte(0x04),
+            receipts_root: B256::repeat_byte(0x05),
+            transactions: vec![],
+        };
+        let expected = Expected {
+            finalized: finalized.clone(),
+            key: reference_row.key,
+            rows: Ok(vec![reference_row]),
+        };
+        let pool = Pool::new(&[config::Provider {
+            id: "node".into(),
+            url: "http://127.0.0.1:1/".into(),
+        }])
+        .expect("a valid url");
+        let provider = pool.snapshot()[0].clone();
+        let answers = |row: ArkivEntity| Answers {
+            provider: provider.clone(),
+            block: Ok(Some(finalized.clone())),
+            rows: Ok(vec![row]),
+        };
+
+        assert_eq!(judge(&answers(reordered), &expected).0, Verdict::Match);
+        // The order is forgiven, a value is not.
+        let (verdict, evidence) = judge(&answers(changed), &expected);
+        assert_eq!(verdict, Verdict::Divergence);
+        assert!(matches!(evidence, Some(Evidence::Entity { .. })));
     }
 }

@@ -125,7 +125,9 @@ Each provider gets one of four verdicts per round.
   - the block at the finalized height differs from the reference's;
   - the provider answers that it has no block there while its probes
     report a head at or past that height (see stale, above);
-  - the entity differs from the reference's at that height;
+  - the entity differs from the reference's at that height, its
+    attributes compared by name, whatever order each node rendered
+    them in;
   - an answer is larger than the LB will read, 4 MiB. The reference's
     answer to the same read is a small fraction of that (a payload is
     at most 128 KiB), so an honest node's is too; as unknown, padding

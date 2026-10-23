@@ -96,6 +96,12 @@ pub struct Provider {
     /// Round-trip time of the last block-height probe. `u64::MAX`
     /// means this provider has not been probed yet.
     last_probe_ms: AtomicU64,
+    /// When the entry was made: the point `last_answer_ms` counts from,
+    /// since an `Instant` has no atomic and the hot path takes no lock.
+    created: Instant,
+    /// Milliseconds after `created` of the last answer, to a client
+    /// request or to a probe. `u64::MAX` means none yet.
+    last_answer_ms: AtomicU64,
 }
 
 /// A marketplace provider's id in the pool: its address, lowercase.
@@ -156,6 +162,8 @@ impl Provider {
             transport_failures: AtomicU64::new(0),
             last_health_source: AtomicU8::new(HealthSignal::Probe as u8),
             last_probe_ms: AtomicU64::new(u64::MAX),
+            created: Instant::now(),
+            last_answer_ms: AtomicU64::new(u64::MAX),
         }
     }
 
@@ -190,6 +198,28 @@ impl Provider {
     /// An answered probe ends the unanswered streak.
     pub fn record_answered_probe(&self) {
         self.unanswered_probe_streak.store(0, Ordering::Relaxed);
+        self.record_answer();
+    }
+
+    fn record_answer(&self) {
+        self.last_answer_ms.store(self.age_ms(), Ordering::Relaxed);
+    }
+
+    /// Milliseconds since the entry was made, the clock `last_answer_ms`
+    /// is read on. The process's uptime fits a u64 many times over.
+    fn age_ms(&self) -> u64 {
+        self.created.elapsed().as_millis() as u64
+    }
+
+    /// Whether the provider answered anything, a client request or a
+    /// probe, at `since` or after. A provider that did is slow, not
+    /// down.
+    pub fn answered_since(&self, since: Instant) -> bool {
+        let last = self.last_answer_ms.load(Ordering::Relaxed);
+        if last == u64::MAX {
+            return false;
+        }
+        since.saturating_duration_since(self.created).as_millis() <= u128::from(last)
     }
 
     /// Depth of the unanswered-probe streak.
@@ -202,6 +232,7 @@ impl Provider {
     pub fn record_served(&self) {
         self.served.fetch_add(1, Ordering::Relaxed);
         self.served_total.fetch_add(1, Ordering::Relaxed);
+        self.record_answer();
     }
 
     /// The settlement period just written and closed: its count is no
@@ -720,6 +751,24 @@ mod tests {
             provider.last_verdict(),
             Some((Verdict::Divergence, 1_204_000))
         );
+    }
+
+    #[test]
+    fn a_provider_has_answered_since_a_moment_after_a_served_request_or_a_probe() {
+        let pool = pool(&["a"]);
+        let provider = &pool.snapshot()[0];
+        let before = Instant::now();
+        assert!(!provider.answered_since(before), "born unanswered");
+        provider.record_served();
+        assert!(provider.answered_since(before));
+        std::thread::sleep(Duration::from_millis(20));
+        let later = Instant::now();
+        assert!(
+            !provider.answered_since(later),
+            "the answer came before that moment"
+        );
+        provider.record_answered_probe();
+        assert!(provider.answered_since(later), "a probe is an answer too");
     }
 
     #[test]

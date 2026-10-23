@@ -30,6 +30,10 @@ pub enum Outcome {
     /// No answer: transport failure, a non-2xx status, or a 2xx whose
     /// body is not JSON.
     NoAnswer,
+    /// No answer within the attempt's timeout, on the send or the body
+    /// read. Apart from the other failures because a slow provider is
+    /// not a dead one.
+    TimedOut,
     /// The answer exceeded the response cap.
     TooLarge,
 }
@@ -64,7 +68,7 @@ impl Forwarder {
                     error = %transport_causes(&error),
                     "attempt failed"
                 );
-                return Outcome::NoAnswer;
+                return failure(&error);
             }
         };
 
@@ -99,7 +103,7 @@ impl Forwarder {
                         error = %transport_causes(&error),
                         "body read failed"
                     );
-                    return Outcome::NoAnswer;
+                    return failure(&error);
                 }
             }
         }
@@ -127,6 +131,15 @@ impl Forwarder {
             )
                 .into_response(),
         )
+    }
+}
+
+/// A failed attempt's outcome: the timeout told apart from the rest.
+fn failure(error: &reqwest::Error) -> Outcome {
+    if error.is_timeout() {
+        Outcome::TimedOut
+    } else {
+        Outcome::NoAnswer
     }
 }
 

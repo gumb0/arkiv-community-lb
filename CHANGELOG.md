@@ -6,6 +6,13 @@ Notable changes per release, newest first. The LB box deploys a tag:
 
 ## Unreleased
 
+- A provider that is slow but answering is no longer quarantined by
+  attempts that time out on it: a timeout ticks its health only when
+  the provider answered nothing, request or probe, while the attempt
+  was waiting. Under a load the nodes could not keep up with, every
+  provider was quarantined within one attempt timeout, readmitted by
+  its probes and quarantined again, and clients got `no healthy
+  provider` in between (#62).
 - Tunnel admission requires the proxy's name to be the one for the
   agreement's port, `node-rpc-<port>`, as the tooling renders it. A
   client under another provider's name was admitted on its own port

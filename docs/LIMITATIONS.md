@@ -25,9 +25,7 @@ for the market. How to operate with them is [RUNBOOK.md](RUNBOOK.md).
   ([RUNBOOK.md](RUNBOOK.md#what-the-stack-leaves-to-you)) bounds a
   client's requests, not their cost; a cap on requests in flight per
   provider is
-  [#54](https://github.com/gumb0/arkiv-community-lb/issues/54), and
-  the quarantine of a provider that is slow but answering is
-  [#62](https://github.com/gumb0/arkiv-community-lb/issues/62).
+  [#54](https://github.com/gumb0/arkiv-community-lb/issues/54).
 - **Method filtering is a text search** over the request body, not a
   JSON parse: a request that merely mentions a refused method name is
   refused, and requests cannot be counted per method
@@ -41,10 +39,6 @@ for the market. How to operate with them is [RUNBOOK.md](RUNBOOK.md).
   share of in-flight requests can spend their whole retry budget on
   it. It takes heavily concurrent traffic, and quarantine closes the
   window after a few failures.
-- **An attempt cut short by the request deadline counts against the
-  provider's health** as a failure
-  ([#9](https://github.com/gumb0/arkiv-community-lb/issues/9)); three
-  in a row on one provider quarantine it.
 - **An answer over the response cap is final.** The request gets a
   `response too large` error with no retry elsewhere, since the same
   query would be as large anywhere, and no health tick, since the

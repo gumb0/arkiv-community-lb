@@ -151,7 +151,12 @@ cheap JSON-RPC call; probe outcomes and live traffic outcomes feed the
 same per-provider health counter, with one asymmetry: traffic records
 only failures. A served answer proves the provider handled that one
 request — not that it is on the right chain or at the chain head — so
-answers earn no health credit and cannot outvote the probes. A run of
+answers earn no health credit and cannot outvote the probes. One
+failure is also not a tick: an attempt that times out on a provider
+that answered something, a request or a probe, while the attempt was
+waiting. That provider is slow, not down; the request fails over, and
+the provider stays. A timeout on a provider silent for the whole
+attempt ticks like a refused connection. A run of
 consecutive failures quarantines; a run of consecutive probe successes
 readmits. There are no weights and no scores — eligibility is binary.
 Quarantined providers keep being probed, with backoff after several

@@ -31,6 +31,10 @@ struct Fake {
     status: axum::http::StatusCode,
     response: Vec<u8>,
     delay: Duration,
+    /// When set, only a request whose body contains this is delayed;
+    /// the rest are answered at once, as a busy node still answers
+    /// cheap reads beside a slow scan. Unset, every request is delayed.
+    delay_only: Option<String>,
 }
 
 impl Fake {
@@ -51,18 +55,50 @@ async fn broken_provider(
     response: &[u8],
     delay: Duration,
 ) -> (SocketAddr, Arc<Fake>) {
+    provider_with(status, response, delay, None).await
+}
+
+/// A provider that is slow for one kind of request only: those whose
+/// body contains `delay_only`.
+async fn slow_provider(
+    response: &[u8],
+    delay_only: &str,
+    delay: Duration,
+) -> (SocketAddr, Arc<Fake>) {
+    provider_with(
+        axum::http::StatusCode::OK,
+        response,
+        delay,
+        Some(delay_only.to_string()),
+    )
+    .await
+}
+
+async fn provider_with(
+    status: axum::http::StatusCode,
+    response: &[u8],
+    delay: Duration,
+    delay_only: Option<String>,
+) -> (SocketAddr, Arc<Fake>) {
     let fake = Arc::new(Fake {
         seen: Mutex::new(Vec::new()),
         status,
         response: response.to_vec(),
         delay,
+        delay_only,
     });
     let state = fake.clone();
     let app = Router::new().fallback(move |headers: HeaderMap, body: Bytes| {
         let state = state.clone();
         async move {
+            let slow = match &state.delay_only {
+                None => true,
+                Some(needle) => String::from_utf8_lossy(&body).contains(needle),
+            };
             state.seen.lock().expect("seen").push((headers, body));
-            tokio::time::sleep(state.delay).await;
+            if slow {
+                tokio::time::sleep(state.delay).await;
+            }
             (state.status, state.response.clone()).into_response()
         }
     });
@@ -401,6 +437,58 @@ async fn slow_provider_times_out_and_fails_over() {
         "failover, not waiting out the sleep"
     );
     assert_eq!(slow_fake.requests(), 1);
+}
+
+#[tokio::test]
+async fn a_slow_provider_that_still_answers_keeps_its_health() {
+    // One provider, slow on the heavy query and quick on everything
+    // else, as a busy node is. Each heavy request is one attempt that
+    // times out on it; with a cheap request answered while it waits,
+    // the timeout is the request's problem and not the provider's.
+    let answer = br#"{"jsonrpc":"2.0","id":1,"result":"0x1"}"#;
+    let (slow, fake) = slow_provider(answer, "arkiv_query", Duration::from_millis(500)).await;
+    let (service, public) = start_lb_with(&[slow], |config| {
+        config.proxy.attempt_timeout = Duration::from_millis(100);
+        config.proxy.max_retries = 0;
+    })
+    .await;
+    let provider = &service.pool.snapshot()[0];
+    let heavy =
+        json!({"jsonrpc": "2.0", "id": 2, "method": "arkiv_query", "params": ["$key = key(0x01)"]});
+
+    for _ in 0..3 {
+        let ((heavy_status, heavy_body), (cheap_status, _)) =
+            tokio::join!(post(&public, heavy.clone()), post(&public, request(1)));
+        assert_eq!(cheap_status, 200, "a cheap read is answered");
+        assert_eq!(heavy_status, 503, "the heavy one is not");
+        assert_eq!(heavy_body["error"]["code"], NO_HEALTHY_PROVIDER);
+    }
+
+    assert!(provider.eligible(), "slow is not down");
+    assert_eq!(provider.health_streak.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        provider.transport_failures.load(Ordering::Relaxed),
+        3,
+        "the timed-out attempts are still counted"
+    );
+    assert_eq!(fake.requests(), 6);
+}
+
+#[tokio::test]
+async fn a_provider_that_times_out_without_answering_anything_is_quarantined() {
+    let (slow, _fake) = fake_provider(b"{}", Duration::from_millis(500)).await;
+    let (service, public) = start_lb_with(&[slow], |config| {
+        config.proxy.attempt_timeout = Duration::from_millis(100);
+        config.proxy.max_retries = 0;
+    })
+    .await;
+    let provider = &service.pool.snapshot()[0];
+
+    for _ in 0..3 {
+        let (status, _) = post(&public, request(1)).await;
+        assert_eq!(status, 503);
+    }
+    assert!(!provider.eligible(), "silent for three attempts: out");
 }
 
 #[tokio::test]

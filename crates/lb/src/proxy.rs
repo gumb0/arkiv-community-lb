@@ -147,6 +147,7 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
         }
         let timeout = remaining.min(state.config.attempt_timeout);
         attempts += 1;
+        let attempt_started = Instant::now();
 
         match state.forwarder.attempt(&provider, &body, timeout).await {
             Outcome::Answer(response) => {
@@ -169,8 +170,21 @@ async fn forward_with_failover(state: &ProxyState, body: Bytes) -> Response {
                     &body,
                 );
             }
-            Outcome::NoAnswer | Outcome::TimedOut => {
+            Outcome::NoAnswer => {
                 provider.record_health(false, state.flip_after, HealthSignal::Traffic);
+                provider.record_transport_failure();
+                continue;
+            }
+            Outcome::TimedOut => {
+                // A provider that answered something, a request or a
+                // probe, while this attempt was waiting is slow, not
+                // down: the timeout is this request's problem, and it
+                // fails over without touching the provider's streak.
+                // Silent for the whole attempt, it is ticked like a
+                // refusal.
+                if !provider.answered_since(attempt_started) {
+                    provider.record_health(false, state.flip_after, HealthSignal::Traffic);
+                }
                 provider.record_transport_failure();
                 continue;
             }

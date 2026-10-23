@@ -32,9 +32,10 @@ any. The generator is the rig's `load` command
   their probes readmit them, and the waiting queries take them out
   again. Cheap reads were not affected. In one run every provider
   went out at once and the endpoint answered `no healthy provider`
-  for a while. The LB cannot make the nodes faster; what it must do
-  is stop quarantining a provider for being slow while it still
-  answers.
+  for a while. The LB cannot make the nodes faster; what it does
+  since is stop quarantining a provider for being slow while it
+  still answers, and the same storm after that change took no
+  provider out of rotation.
 - Two findings on the node software, not the LB. An `arkiv_query`
   with a range over every entity (`$expiresAt > u64(0)`) takes a
   node 4 to 10 s per page where a page selected by attribute takes
@@ -266,6 +267,24 @@ nor one client from another. What it can do is stop quarantining a
 provider for being slow while it is still answering
 ([#62](https://github.com/gumb0/arkiv-community-lb/issues/62)), so
 that a storm costs the queries of its own kind and nothing else.
+
+### The same storm after the fix
+
+What changed: a timed-out attempt now ticks a provider's health only
+when the provider answered nothing, request or probe, while the
+attempt was waiting ([PROXY.md](PROXY.md#health)). A busy node keeps
+answering its cheap reads and its probes beside the scans, so it
+stays in rotation. The same storm three days later, with the change
+deployed, 32 clients sending the scan for two minutes and 64 sending
+cheap reads beside them from a laptop: no provider left rotation,
+and the LB never answered `no healthy provider`. The scans were the
+only thing that paid. About a third finished within the request
+timeout, in 5 to 20 s, where the ones near 20 s are a 15 s attempt
+timeout on one provider followed by the next provider's answer; the
+rest got the LB's `request timed out`. That is a worse share than in
+the first storm, since the scan itself had grown slower by then
+(above). The cheap reads held their rate and latency for the whole
+run, with nothing failed.
 
 ## Running it again
 

@@ -89,6 +89,9 @@ impl Tooling {
             .env("MARKETPLACE_KEYSTORE", &self.keystore)
             .env("MARKETPLACE_TUNNEL_ENV", &self.tunnel_env)
             .env("LB_ADDRESS", &self.lb_address)
+            // The dev chain writes no receipts, so any address serves
+            // as the settle key's; the tooling refuses to run without one.
+            .env("SETTLE_ADDRESS", &self.lb_address)
             // Pipes instead of the rig's own terminal: the rig holds
             // the writing end of the CLI's stdin, and the reading ends
             // of its stdout and stderr.

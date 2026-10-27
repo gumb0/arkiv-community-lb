@@ -955,14 +955,18 @@ async fn offer_accepted() {
 
     // The tooling parses the agreement the LB wrote, and the counter
     // record it opens for it, which is a second write after the
-    // agreement and can land a moment later.
+    // agreement and can land a moment later. Its status is one line of
+    // JSON, a field per fact.
     let started = Instant::now();
-    let printed = loop {
+    let facts = loop {
         let status = tooling.run("status");
         let printed = provider::text(&status);
         assert!(status.status.success(), "status failed: {printed}");
-        if printed.contains("Counting: 0 requests as of the last write") {
-            break printed;
+        let facts: serde_json::Value =
+            serde_json::from_str(printed.trim().lines().last().unwrap_or_default())
+                .unwrap_or_else(|error| panic!("status is not JSON ({error}): {printed}"));
+        if facts["count"] == 0 {
+            break facts;
         }
         assert!(
             started.elapsed() < Duration::from_secs(15),
@@ -970,12 +974,15 @@ async fn offer_accepted() {
         );
         tokio::time::sleep(Duration::from_secs(1)).await;
     };
-    println!("{printed}");
+    println!("rig: status {facts}");
     assert!(
-        printed
-            .to_lowercase()
-            .contains(&format!("agreement: {agreement}, tunnel port {port},")),
-        "the tooling reads the agreement the LB wrote: {printed}"
+        facts["agreement_key"]
+            .as_str()
+            .is_some_and(|key| key.eq_ignore_ascii_case(&agreement))
+            && facts["agreement_port"]
+                .as_u64()
+                .is_some_and(|p| p.to_string() == port),
+        "the tooling reads the agreement the LB wrote: {facts}"
     );
 
     // The tooling signs the tunnel token over the agreement it read.

@@ -117,7 +117,9 @@ nothing. The LB stores and logs the specs and acts on one field: it
 skips an offer whose `chain_id` differs from its own. The rest,
 `head` included, is information for the operator. The hardware fields
 are self-reported and not checked; the probes decide whether a node
-serves the chain it should. An offer has no rate. The LB sets the
+serves the chain it should. `mem_gb` is the machine's memory in whole
+GiB as the kernel maps it, the installed size less the firmware's
+share. An offer has no rate. The LB sets the
 price in its listing, and a provider that does not accept it does not
 post an offer.
 

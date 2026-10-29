@@ -103,17 +103,11 @@ async fn rows_parse_into_stored_records_and_a_cursor_means_more() {
         remote_port: 20001,
     }
     .encode();
-    let payload_hex: String = encoded.payload.iter().map(|b| format!("{b:02x}")).collect();
-    let mut attributes: Vec<Value> = encoded
-        .attributes
-        .to_wire()
-        .as_object()
-        .unwrap()
+    let attributes: Vec<Value> = encoded
+        .to_read()
         .iter()
-        .map(|(name, wire)| json!({ "name": name, "type": wire["type"], "value": wire["value"] }))
+        .map(|a| json!({ "name": a.name, "type": a.type_tag, "value": a.value }))
         .collect();
-    attributes
-        .push(json!({ "name": "payload", "type": "bytes", "value": format!("0x{payload_hex}") }));
     let row = json!({
         "key": KEY,
         "creator": LB,

@@ -19,8 +19,8 @@ use lb::{
         ChainReader, ChainWriter,
         reader::PAGE_LIMIT,
         records::{
-            Agreement, CounterRecord, CounterState, Hardware, KIND_COUNTER, KIND_LB_LISTING,
-            LbListing, Offer, Record, Specs, Stored, Wei,
+            Agreement, AttributeValue, CounterRecord, CounterState, Hardware, KIND_COUNTER,
+            KIND_LB_LISTING, LbListing, Offer, PAYLOAD_ATTRIBUTE, Record, Specs, Stored, Wei,
         },
         writer::{Delete, Expiry},
     },
@@ -292,12 +292,13 @@ async fn a_changed_configuration_patches_the_oldest_listing_and_ignores_the_rest
     );
     assert_eq!(chain.transactions(), [Transaction::Patch(older)]);
     let kept = chain.entity(older).expect("kept");
-    let stored: LbListing =
-        serde_json::from_slice(&kept.payload).expect("the payload is the listing");
+    let stored: LbListing = serde_json::from_slice(kept.attributes.payload().expect("a payload"))
+        .expect("the payload is the listing");
     assert_eq!(stored, listing_of(&config));
     let untouched = chain.entity(newer).expect("left alone");
     let stored: LbListing =
-        serde_json::from_slice(&untouched.payload).expect("the payload is the listing");
+        serde_json::from_slice(untouched.attributes.payload().expect("a payload"))
+            .expect("the payload is the listing");
     assert_eq!(stored, listing_of(&old));
     assert_eq!(
         chain
@@ -339,17 +340,21 @@ async fn refuses_to_start_without_the_reference() {
 async fn records_that_do_not_decode_are_skipped() {
     let chain = FakeChain::new(LB, 1337);
     let config = marketplace();
-    let mut agreement = Agreement {
+    let agreement = Agreement {
         provider: provider(1),
         offer: alloy_primitives::B256::repeat_byte(0x0f),
         wei_per_call: RATE,
         remote_port: 20000,
     }
-    .encode();
-    agreement.payload = b"not json".to_vec();
+    .encode()
+    .with(
+        PAYLOAD_ATTRIBUTE,
+        AttributeValue::Bytes(b"not json".to_vec()),
+    );
     chain.write_as(LB, agreement, Expiry::Seconds(3600));
-    let mut listing = listing_of(&config).encode();
-    listing.payload = b"{}".to_vec();
+    let listing = listing_of(&config)
+        .encode()
+        .with(PAYLOAD_ATTRIBUTE, AttributeValue::Bytes(b"{}".to_vec()));
     let broken = chain.write_as(LB, listing, Expiry::Seconds(3600));
     let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
     let agent = start(&chain, &config, &pool).await.expect("starts");
@@ -635,8 +640,10 @@ async fn an_offer_that_does_not_decode_is_skipped() {
     let agent = start(&chain, &marketplace(), &pool).await.expect("starts");
     let offer = offer_for(&agent, &chain);
     // Anyone can post against the listing. The broken one is the older.
-    let mut broken = offer.encode();
-    broken.payload = b"not json".to_vec();
+    let broken = offer.encode().with(
+        PAYLOAD_ATTRIBUTE,
+        AttributeValue::Bytes(b"not json".to_vec()),
+    );
     chain.write_as(provider(1), broken, Expiry::Seconds(DAY));
     chain.advance(1);
     let good = post(&chain, provider(2), &offer, DAY);
@@ -1084,7 +1091,7 @@ async fn each_provider_is_seeded_from_the_record_of_its_own_agreement() {
 async fn a_counter_record_that_does_not_decode_is_skipped() {
     let chain = FakeChain::new(LB, CHAIN_ID);
     let agreement = seed_agreement(&chain, provider(1), 20000, 3600);
-    let mut broken = CounterRecord {
+    let broken = CounterRecord {
         agreement,
         provider: provider(1),
         state: CounterState::Open,
@@ -1093,8 +1100,11 @@ async fn a_counter_record_that_does_not_decode_is_skipped() {
         opened_block: 1,
         closed_block: None,
     }
-    .encode();
-    broken.payload = b"not json".to_vec();
+    .encode()
+    .with(
+        PAYLOAD_ATTRIBUTE,
+        AttributeValue::Bytes(b"not json".to_vec()),
+    );
     chain.write_as(LB, broken, Expiry::Seconds(180 * DAY));
     chain.advance(1);
     let good = seed_counter(&chain, agreement, provider(1), 9, 2);

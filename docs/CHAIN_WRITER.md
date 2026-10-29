@@ -24,10 +24,12 @@ already has to handle.
 ## Schema-blind
 
 The sidecar mirrors the SDK's generic entity operations and knows nothing
-about what the LB stores: payloads are opaque bytes, attributes are generic
-name→value pairs. Domain encoding (agreement records, usage counters,
-receipts) lives in Rust, where the same records are also parsed on the read
-path.
+about what the LB stores: an entity is generic name→value attributes, each
+with a type and whether it is indexed. That a record's JSON travels in a
+`bytes` attribute named `payload` is the LB's convention
+([ENTITIES.md](ENTITIES.md)), not the sidecar's. Domain encoding
+(agreement records, usage counters, receipts) lives in Rust, where the
+same records are also parsed on the read path.
 
 The alternative — a schema-aware sidecar with one endpoint per record
 type — was rejected because it spreads every schema across two languages.
@@ -44,8 +46,8 @@ network; never expose the listener publicly.
 
 | Route | Body | Does |
 |---|---|---|
-| `/create` | payload, contentType, expires, attributes?, flags?, salt? | one entity |
-| `/patch` | entityKey, set?, unset?, payload?, contentType? | change named parts, leave the rest |
+| `/create` | attributes, expires, flags?, salt? | one entity |
+| `/patch` | entityKey, set?, unset? | change named attributes, leave the rest |
 | `/delete` | entityKey | remove |
 | `/extend` | entityKey, expires | set a later expiry |
 | `/execute-batch` | creates?, patches?, deletes?, extensions? | several operations, one transaction |
@@ -57,11 +59,14 @@ records, and a failed answer at startup means the sidecar is not there.
 
 JSON cannot carry bytes, 64-bit integers, or the SDK's tagged values, so:
 
-- **payload** is base64 both ways.
-- **attributes** are `{ "name": { "type": "...", "value": ... } }` with the
-  SDK's type tags: `str`, `bool`, `i32`, `u64`, `u256`, `dec`, `addr`,
-  `key`, `bytes32`. Values for `u64`/`u256`/`dec` (and `salt`) are decimal
-  strings.
+- **attributes** are `{ "name": { "type": "...", "value": ..., "indexed"?: bool } }`
+  with the SDK's type tags: `str`, `bool`, `i32`, `u64`, `u256`, `dec`,
+  `addr`, `key`, `bytes`. Values for `u64`/`u256`/`dec` (and `salt`) are
+  decimal strings; a `bytes` value is base64. `indexed` defaults to true,
+  except for `bytes`, which the node never indexes: asking to index one
+  is refused. The
+  sidecar declares the attributes to the SDK as a schema with no name,
+  so the entity carries exactly these attributes and no tag.
 - **salt** defaults to 128 random bits, which keeps the new entity's key
   unpredictable. `"salt": "0"` is the SDK's `NO_SALT`: the key derives from
   the owner and nonce alone, so anyone who knows both can compute it in
@@ -71,19 +76,18 @@ JSON cannot carry bytes, 64-bit integers, or the SDK's tagged values, so:
   differ from 2 s — the SDK converts durations at a fixed 2 s per block.
 - **responses** are the SDK's return shape with bigints as decimal strings.
 
-For example, creating an entity whose payload is `{"hello":"arkiv"}`, alive
-for 300 blocks:
+For example, creating an entity with four indexed attributes and the
+bytes `{"hello":"arkiv"}` under `payload`, alive for 300 blocks:
 
 ```
 POST /create
 {
-  "payload": "eyJoZWxsbyI6ImFya2l2In0=",
-  "contentType": "application/json",
   "attributes": {
-    "kind":  { "type": "str",  "value": "example" },
-    "rank":  { "type": "i32",  "value": 7 },
-    "price": { "type": "dec",  "value": "1.25" },
-    "payee": { "type": "addr", "value": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" }
+    "kind":    { "type": "str",   "value": "example" },
+    "rank":    { "type": "i32",   "value": 7 },
+    "price":   { "type": "dec",   "value": "1.25" },
+    "payee":   { "type": "addr",  "value": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" },
+    "payload": { "type": "bytes", "value": "eyJoZWxsbyI6ImFya2l2In0=", "indexed": false }
   },
   "expires": { "blocks": 300 }
 }
@@ -155,7 +159,7 @@ on the 400 side automatically.
   second built from the closes that landed, the way an acceptance's
   two creates are two writes.
 - Attribute string values are capped at 128 bytes by the SDK. Larger data
-  belongs in the payload.
+  goes in a `bytes` attribute, which can hold up to the entity's 128 KiB.
 - An attribute-filtered query can briefly trail a just-delivered receipt
   (observed on fast dev chains). Reading your own write back may need a
   retry; a `$key`-filtered lookup has not shown this lag.

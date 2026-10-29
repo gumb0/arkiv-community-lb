@@ -22,8 +22,8 @@ use crate::{
         ChainReader, ChainWriter,
         reader::{PAGE_LIMIT, Query, ReadError},
         records::{
-            Address, Agreement, AttributeValue, Attributes, CounterRecord, CounterState, EntityKey,
-            KIND_AGREEMENT, KIND_COUNTER, KIND_LB_LISTING, KIND_OFFER, LbListing, Offer, Record,
+            Address, Agreement, CounterRecord, CounterState, EntityKey, KIND_AGREEMENT,
+            KIND_COUNTER, KIND_LB_LISTING, KIND_OFFER, LbListing, Offer, PAYLOAD_ATTRIBUTE, Record,
             Stored,
         },
         writer::{
@@ -1498,11 +1498,13 @@ fn warn_unnamed_patches(batch: &Batch, result: &BatchResult) {
 /// payload, and a record being closed also takes the state attribute,
 /// which is what settle reads records by.
 fn patch_record(key: EntityKey, record: &CounterRecord) -> Patch {
+    let set: &[&str] = match record.state {
+        CounterState::Open => &[PAYLOAD_ATTRIBUTE],
+        CounterState::Closed => &[PAYLOAD_ATTRIBUTE, "state"],
+    };
     Patch {
         entity_key: key,
-        set: matches!(record.state, CounterState::Closed)
-            .then(|| Attributes::default().with("state", AttributeValue::Str("closed".to_owned()))),
-        payload: Some(record.encode().payload),
+        set: record.encode().keep(set),
     }
 }
 
@@ -1614,8 +1616,7 @@ async fn ensure_listing<R: ChainReader, W: ChainWriter>(
         writer
             .patch(&Patch {
                 entity_key: kept.key,
-                set: None,
-                payload: Some(desired.encode().payload),
+                set: desired.encode().keep(&[PAYLOAD_ATTRIBUTE]),
             })
             .await
             .map_err(StartError::Listing)?;

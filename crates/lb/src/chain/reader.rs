@@ -144,6 +144,9 @@ fn literal(value: &AttributeValue) -> String {
         AttributeValue::U64(n) => format!("u64({n})"),
         AttributeValue::Addr(a) => format!("addr({a:#x})"),
         AttributeValue::Key(k) => format!("key({k:#x})"),
+        // Bytes are never indexed, so no query filters on one; the node
+        // refuses the comparison, and so does this.
+        AttributeValue::Bytes(_) => unreachable!("a bytes attribute cannot be filtered on"),
     }
 }
 

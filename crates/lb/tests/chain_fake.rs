@@ -11,7 +11,8 @@ use lb::chain::{
     ChainReader, ChainWriter,
     reader::{PAGE_LIMIT, Page, Query, ReadError},
     records::{
-        Agreement, AttributeValue, Attributes, KIND_AGREEMENT, KIND_OFFER, Record, Stored, Wei,
+        Agreement, AttributeValue, KIND_AGREEMENT, KIND_OFFER, PAYLOAD_ATTRIBUTE, Record, Stored,
+        Wei,
     },
     writer::{Batch, Create, Delete, Expiry, Extend, Operation, Patch, WriteError, send},
 };
@@ -71,8 +72,7 @@ async fn records_are_written_read_back_changed_and_expire() {
     chain
         .patch(&Patch {
             entity_key: kept.entity_key,
-            set: None,
-            payload: Some(changed.encode().payload),
+            set: changed.encode().keep(&[PAYLOAD_ATTRIBUTE]),
         })
         .await
         .expect("patch lands");
@@ -187,8 +187,7 @@ async fn a_query_filters_by_creator_attributes_and_expiry() {
 #[tokio::test]
 async fn a_newer_schema_version_is_not_returned() {
     let chain = FakeChain::new(LB, 1337);
-    let mut newer = agreement(20000).encode();
-    newer.attributes = newer.attributes.with("v", AttributeValue::I32(2));
+    let newer = agreement(20000).encode().with("v", AttributeValue::I32(2));
     chain.write_as(LB, newer, Expiry::Seconds(100));
     chain
         .create(&Create::new(
@@ -318,8 +317,10 @@ async fn a_batch_lands_every_kind_of_operation_at_once() {
     // A close-shaped patch: the payload and an attribute together.
     batch.push(Operation::Patch(Patch {
         entity_key: existing.entity_key,
-        set: Some(Attributes::default().with("state", AttributeValue::Str("closed".into()))),
-        payload: Some(agreement(20009).encode().payload),
+        set: agreement(20009)
+            .encode()
+            .keep(&[PAYLOAD_ATTRIBUTE])
+            .with("state", AttributeValue::Str("closed".into())),
     }));
     batch.push(Operation::Delete(Delete {
         entity_key: doomed.entity_key,

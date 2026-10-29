@@ -33,7 +33,7 @@ async fn provider_and_chain() -> (Reader, std::sync::Arc<FakeProvider>, FakeChai
     (reader, rpc, chain)
 }
 
-fn an_agreement() -> lb::chain::records::EncodedRecord {
+fn an_agreement() -> lb::chain::records::Attributes {
     Agreement {
         provider: Address::ZERO,
         offer: alloy_primitives::B256::ZERO,

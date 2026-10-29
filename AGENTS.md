@@ -43,7 +43,7 @@ first-class concern, not an add-on.
   file loses old buckets, never correctness.
 - **Logic and domain encoding live in Rust; the sidecar speaks SDK, not
   marketplace.** The TS chain-writer sidecar exposes only the SDK's generic
-  entity operations (opaque payloads, generic annotations) and holds no
+  entity operations (typed attributes, nothing else) and holds no
   decisions and no schemas; its wire format and error contract are in
   `docs/CHAIN_WRITER.md`. Chain reads are plain JSON-RPC from Rust — no SDK
   on any read path. One deliberate exception: the **settle CLI is fully

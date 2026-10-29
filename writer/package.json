@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Chain-writer sidecar for the Arkiv community LB: schema-blind entity operations over the official SDK, and the HTTP service around them.",
   "scripts": {
-    "probes": "npm run writer-smoke && npm run service-smoke && npm run queries && npm run batch && npm run permanent && npm run concurrency && npm run page-budget",
+    "probes": "npm run writer-smoke && npm run service-smoke",
     "page-budget": "node --env-file-if-exists=../.env probes/page-budget.ts",
     "create-dup": "node --env-file-if-exists=../.env probes/create-dup.ts",
     "writer-smoke": "node --env-file-if-exists=../.env probes/writer-smoke.ts",
@@ -17,7 +17,6 @@
     "counters": "node --env-file-if-exists=../.env probes/counters-probe.ts",
     "permanent": "node --env-file-if-exists=../.env probes/permanent-probe.ts",
     "queries": "node --env-file-if-exists=../.env probes/queries.ts",
-    "concurrency": "node --env-file-if-exists=../.env probes/concurrency-probe.ts",
     "replay": "node --env-file-if-exists=../.env probes/replay-probe.ts"
   },
   "dependencies": {

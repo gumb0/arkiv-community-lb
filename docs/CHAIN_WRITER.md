@@ -175,9 +175,12 @@ Two tiers with different needs, in different directories:
   test cannot trigger on demand), and the serialization.
 - `writer/probes/` — live-chain scripts, run by hand
   (`scripts/run-probes.sh`): smoke tests for the writer module and the
-  service, plus probes that measure what the engine and SDK actually do.
-  Their lifetimes are in blocks so they mean the same thing at any block
-  time.
+  service, plus probes that measure what the engine and SDK actually do
+  (batch limits and atomicity, page bounds, replay, lifetimes, query
+  semantics), to run again when the SDK or node pin moves. A probe
+  written against an older SDK waits in `tsconfig.json`'s exclude list
+  until it is ported. Their lifetimes are in blocks so they mean the
+  same thing at any block time.
 
 `scripts/dev-node.sh` raises a local throwaway chain (the upstream
 `arkiv-reth-dev` image, pinned to the release the network runs, sealing

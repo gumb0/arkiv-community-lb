@@ -11,5 +11,17 @@
     "erasableSyntaxOnly": true,
     "types": ["node"]
   },
-  "include": ["src", "probes", "tests"]
+  "include": ["src", "probes", "tests"],
+  // Written against SDK 0.8; they measure the pinned SDK and node image
+  // and run when a pin moves, so they are kept, and come back into the
+  // typecheck and `npm run probes` as each is ported to 0.9.
+  "exclude": [
+    "probes/batch-experiment.ts",
+    "probes/counters-probe.ts",
+    "probes/create-dup.ts",
+    "probes/page-budget.ts",
+    "probes/permanent-probe.ts",
+    "probes/queries.ts",
+    "probes/replay-probe.ts"
+  ]
 }

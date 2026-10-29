@@ -1781,7 +1781,6 @@ dependencies = [
  "alloy-primitives",
  "arc-swap",
  "axum",
- "base64 0.22.1",
  "bytesize",
  "futures",
  "humantime",

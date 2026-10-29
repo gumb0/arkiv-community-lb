@@ -22,7 +22,6 @@ pub use alloy_primitives::Address;
 /// A 32-byte entity key.
 pub type EntityKey = alloy_primitives::B256;
 use alloy_primitives::{Bytes, U256};
-use base64::Engine;
 
 /// GLM wei, serialized as a decimal string: JSON numbers cannot carry it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -78,7 +77,7 @@ pub enum AttributeValue {
     U64(u64),
     Addr(Address),
     Key(EntityKey),
-    /// Never indexed; base64 on the write side, hex on the read side.
+    /// Never indexed; `0x`-prefixed hex both ways, like the node's.
     Bytes(Vec<u8>),
 }
 
@@ -114,7 +113,7 @@ impl AttributeValue {
             Self::Addr(a) => serde_json::Value::String(format!("{a:#x}")),
             Self::Key(k) => serde_json::Value::String(format!("{k:#x}")),
             Self::Bytes(b) => {
-                let value = base64::engine::general_purpose::STANDARD.encode(b);
+                let value = Bytes::copy_from_slice(b).to_string();
                 return serde_json::json!({ "type": "bytes", "value": value, "indexed": false });
             }
         };
@@ -144,16 +143,13 @@ impl AttributeValue {
     }
 
     /// The inverse of `from_read`: the entry a query would return for
-    /// this value. For the fakes and tests that play the node.
+    /// this value, which carries the write-side value as it is. For the
+    /// fakes and tests that play the node.
     pub fn to_read(&self, name: &str) -> ArkivAttribute {
-        let value = match self {
-            Self::Bytes(b) => serde_json::Value::String(format!("{}", Bytes::copy_from_slice(b))),
-            other => other.to_wire()["value"].clone(),
-        };
         ArkivAttribute {
             name: name.to_owned(),
             type_tag: self.type_tag().to_owned(),
-            value,
+            value: self.to_wire()["value"].clone(),
         }
     }
 }

@@ -475,7 +475,6 @@ mod tests {
     use super::*;
     use crate::chain::records::{Agreement, AttributeValue, PAYLOAD_ATTRIBUTE, Record, Wei};
     use alloy_primitives::{Address, B256};
-    use base64::Engine;
 
     fn agreement() -> Attributes {
         Agreement {
@@ -497,10 +496,8 @@ mod tests {
         let payload = &wire["attributes"]["payload"];
         assert_eq!(payload["type"], "bytes");
         assert_eq!(payload["indexed"], false);
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(payload["value"].as_str().unwrap())
-            .unwrap();
-        assert_eq!(bytes, agreement().payload().unwrap());
+        let bytes: alloy_primitives::Bytes = payload["value"].as_str().unwrap().parse().unwrap();
+        assert_eq!(&bytes[..], agreement().payload().unwrap());
     }
 
     #[test]
@@ -513,7 +510,7 @@ mod tests {
         let wire = serde_json::to_value(&patch).unwrap();
         assert_eq!(wire["entityKey"], format!("{:#x}", B256::ZERO));
         assert_eq!(wire["set"]["payload"]["type"], "bytes");
-        assert_eq!(wire["set"]["payload"]["value"], "e30=");
+        assert_eq!(wire["set"]["payload"]["value"], "0x7b7d");
     }
 
     #[test]

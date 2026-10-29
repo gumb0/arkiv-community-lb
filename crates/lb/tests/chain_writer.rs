@@ -160,7 +160,7 @@ async fn patch_delete_and_extend_hit_their_routes() {
     let routes: Vec<&str> = seen.iter().map(|(route, _)| route.as_str()).collect();
     assert_eq!(routes, ["patch", "delete", "extend"]);
     assert_eq!(seen[0].1["entityKey"], KEY);
-    assert_eq!(seen[0].1["set"]["payload"]["value"], "e30=");
+    assert_eq!(seen[0].1["set"]["payload"]["value"], "0x7b7d");
     assert_eq!(seen[2].1["expires"], json!({ "seconds": 259200 }));
 }
 

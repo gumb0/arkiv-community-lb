@@ -62,7 +62,8 @@ JSON cannot carry bytes, 64-bit integers, or the SDK's tagged values, so:
 - **attributes** are `{ "name": { "type": "...", "value": ..., "indexed"?: bool } }`
   with the SDK's type tags: `str`, `bool`, `i32`, `u64`, `u256`, `dec`,
   `addr`, `key`, `bytes`. Values for `u64`/`u256`/`dec` (and `salt`) are
-  decimal strings; a `bytes` value is base64. `indexed` defaults to true,
+  decimal strings; a `bytes` value is `0x`-prefixed hex, the form the
+  node returns it in. `indexed` defaults to true,
   except for `bytes`, which the node never indexes: asking to index one
   is refused. The
   sidecar declares the attributes to the SDK as a schema with no name,
@@ -87,7 +88,7 @@ POST /create
     "rank":    { "type": "i32",   "value": 7 },
     "price":   { "type": "dec",   "value": "1.25" },
     "payee":   { "type": "addr",  "value": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" },
-    "payload": { "type": "bytes", "value": "eyJoZWxsbyI6ImFya2l2In0=", "indexed": false }
+    "payload": { "type": "bytes", "value": "0x7b2268656c6c6f223a2261726b6976227d", "indexed": false }
   },
   "expires": { "blocks": 300 }
 }

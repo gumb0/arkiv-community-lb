@@ -4,7 +4,14 @@ Notable changes per release, newest first. The LB box deploys a tag:
 `git checkout <tag> && docker compose up -d --build`
 ([docs/RUNBOOK.md](docs/RUNBOOK.md)).
 
-## Unreleased
+## v0.4.0
+
+The load test and what it changed: the open-files limit, the attempt
+timeout, a slow provider no longer quarantined for timeouts, a 2xx
+without JSON failing over; hourly stats for a dashboard; the integrity
+check pinned at the finalized height and hardened against oversized
+answers; settle signing its transfers; admission by the agreement's
+proxy name; the CA bundles after eMudhra.
 
 - The integrity check compares an entity's attributes by name, not in
   the order the node rendered them, so a client version that renders

@@ -329,7 +329,7 @@ impl State {
     fn extendable(&self, extend: &Extend) -> Result<usize, WriteError> {
         let index = self.position(extend.entity_key)?;
         let current = self.entities[index].expires_at;
-        let asked = self.expires_at(extend.expires);
+        let asked = self.expires_at(extend.expiration);
         if asked < current {
             return Err(WriteError::Failed(vec![ErrorLink {
                 name: "FakeChain".to_owned(),
@@ -486,7 +486,7 @@ impl ChainWriter for FakeChain {
         let mut state = self.state();
         state.sidecar()?;
         let creator = state.address;
-        let expires_at = state.expires_at(create.expires());
+        let expires_at = state.expires_at(create.expiration());
         let entity_key = state.insert(creator, create.attributes().clone(), expires_at);
         let tx_hash = state.transaction(Transaction::Create(entity_key));
         state.answer(
@@ -527,7 +527,7 @@ impl ChainWriter for FakeChain {
         let mut state = self.state();
         state.sidecar()?;
         let index = state.extendable(extend)?;
-        let expires_at = state.expires_at(extend.expires);
+        let expires_at = state.expires_at(extend.expiration);
         state.entities[index].expires_at = expires_at;
         let tx_hash = state.transaction(Transaction::Extend(extend.entity_key));
         Ok(Extended {
@@ -576,7 +576,7 @@ impl ChainWriter for FakeChain {
             match operation {
                 Operation::Create(create) => {
                     let creator = state.address;
-                    let expires_at = state.expires_at(create.expires());
+                    let expires_at = state.expires_at(create.expiration());
                     let key = state.insert(creator, create.attributes().clone(), expires_at);
                     log.created.push(key);
                 }
@@ -592,7 +592,7 @@ impl ChainWriter for FakeChain {
                 }
                 Operation::Extend(extend) => {
                     let index = state.position(extend.entity_key)?;
-                    let expires_at = state.expires_at(extend.expires);
+                    let expires_at = state.expires_at(extend.expiration);
                     state.entities[index].expires_at = expires_at;
                     log.extended.push(extend.entity_key);
                 }

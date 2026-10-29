@@ -36,14 +36,14 @@ impl Serialize for Expiry {
 pub struct Create {
     #[serde(serialize_with = "serialize_attributes")]
     attributes: Attributes,
-    expires: Expiry,
+    expiration: Expiry,
 }
 
 impl Create {
-    pub fn new(attributes: Attributes, expires: Expiry) -> Self {
+    pub fn new(attributes: Attributes, expiration: Expiry) -> Self {
         Self {
             attributes,
-            expires,
+            expiration,
         }
     }
 
@@ -51,8 +51,8 @@ impl Create {
         &self.attributes
     }
 
-    pub fn expires(&self) -> Expiry {
-        self.expires
+    pub fn expiration(&self) -> Expiry {
+        self.expiration
     }
 }
 
@@ -70,7 +70,7 @@ pub struct Patch {
 #[serde(rename_all = "camelCase")]
 pub struct Extend {
     pub entity_key: EntityKey,
-    pub expires: Expiry,
+    pub expiration: Expiry,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -490,7 +490,7 @@ mod tests {
     fn a_create_serializes_to_the_sidecar_shape() {
         let create = Create::new(agreement(), Expiry::Seconds(7200));
         let wire = serde_json::to_value(&create).unwrap();
-        assert_eq!(wire["expires"], serde_json::json!({ "seconds": 7200 }));
+        assert_eq!(wire["expiration"], serde_json::json!({ "seconds": 7200 }));
         assert_eq!(wire["attributes"]["kind"]["value"], "rpc.agreement");
         assert!(wire.get("payload").is_none(), "{wire}");
         let payload = &wire["attributes"]["payload"];
@@ -524,7 +524,7 @@ mod tests {
     fn extend(i: usize) -> Operation {
         Operation::Extend(Extend {
             entity_key: B256::with_last_byte(i as u8),
-            expires: Expiry::Seconds(1),
+            expiration: Expiry::Seconds(1),
         })
     }
 
@@ -550,7 +550,7 @@ mod tests {
         let wire = serde_json::to_value(&batch).unwrap();
         assert_eq!(wire["creates"].as_array().unwrap().len(), 1);
         assert_eq!(
-            wire["creates"][0]["expires"],
+            wire["creates"][0]["expiration"],
             serde_json::json!({ "seconds": 2 })
         );
         assert_eq!(
@@ -561,7 +561,7 @@ mod tests {
             wire["extensions"],
             serde_json::json!([{
                 "entityKey": format!("{:#x}", B256::with_last_byte(1)),
-                "expires": { "seconds": 1 },
+                "expiration": { "seconds": 1 },
             }])
         );
         assert!(wire.get("patches").is_none(), "an empty kind is left out");

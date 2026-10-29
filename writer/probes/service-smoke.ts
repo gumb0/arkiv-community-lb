@@ -126,7 +126,7 @@ const entityKey = await step("POST /create — typed attributes and base64 paylo
       owner: { type: "addr", value: writer.address },
       price: { type: "dec", value: "1.25" },
     },
-    expires: TTL,
+    expiration: TTL,
   })
   const key = result.entityKey as Hex
   console.log(`  key ${key}, expiresAt ${result.expiresAt} (bigint as string)`)
@@ -161,7 +161,7 @@ await step("POST /patch — set, unset, payload replacement", async () => {
 
 await step("POST /extend — expiry grows", async () => {
   const before = BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
-  const result = await ok("/extend", { entityKey, expires: { seconds: 900 } })
+  const result = await ok("/extend", { entityKey, expiration: { seconds: 900 } })
   const after = BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
   console.log(`  expiresAt ${before} -> ${after} (service said ${result.expiresAt})`)
   assert(after > before, "expiry strictly increased")
@@ -176,7 +176,7 @@ const batched = await step("POST /execute-batch — two creates and a patch in o
       run: { type: "str", value: RUN },
       rank: { type: "i32", value: n },
     },
-    expires: TTL,
+    expiration: TTL,
   })
   const result = await ok("/execute-batch", {
     creates: [make(10), make(11)],
@@ -207,7 +207,7 @@ const parallel = await step("parallel /create requests both land (the queue seri
         run: { type: "str", value: RUN },
         tag: { type: "str", value: tag },
       },
-      expires: TTL,
+      expiration: TTL,
     })
   const results = await Promise.all([fire("p1"), fire("p2")])
   const keys = results.map((result) => result.entityKey as Hex)
@@ -221,10 +221,10 @@ const parallel = await step("parallel /create requests both land (the queue seri
 await step("bad request bodies are 400, not 500", async () => {
   const cases: [string, unknown][] = [
     ["/create", { payload: b64(payload), contentType: "application/json" }],
-    ["/create", { payload: b64(payload), contentType: "application/json", expires: { years: 3 } }],
+    ["/create", { payload: b64(payload), contentType: "application/json", expiration: { years: 3 } }],
     ["/patch", { entityKey: "no-0x-prefix" }],
     ["/patch", { entityKey, set: { rank: { type: "int", value: 1 } } }],
-    ["/extend", { entityKey, expires: "forever" }],
+    ["/extend", { entityKey, expiration: "forever" }],
   ]
   for (const [route, body] of cases) {
     const { status, body: result } = await post(route, body)
@@ -241,7 +241,7 @@ await step("unknown route is 404", async () => {
 })
 
 await step("a reverting write is 500 with the walked cause chain", async () => {
-  const { status, body } = await post("/extend", { entityKey, expires: { seconds: 2 } })
+  const { status, body } = await post("/extend", { entityKey, expiration: { seconds: 2 } })
   const chain = body.error as { name: string; message: string }[]
   assert(status === 500, `shrinking extend → 500 (got ${status})`)
   assert(

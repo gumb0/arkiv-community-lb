@@ -62,7 +62,7 @@ async fn records_are_written_read_back_changed_and_expire() {
     let extended = chain
         .execute_batch(&Batch::single(Operation::Extend(Extend {
             entity_key: kept.entity_key,
-            expires: Expiry::Seconds(30),
+            expiration: Expiry::Seconds(30),
         })))
         .await
         .expect("batch lands");
@@ -255,11 +255,11 @@ async fn a_batch_is_all_or_nothing() {
     let mut batch = Batch::new();
     batch.push(Operation::Extend(Extend {
         entity_key: one.entity_key,
-        expires: Expiry::Seconds(100),
+        expiration: Expiry::Seconds(100),
     }));
     batch.push(Operation::Extend(Extend {
         entity_key: missing,
-        expires: Expiry::Seconds(100),
+        expiration: Expiry::Seconds(100),
     }));
     let error = chain
         .execute_batch(&batch)
@@ -327,7 +327,7 @@ async fn a_batch_lands_every_kind_of_operation_at_once() {
     }));
     batch.push(Operation::Extend(Extend {
         entity_key: existing.entity_key,
-        expires: Expiry::Seconds(100),
+        expiration: Expiry::Seconds(100),
     }));
     let result = chain.execute_batch(&batch).await.expect("lands");
     assert_eq!(result.created_entities.len(), 2);
@@ -445,11 +445,11 @@ async fn a_part_that_fails_for_another_reason_does_not_stop_the_rest() {
     let mut batch = Batch::new();
     batch.push(Operation::Extend(Extend {
         entity_key: alloy_primitives::B256::repeat_byte(0xff),
-        expires: Expiry::Seconds(100),
+        expiration: Expiry::Seconds(100),
     }));
     batch.push(Operation::Extend(Extend {
         entity_key: existing.entity_key,
-        expires: Expiry::Seconds(100),
+        expiration: Expiry::Seconds(100),
     }));
 
     let sent = send(&chain, batch).await;

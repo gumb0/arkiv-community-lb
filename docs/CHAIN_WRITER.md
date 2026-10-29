@@ -46,10 +46,10 @@ network; never expose the listener publicly.
 
 | Route | Body | Does |
 |---|---|---|
-| `/create` | attributes, expires, flags?, salt? | one entity |
+| `/create` | attributes, expiration, flags?, salt? | one entity |
 | `/patch` | entityKey, set?, unset? | change named attributes, leave the rest |
 | `/delete` | entityKey | remove |
-| `/extend` | entityKey, expires | set a later expiry |
+| `/extend` | entityKey, expiration | set a later expiry |
 | `/execute-batch` | creates?, patches?, deletes?, extensions? | several operations, one transaction |
 
 One read route, `GET /identity`, answers `{ "address", "chainId" }`: the
@@ -72,7 +72,7 @@ JSON cannot carry bytes, 64-bit integers, or the SDK's tagged values, so:
   unpredictable. `"salt": "0"` is the SDK's `NO_SALT`: the key derives from
   the owner and nonce alone, so anyone who knows both can compute it in
   advance — only for entities that are meant to be found that way.
-- **expires** is `"permanent"`, `{ "seconds": n }`, `{ "blocks": n }`, or
+- **expiration** is `"permanent"`, `{ "seconds": n }`, `{ "blocks": n }`, or
   `{ "atBlock": "n" }`. Ask in blocks when the chain's block time may
   differ from 2 s — the SDK converts durations at a fixed 2 s per block.
 - **responses** are the SDK's return shape with bigints as decimal strings.
@@ -90,7 +90,7 @@ POST /create
     "payee":   { "type": "addr",  "value": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" },
     "payload": { "type": "bytes", "value": "0x7b2268656c6c6f223a2261726b6976227d", "indexed": false }
   },
-  "expires": { "blocks": 300 }
+  "expiration": { "blocks": 300 }
 }
 
 200

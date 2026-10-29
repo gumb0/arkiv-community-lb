@@ -17,7 +17,7 @@
 //                          "addr"|"key"|"bytes32", value: ... } }
 //                (u64/u256/dec/salt values are decimal strings, since JSON
 //                numbers cannot carry them)
-//   expires      "permanent" | { seconds: n } | { blocks: n }
+//   expiration   "permanent" | { seconds: n } | { blocks: n }
 //                | { atBlock: "decimal string" }
 //   responses    the SDK's return shape, with bigints as decimal strings
 // Errors: 400 for a body that does not decode, 413 for a transaction the
@@ -121,11 +121,11 @@ function decodeAttributes(wire: unknown, what: string): AttributeInputs {
 
 function decodeExpiry(wire: unknown): Expiry {
   if (wire === "permanent") return ExpirationTime.permanent()
-  const record = asRecord(wire, "expires")
+  const record = asRecord(wire, "expiration")
   if (typeof record.seconds === "number") return ExpirationTime.fromSeconds(record.seconds)
   if (typeof record.blocks === "number") return ExpirationTime.fromBlocks(record.blocks)
   if (typeof record.atBlock === "string") return ExpirationTime.atBlock(BigInt(record.atBlock))
-  fail(`expires must be "permanent", { seconds }, { blocks } or { atBlock }`)
+  fail(`expiration must be "permanent", { seconds }, { blocks } or { atBlock }`)
 }
 
 function decodePayload(wire: unknown, what: string): Uint8Array {
@@ -137,7 +137,7 @@ function decodeCreate(wire: unknown): CreateOp {
   const op: CreateOp = {
     payload: decodePayload(record.payload, "create.payload"),
     contentType: asString(record.contentType, "create.contentType"),
-    expires: decodeExpiry(record.expires),
+    expires: decodeExpiry(record.expiration),
   }
   if (record.attributes !== undefined) {
     op.attributes = decodeAttributes(record.attributes, "create.attributes")
@@ -176,7 +176,7 @@ function decodeExtend(wire: unknown): ExtendOp {
   const record = asRecord(wire, "extend")
   return {
     entityKey: asHex(record.entityKey, "extend.entityKey"),
-    expires: decodeExpiry(record.expires),
+    expires: decodeExpiry(record.expiration),
   }
 }
 

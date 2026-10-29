@@ -100,7 +100,7 @@ async fn records_are_written_read_back_changed_and_expire() {
     // runs out.
     let batch = Batch::single(Operation::Extend(Extend {
         entity_key: kept.entity_key,
-        expires: Expiry::Seconds(30),
+        expiration: Expiry::Seconds(30),
     }));
     let extended = writer.execute_batch(&batch).await.expect("batch lands");
     assert_eq!(extended.extended_entities, [kept.entity_key]);

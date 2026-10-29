@@ -431,7 +431,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         // that turns healthy near the end of it would expire first.
         let extend = Extend {
             entity_key: agreement,
-            expires: Expiry::Seconds(self.config.agreement_life.as_secs()),
+            expiration: Expiry::Seconds(self.config.agreement_life.as_secs()),
         };
         match self.writer.extend(&extend).await {
             // Memory learns the expiry from the answer, not at the next
@@ -1156,7 +1156,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
         } else {
             batch.push(Operation::Extend(Extend {
                 entity_key: self.listing_key,
-                expires: Expiry::Seconds(self.config.listing_life.as_secs()),
+                expiration: Expiry::Seconds(self.config.listing_life.as_secs()),
             }));
         }
         // Eligibility at this moment is the one rule: an ineligible
@@ -1190,7 +1190,7 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
             }
             batch.push(Operation::Extend(Extend {
                 entity_key: *key,
-                expires: Expiry::Seconds(self.config.agreement_life.as_secs()),
+                expiration: Expiry::Seconds(self.config.agreement_life.as_secs()),
             }));
         }
         RefreshBatch {

@@ -115,7 +115,7 @@ const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64")
 const minimalCreate = {
   payload: b64("{}"),
   contentType: "application/json",
-  expires: { seconds: 60 },
+  expiration: { seconds: 60 },
 }
 
 describe("wire format in", () => {
@@ -154,17 +154,17 @@ describe("wire format in", () => {
   })
 
   it("converts each expiry form, seconds to whole blocks", async () => {
-    await post("/create", { ...minimalCreate, expires: { seconds: 60 } })
+    await post("/create", { ...minimalCreate, expiration: { seconds: 60 } })
     deepEqual(lastOp<{ expires: { minLifetime: bigint; expiresAt: bigint } }>("create").expires
       .minLifetime, 30n) // 2 s blocks
 
-    await post("/create", { ...minimalCreate, expires: { blocks: 7 } })
+    await post("/create", { ...minimalCreate, expiration: { blocks: 7 } })
     equal(lastOp<{ expires: { minLifetime: bigint } }>("create").expires.minLifetime, 7n)
 
-    await post("/create", { ...minimalCreate, expires: { atBlock: "900000" } })
+    await post("/create", { ...minimalCreate, expiration: { atBlock: "900000" } })
     equal(lastOp<{ expires: { expiresAt: bigint } }>("create").expires.expiresAt, 900000n)
 
-    await post("/create", { ...minimalCreate, expires: "permanent" })
+    await post("/create", { ...minimalCreate, expiration: "permanent" })
     equal(lastOp<{ expires: { expiresAt: bigint } }>("create").expires.expiresAt, 2n ** 64n - 1n)
   })
 
@@ -206,7 +206,7 @@ describe("wire format in", () => {
       creates: [minimalCreate, { ...minimalCreate, contentType: "text/plain" }],
       patches: [{ entityKey: KEY_A, set: { a: { type: "i32", value: 1 } } }],
       deletes: [{ entityKey: KEY_B }],
-      extensions: [{ entityKey: KEY_A, expires: { blocks: 10 } }],
+      extensions: [{ entityKey: KEY_A, expiration: { blocks: 10 } }],
     })
     equal(status, 200)
     const ops = lastOp<{
@@ -246,7 +246,7 @@ describe("wire format out", () => {
     equal(created.body.expiresAt, "1234")
     equal(created.body.entityKey, KEY_A)
 
-    const extended = await post("/extend", { entityKey: KEY_A, expires: { blocks: 5 } })
+    const extended = await post("/extend", { entityKey: KEY_A, expiration: { blocks: 5 } })
     equal(extended.body.expiresAt, "5678")
   })
 
@@ -260,9 +260,9 @@ describe("wire format out", () => {
 describe("bad requests are refused before the chain", () => {
   const cases: [string, string, unknown, string][] = [
     ["unknown attribute type", "/create", { ...minimalCreate, attributes: { a: { type: "int", value: 1 } } }, "unknown type"],
-    ["missing expires", "/create", { payload: b64("{}"), contentType: "application/json" }, "expires"],
-    ["missing contentType", "/create", { payload: b64("{}"), expires: { seconds: 60 } }, "contentType"],
-    ["expiry form that is not one of the four", "/create", { ...minimalCreate, expires: { years: 3 } }, "expires must be"],
+    ["missing expiration", "/create", { payload: b64("{}"), contentType: "application/json" }, "expiration"],
+    ["missing contentType", "/create", { payload: b64("{}"), expiration: { seconds: 60 } }, "contentType"],
+    ["expiry form that is not one of the four", "/create", { ...minimalCreate, expiration: { years: 3 } }, "expiration must be"],
     ["entity key without 0x", "/patch", { entityKey: "1234" }, "0x-prefixed"],
     ["unset that is not an array", "/patch", { entityKey: KEY_A, unset: "tag" }, "must be an array"],
     ["attribute value of the wrong JSON type", "/create", { ...minimalCreate, attributes: { a: { type: "i32", value: "5" } } }, "must be a number"],

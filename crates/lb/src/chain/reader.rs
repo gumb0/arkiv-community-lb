@@ -13,7 +13,7 @@ use super::records::{ArkivEntity, AttributeValue, EntityKey, SCHEMA_VERSION, par
 
 /// The node's page maximum. Asking for more is an error, not a smaller
 /// page, so no read ever asks for more.
-pub const PAGE_LIMIT: u64 = 200;
+pub const PAGE_LIMIT: u64 = 100;
 
 /// A filter for `arkiv_query`. Built from typed conditions, so that a
 /// fake chain can evaluate the same query the node is sent; `text()`
@@ -302,7 +302,7 @@ impl Reader {
     }
 
     /// One page of records matching the query, with every field a record
-    /// needs selected.
+    /// needs selected. The payload is one of the attributes.
     pub async fn query(&self, query: &Query) -> Result<Page, ReadError> {
         let mut options = json!({
             "select": {
@@ -310,7 +310,6 @@ impl Reader {
                 "creator": true,
                 "createdAt": true,
                 "expiresAt": true,
-                "payload": true,
                 "attributes": true,
             },
             "limit": format!("{PAGE_LIMIT:#x}"),
@@ -468,6 +467,6 @@ mod tests {
 
     #[test]
     fn the_page_limit_is_the_node_maximum() {
-        assert_eq!(PAGE_LIMIT, 200);
+        assert_eq!(PAGE_LIMIT, 100);
     }
 }

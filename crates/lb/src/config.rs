@@ -520,12 +520,11 @@ impl Marketplace {
                 self.flush_interval, self.agreement_life
             )));
         }
-        if u64::from(self.max_providers) >= PAGE_LIMIT {
+        if u64::from(self.max_providers) > PAGE_LIMIT {
             return Err(ConfigError::Invalid(format!(
-                "marketplace.max_providers is {}, maximum is {}: the agreement records \
-                 are reloaded in one page of {PAGE_LIMIT} at startup",
-                self.max_providers,
-                PAGE_LIMIT - 1
+                "marketplace.max_providers is {}, maximum is {PAGE_LIMIT}: the agreement \
+                 records are reloaded in one page of {PAGE_LIMIT} at startup",
+                self.max_providers
             )));
         }
         let last = u32::from(self.remote_port_start) + self.max_providers;
@@ -759,12 +758,11 @@ mod tests {
     }
 
     #[test]
-    fn the_cap_stays_below_the_page_limit() {
-        let error = parse(&format!("{MARKETPLACE}max_providers = 200\n")).expect_err("must refuse");
+    fn the_cap_fits_one_page() {
+        let error = parse(&format!("{MARKETPLACE}max_providers = 101\n")).expect_err("must refuse");
         assert!(error.to_string().contains("max_providers"), "{error}");
         assert!(error.to_string().contains("one page"), "{error}");
-        parse(&format!("{MARKETPLACE}max_providers = 199\n"))
-            .expect("one below the page limit is fine");
+        parse(&format!("{MARKETPLACE}max_providers = 100\n")).expect("a full page is fine");
         let config = parse(&format!("{MARKETPLACE}max_providers = 0\n"))
             .expect("a cap of zero accepts nobody");
         let marketplace = config.marketplace.expect("the section is present");

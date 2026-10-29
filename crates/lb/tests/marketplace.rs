@@ -377,7 +377,10 @@ async fn refuses_to_start_when_the_records_do_not_fit_one_page() {
         .await
         .expect_err("refuses");
     assert!(matches!(error, StartError::TooManyAgreements { count } if count == PAGE_LIMIT + 1));
-    assert!(error.to_string().contains("201"), "{error}");
+    assert!(
+        error.to_string().contains(&(PAGE_LIMIT + 1).to_string()),
+        "{error}"
+    );
     assert!(pool.snapshot().is_empty(), "nothing was loaded");
     assert!(
         chain.transactions().is_empty(),

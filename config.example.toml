@@ -154,6 +154,14 @@ settlement_period = "7d"
 # loses at most this much counting; a deliberate stop writes the
 # counts first. At most agreement_life.
 flush_interval = "1d"
+# The most requests one agreement is paid for per settlement period.
+# The public endpoint takes requests from anyone, a provider's own
+# included, so this bounds what one agreement can earn in a period:
+# this many times wei_per_call. The entry keeps counting past it, for
+# the admin view and the stats, and the counter record carries at
+# most this. Size it well above honest traffic: a provider past it
+# serves the rest of the period for free.
+max_calls_per_period = 10000000
 # The signing key's balance, in GLM, below which every refresh logs a
 # warning. A write needs more in the key than it costs, because the node
 # checks its gas limit times its max fee: the largest batch costs about

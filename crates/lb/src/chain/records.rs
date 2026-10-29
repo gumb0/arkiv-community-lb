@@ -133,7 +133,9 @@ impl AttributeValue {
                 .map(Self::I32),
             "u64" => parse_u64(value).map(Self::U64),
             "addr" => value.as_str().and_then(|s| s.parse().ok()).map(Self::Addr),
-            "key" => value.as_str().and_then(|s| s.parse().ok()).map(Self::Key),
+            // Written as the SDK's `key`, read back under the node's own
+            // name for a 32-byte value.
+            "key" | "bytes32" => value.as_str().and_then(|s| s.parse().ok()).map(Self::Key),
             "bytes" => value
                 .as_str()
                 .and_then(|s| s.parse::<Bytes>().ok())
@@ -146,9 +148,13 @@ impl AttributeValue {
     /// this value, which carries the write-side value as it is. For the
     /// fakes and tests that play the node.
     pub fn to_read(&self, name: &str) -> ArkivAttribute {
+        let type_tag = match self {
+            Self::Key(_) => "bytes32",
+            other => other.type_tag(),
+        };
         ArkivAttribute {
             name: name.to_owned(),
-            type_tag: self.type_tag().to_owned(),
+            type_tag: type_tag.to_owned(),
             value: self.to_wire()["value"].clone(),
         }
     }
@@ -717,11 +723,13 @@ mod tests {
             "expiresAt": "0xa93a",
             "attributeSchema": [
                 { "name": "kind", "type": "str", "indexed": true },
+                { "name": "offer", "type": "bytes32", "indexed": true },
                 { "name": "payload", "type": "bytes", "indexed": false },
                 { "name": "v", "type": "i32", "indexed": true }
             ],
             "attributes": [
                 { "name": "kind", "type": "str", "value": "probe" },
+                { "name": "offer", "type": "bytes32", "value": OFFER },
                 { "name": "payload", "type": "bytes", "value": "0x7b2276223a317d" },
                 { "name": "v", "type": "i32", "value": 1 }
             ]
@@ -730,6 +738,11 @@ mod tests {
         assert_eq!(entity.created_at, 0x7a);
         assert_eq!(&entity.payload().expect("a payload")[..], br#"{"v":1}"#);
         assert!(entity.is("probe"));
+        assert_eq!(
+            entity.typed_attributes().get("offer"),
+            Some(&AttributeValue::Key(key(OFFER))),
+            "a key written through the SDK reads back as the node's bytes32"
+        );
         assert_eq!(
             entity.typed_attributes().get("payload"),
             Some(&AttributeValue::Bytes(br#"{"v":1}"#.to_vec()))

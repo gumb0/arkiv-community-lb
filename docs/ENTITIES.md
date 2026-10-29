@@ -36,8 +36,9 @@ records is in [MARKETPLACE.md](MARKETPLACE.md).
 - **Records point at each other by entity key.** An offer points at the
   LB listing it answers, an agreement record at its offer, a counter
   record at its agreement record, a receipt at the counter record it
-  pays. Each pointer is a `key` attribute, so the chain can be walked in
-  both directions. A pointer finds a record; only the creator makes it
+  pays. Each pointer is a `key` attribute (written as the SDK's `key`,
+  read back under the node's name for a 32-byte value, `bytes32`), so
+  the chain can be walked in both directions. A pointer finds a record; only the creator makes it
   trusted. A pointer can be followed only while its target lives. So
   each record copies the fields it still needs after its target has
   expired.

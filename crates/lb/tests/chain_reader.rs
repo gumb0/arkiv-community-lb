@@ -104,7 +104,7 @@ async fn rows_parse_into_stored_records_and_a_cursor_means_more() {
     }
     .encode();
     let payload_hex: String = encoded.payload.iter().map(|b| format!("{b:02x}")).collect();
-    let attributes: Vec<Value> = encoded
+    let mut attributes: Vec<Value> = encoded
         .attributes
         .to_wire()
         .as_object()
@@ -112,12 +112,13 @@ async fn rows_parse_into_stored_records_and_a_cursor_means_more() {
         .iter()
         .map(|(name, wire)| json!({ "name": name, "type": wire["type"], "value": wire["value"] }))
         .collect();
+    attributes
+        .push(json!({ "name": "payload", "type": "bytes", "value": format!("0x{payload_hex}") }));
     let row = json!({
         "key": KEY,
         "creator": LB,
         "createdAt": "0x191",
         "expiresAt": "0x92e21",
-        "payload": format!("0x{payload_hex}"),
         "attributes": attributes,
     });
     let (reader, _) = reference(

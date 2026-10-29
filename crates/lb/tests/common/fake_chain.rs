@@ -409,12 +409,18 @@ impl Entity {
                 value: typed["value"].clone(),
             })
             .collect();
+        // The payload is one of the attributes on the wire, a bytes value.
+        let mut attributes: Vec<ArkivAttribute> = attributes;
+        attributes.push(ArkivAttribute {
+            name: "payload".to_owned(),
+            type_tag: "bytes".to_owned(),
+            value: serde_json::Value::String(format!("{}", Bytes::from(self.payload.clone()))),
+        });
         ArkivEntity {
             key: self.key,
             creator: self.creator,
             created_at: self.created_at,
             expires_at: self.expires_at,
-            payload: Bytes::from(self.payload.clone()),
             attributes,
         }
     }

@@ -48,7 +48,7 @@ use crate::{
     chain::{
         ChainReader,
         reader::{BlockAt, BlockFields, Condition, Query, ReadError, Reader},
-        records::{ArkivEntity, EntityKey},
+        records::{ArkivEntity, EntityKey, PAYLOAD_ATTRIBUTE},
     },
     config,
     pool::{Pool, Provider},
@@ -211,9 +211,9 @@ fn block_differences(reference: &BlockFields, provider: &BlockFields) -> String 
     differing.join("; ")
 }
 
-/// Entity rows as a log field: every attribute in full, the payload as
-/// its hash, since a payload can be large and a hash says whether two
-/// differ. No rows is the answer "no such entity".
+/// Entity rows as a log field: every attribute in full but the payload,
+/// which is its hash, since a payload can be large and a hash says
+/// whether two differ. No rows is the answer "no such entity".
 fn describe(rows: &[ArkivEntity]) -> String {
     if rows.is_empty() {
         return "no such entity".to_owned();
@@ -223,6 +223,7 @@ fn describe(rows: &[ArkivEntity]) -> String {
             let attributes: Vec<String> = row
                 .attributes
                 .iter()
+                .filter(|attribute| attribute.name != PAYLOAD_ATTRIBUTE)
                 .map(|attribute| {
                     format!(
                         "{}:{}={}",
@@ -230,12 +231,16 @@ fn describe(rows: &[ArkivEntity]) -> String {
                     )
                 })
                 .collect();
+            let payload = match row.payload() {
+                Some(payload) => format!("{:#x}", alloy_primitives::keccak256(&payload)),
+                None => "none".to_owned(),
+            };
             format!(
-                "creator {:#x} expires {} attributes [{}] payload hash {:#x}",
+                "creator {:#x} expires {} attributes [{}] payload hash {}",
                 row.creator,
                 row.expires_at,
                 attributes.join(", "),
-                alloy_primitives::keccak256(&row.payload)
+                payload
             )
         })
         .collect::<Vec<_>>()
@@ -797,12 +802,18 @@ mod tests {
             creator: crate::chain::records::Address::repeat_byte(0x22),
             created_at: 5,
             expires_at: 900,
-            payload: vec![1, 2, 3].into(),
-            attributes: vec![ArkivAttribute {
-                name: "kind".into(),
-                type_tag: "str".into(),
-                value: serde_json::json!("rpc.offer"),
-            }],
+            attributes: vec![
+                ArkivAttribute {
+                    name: "kind".into(),
+                    type_tag: "str".into(),
+                    value: serde_json::json!("rpc.offer"),
+                },
+                ArkivAttribute {
+                    name: "payload".into(),
+                    type_tag: "bytes".into(),
+                    value: serde_json::json!("0x010203"),
+                },
+            ],
         };
         let described = describe(std::slice::from_ref(&row));
         assert!(described.contains("kind:str=\"rpc.offer\""), "{described}");
@@ -812,7 +823,7 @@ mod tests {
             "{described}"
         );
         assert!(
-            !described.contains("[1, 2, 3]"),
+            !described.contains("0x010203"),
             "the payload itself is not logged"
         );
         assert_eq!(describe(&[]), "no such entity");
@@ -830,7 +841,6 @@ mod tests {
             creator: crate::chain::records::Address::repeat_byte(0x22),
             created_at: 5,
             expires_at: 900,
-            payload: vec![1, 2, 3].into(),
             attributes: vec![attribute("kind", "rpc.offer"), attribute("lb", "0x01")],
         };
         let mut reordered = reference_row.clone();

@@ -222,8 +222,12 @@ pub struct ArkivAttribute {
     pub value: serde_json::Value,
 }
 
+/// The attribute that carries a record's payload: `bytes`, never
+/// indexed, `0x`-prefixed hex on the wire (docs/ENTITIES.md).
+pub const PAYLOAD_ATTRIBUTE: &str = "payload";
+
 /// An entity as `arkiv_query` returns it, with the fields every read
-/// selects. The payload arrives as `0x`-prefixed hex.
+/// selects. An entity is its attributes; the payload is one of them.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ArkivEntity {
     pub key: EntityKey,
@@ -232,7 +236,6 @@ pub struct ArkivEntity {
     pub created_at: u64,
     #[serde(rename = "expiresAt", deserialize_with = "deserialize_quantity")]
     pub expires_at: u64,
-    pub payload: Bytes,
     /// Absent for an entity without attributes, possibly; such a row must
     /// still parse, and then it is simply not one of our records.
     #[serde(default)]
@@ -267,8 +270,21 @@ impl ArkivEntity {
         }
     }
 
-    fn payload<T: DeserializeOwned>(&self) -> Result<T, RecordError> {
-        serde_json::from_slice(&self.payload).map_err(|e| RecordError::Payload(e.to_string()))
+    /// The payload: the `bytes` attribute named `payload`, decoded from
+    /// its hex. None without one, or with a value that is not hex;
+    /// such an entity is not one of our records.
+    pub fn payload(&self) -> Option<Bytes> {
+        self.attributes
+            .iter()
+            .find(|a| a.name == PAYLOAD_ATTRIBUTE && a.type_tag == "bytes")
+            .and_then(|a| a.value.as_str()?.parse().ok())
+    }
+
+    fn payload_json<T: DeserializeOwned>(&self) -> Result<T, RecordError> {
+        let payload = self
+            .payload()
+            .ok_or_else(|| RecordError::Payload("no payload attribute".to_owned()))?;
+        serde_json::from_slice(&payload).map_err(|e| RecordError::Payload(e.to_string()))
     }
 }
 
@@ -367,7 +383,7 @@ impl Record for LbListing {
     }
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
-        entity.payload()
+        entity.payload_json()
     }
 }
 
@@ -415,7 +431,7 @@ impl Record for Offer {
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let lb_listing = entity.typed_attributes().key("lb_listing")?;
-        let payload: OfferPayload = entity.payload()?;
+        let payload: OfferPayload = entity.payload_json()?;
         Ok(Self {
             lb_listing,
             specs: payload.specs,
@@ -458,7 +474,7 @@ impl Record for Agreement {
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let attributes = entity.typed_attributes();
-        let payload: AgreementPayload = entity.payload()?;
+        let payload: AgreementPayload = entity.payload_json()?;
         Ok(Self {
             provider: attributes.addr("provider")?,
             offer: attributes.key("offer")?,
@@ -541,7 +557,7 @@ impl Record for CounterRecord {
                 });
             }
         };
-        let payload: CounterPayload = entity.payload()?;
+        let payload: CounterPayload = entity.payload_json()?;
         Ok(Self {
             agreement: attributes.key("agreement")?,
             provider: attributes.addr("provider")?,
@@ -606,7 +622,7 @@ impl Record for Receipt {
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let attributes = entity.typed_attributes();
-        let payload: ReceiptPayload = entity.payload()?;
+        let payload: ReceiptPayload = entity.payload_json()?;
         Ok(Self {
             counter: attributes.key("counter")?,
             provider: attributes.addr("provider")?,
@@ -642,9 +658,9 @@ mod tests {
     }
 
     /// Builds the entity a read would return for what a write sent: the
-    /// payload as hex, the attributes as the node's list.
+    /// attributes as the node's list, the payload among them as hex.
     fn read_back(encoded: &EncodedRecord) -> ArkivEntity {
-        let attributes = encoded
+        let mut attributes = encoded
             .attributes
             .0
             .iter()
@@ -658,15 +674,55 @@ mod tests {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
+        attributes.push(
+            json!({ "name": "payload", "type": "bytes", "value": format!("0x{payload_hex}") }),
+        );
         serde_json::from_value(json!({
             "key": KEY,
             "creator": LB,
             "createdAt": "0x191",
             "expiresAt": "0x92e21",
-            "payload": format!("0x{payload_hex}"),
             "attributes": attributes,
         }))
         .expect("a read row parses")
+    }
+
+    #[test]
+    fn a_row_as_the_node_sends_it_carries_the_payload_as_an_attribute() {
+        // A row from a dev node of the GolemDB line, its payload shortened.
+        let entity: ArkivEntity = serde_json::from_value(json!({
+            "key": "0xe1d4ab361c0bc9418474a0d4e0700ed5cdb7adcc17fff88737cc15566418f58c",
+            "creator": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+            "createdAt": "0x7a",
+            "expiresAt": "0xa93a",
+            "attributeSchema": [
+                { "name": "kind", "type": "str", "indexed": true },
+                { "name": "payload", "type": "bytes", "indexed": false },
+                { "name": "v", "type": "i32", "indexed": true }
+            ],
+            "attributes": [
+                { "name": "kind", "type": "str", "value": "probe" },
+                { "name": "payload", "type": "bytes", "value": "0x7b2276223a317d" },
+                { "name": "v", "type": "i32", "value": 1 }
+            ]
+        }))
+        .expect("the node's row parses");
+        assert_eq!(entity.created_at, 0x7a);
+        assert_eq!(&entity.payload().expect("a payload")[..], br#"{"v":1}"#);
+        assert!(entity.is("probe"));
+        assert!(
+            entity.typed_attributes().get("payload").is_none(),
+            "bytes is not a typed attribute of a record"
+        );
+
+        let bare: ArkivEntity = serde_json::from_value(json!({
+            "key": "0xe1d4ab361c0bc9418474a0d4e0700ed5cdb7adcc17fff88737cc15566418f58c",
+            "creator": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+            "createdAt": "0x7a",
+            "expiresAt": "0xa93a"
+        }))
+        .expect("a row without attributes parses");
+        assert!(bare.payload().is_none());
     }
 
     #[test]

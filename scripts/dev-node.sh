@@ -26,7 +26,7 @@ so expiry-driven tests run fast. A lifetime asked for in seconds assumes
 Environment:
   DEV_NODE_BLOCK_TIME  seal interval (default 250ms)
   DEV_NODE_PORT    host port for JSON-RPC (default 8645)
-  DEV_NODE_IMAGE   image (default: the digest-pinned arkiv-reth-dev v0.2.0)
+  DEV_NODE_IMAGE   image (default: the digest-pinned arkiv-reth-dev of the GolemDB line, the build rabdi runs)
   DEV_NODE_NAME    container name (default arkiv-dev-node)
 EOF
 }
@@ -34,7 +34,7 @@ EOF
 PORT="${DEV_NODE_PORT:-8645}"
 # The release the network's own EL is pinned to, so the probes measure
 # the engine the network runs. The digest holds the tag still.
-IMAGE="${DEV_NODE_IMAGE:-ghcr.io/arkiv-network/arkiv-reth-dev:v0.2.0@sha256:09d148b8ce7748c0e9fb051944a8334d3e145c04340031cc7d8946a2a7f14808}"
+IMAGE="${DEV_NODE_IMAGE:-ghcr.io/arkiv-network/arkiv-reth-dev:sha-4edb6b1@sha256:8d6b41cd86c5cdea3f4d86520be5fc653390b0ee117fea2b4c6ae8efc359f266}"
 NAME="${DEV_NODE_NAME:-arkiv-dev-node}"
 BLOCK_TIME="${DEV_NODE_BLOCK_TIME:-250ms}"
 URL="http://127.0.0.1:${PORT}"

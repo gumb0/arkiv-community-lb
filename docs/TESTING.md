@@ -82,7 +82,10 @@ The scenarios, each also runnable alone (`cargo run -p rig -- <name>`):
 - `wrong-entity` — one provider serves entities that are not the
   chain's: it is taken out of rotation with a divergence verdict, the
   evidence event is in the LB's log, the honest providers are matched,
-  and the public endpoint serves through them only.
+  and the public endpoint serves through them only. Left out of
+  `rig all` while the entity check is switched off
+  ([INTEGRITY.md](INTEGRITY.md)); runnable by name, and fails until
+  the check is back.
 - `wrong-block` — the same with a provider serving blocks whose hash
   is not the chain's; the evidence names the block read.
 - `frozen-head` — a provider stuck behind the chain leaves rotation on

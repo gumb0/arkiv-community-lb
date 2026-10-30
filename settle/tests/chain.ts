@@ -1,9 +1,8 @@
 // A chain the ledger runs over in tests: counter records and receipts
 // as the LB and settle write them, answered by what a query names.
 
-import type { Entity } from "@arkiv-network/sdk"
 import { stringToBytes, type Hex } from "viem"
-import type { Reader } from "../src/chain.ts"
+import type { Attribute, Reader, Row } from "../src/chain.ts"
 import { KIND, type ReceiptRecord } from "../src/records.ts"
 
 export const LB = "0x1111111111111111111111111111111111111111" as Hex
@@ -20,15 +19,15 @@ export function key(n: number): Hex {
 function entity(
   entityKey: Hex,
   creator: Hex,
-  attributes: Record<string, { type: string; value: unknown }>,
+  attributes: Record<string, Attribute>,
   payload: unknown,
-): Entity {
+): Row {
   return {
     key: entityKey,
     creator,
     attributes,
     payload: stringToBytes(JSON.stringify(payload)),
-  } as unknown as Entity
+  }
 }
 
 /** A closed counter record, as the LB's flush leaves it. */
@@ -43,7 +42,7 @@ export function closedCounter(options: {
   creator?: Hex
   /** A record written at a schema version this code does not read. */
   version?: number
-}): Entity {
+}): Row {
   return entity(
     options.key,
     options.creator ?? LB,
@@ -64,10 +63,9 @@ export function closedCounter(options: {
 }
 
 /** A record still counting: open, with no closing block. */
-export function openCounter(options: { key: Hex; provider: Hex; count: number }): Entity {
+export function openCounter(options: { key: Hex; provider: Hex; count: number }): Row {
   const record = closedCounter(options)
-  const attributes = record.attributes as Record<string, { type: string; value: unknown }>
-  attributes.state = { type: "str", value: "open" }
+  record.attributes.state = { type: "str", value: "open" }
   record.payload = stringToBytes(
     JSON.stringify({
       count: options.count,
@@ -84,13 +82,13 @@ export function openCounter(options: { key: Hex; provider: Hex; count: number })
  * row carries, so what settle writes can be read back by what settle
  * reads.
  */
-export function written(record: ReceiptRecord, entityKey: Hex, creator: Hex = SETTLE): Entity {
+export function written(record: ReceiptRecord, entityKey: Hex, creator: Hex = SETTLE): Row {
   return {
     key: entityKey,
     creator,
-    attributes: record.attributes,
+    attributes: record.attributes as Record<string, Attribute>,
     payload: record.payload,
-  } as unknown as Entity
+  }
 }
 
 /** A receipt, as a run leaves it behind. */
@@ -100,7 +98,7 @@ export function receipt(options: {
   provider: Hex
   amountWei?: bigint
   creator?: Hex
-}): Entity {
+}): Row {
   return entity(
     options.key,
     options.creator ?? SETTLE,
@@ -128,7 +126,7 @@ export function receipt(options: {
  * Every query asked is recorded, so a test can hold the ledger to one
  * read per provider.
  */
-export function fakeChain(rows: Entity[]): Reader & { asked: string[] } {
+export function fakeChain(rows: Row[]): Reader & { asked: string[] } {
   const asked: string[] = []
   return {
     chainId: 7738577,
@@ -147,10 +145,9 @@ export function fakeChain(rows: Entity[]): Reader & { asked: string[] } {
  * `name = type(value)`, the shape the record module builds, and
  * `$creator` is the row's writer rather than an attribute of it.
  */
-function matches(row: Entity, condition: string): boolean {
+function matches(row: Row, condition: string): boolean {
   const [name = "", wrapped = ""] = condition.trim().split(" = ")
   const value = wrapped.slice(wrapped.indexOf("(") + 1, -1).replaceAll("'", "")
-  const attributes = row.attributes as Record<string, { value: unknown } | undefined>
-  const held = name === "$creator" ? row.creator : attributes[name]?.value
+  const held = name === "$creator" ? row.creator : row.attributes[name]?.value
   return String(held).toLowerCase() === value.toLowerCase()
 }

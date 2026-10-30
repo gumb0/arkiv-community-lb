@@ -41,7 +41,7 @@ describe("a closed counter record", () => {
 
   it("refuses one whose attributes are missing", () => {
     const record = closedCounter({ key: key(7), provider: address(1), count: 1 })
-    delete (record.attributes as Record<string, unknown>).provider
+    delete record.attributes.provider
     throws(() => decodeCounter(record), /addr attribute provider/)
   })
 })

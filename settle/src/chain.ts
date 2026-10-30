@@ -6,10 +6,25 @@ import { defineChain, http, type Hex } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import type { ReceiptRecord } from "./records.ts"
 
+/** One attribute of a row: the node's type tag and the decoded value. */
+export type Attribute = { type: string; value: unknown }
+
+/**
+ * A row as settle reads it: the entity's key and creator, its payload,
+ * and its attributes by name. The one shape the rest of settle sees,
+ * whatever the SDK's rows look like.
+ */
+export type Row = {
+  key: Hex
+  creator: Hex
+  payload: Uint8Array
+  attributes: Record<string, Attribute>
+}
+
 export type Reader = {
   chainId: number
-  /** Every entity the query matches, following the node's pages. */
-  query(text: string): Promise<Entity[]>
+  /** Every row the query matches, following the node's pages. */
+  query(text: string): Promise<Row[]>
   /** What an address holds on Arkiv, which is what a write costs. */
   balance(address: Hex): Promise<bigint>
 }
@@ -27,18 +42,32 @@ export async function connectReader(rpcUrl: string, apiKey?: string): Promise<Re
     chainId,
     balance: (address) => client.getBalance({ address }),
     query: (text) =>
-      everyPage((cursor) =>
-        client.query(text, {
+      everyPage(async (cursor) => {
+        const page = await client.query(text, {
           limit: PAGE,
           cursor,
           select: { key: true, creator: true, payload: true, attributes: true },
-        }),
-      ),
+        })
+        return { entities: page.entities.map(row), cursor: page.cursor }
+      }),
+  }
+}
+
+/** The SDK's entity as a row, with every selected part present. */
+function row(entity: Entity): Row {
+  if (entity.payload === undefined) {
+    throw new Error(`record ${entity.key} came without its payload`)
+  }
+  return {
+    key: entity.key as Hex,
+    creator: entity.creator as Hex,
+    payload: entity.payload,
+    attributes: (entity.attributes ?? {}) as Record<string, Attribute>,
   }
 }
 
 /** One page of a query: what it holds, and where the next one starts. */
-export type Page = { entities: Entity[]; cursor: string | undefined }
+export type Page = { entities: Row[]; cursor: string | undefined }
 
 /**
  * Every page of a query, from the first to the one that names no
@@ -47,8 +76,8 @@ export type Page = { entities: Entity[]; cursor: string | undefined }
  */
 export async function everyPage(
   read: (cursor: string | undefined) => Promise<Page>,
-): Promise<Entity[]> {
-  const entities: Entity[] = []
+): Promise<Row[]> {
+  const entities: Row[] = []
   let cursor: string | undefined
   do {
     const page = await read(cursor)

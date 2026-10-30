@@ -7,7 +7,8 @@
 // cap; the patches fit in one.
 //
 // Env: WRITER_PRIVATE_KEY_FILE, ARKIV_RPC_URL, optional ARKIV_API_KEY;
-// COUNTERS_N (default 100).
+// COUNTERS_N (default 100); COUNTERS_KEEP=1 leaves the records on the
+// chain, closed and receipted, for a settle rehearsal to read.
 // Run: npm run counters
 
 import { addr, bytes, defineSchema, ExpirationTime, i32, key, str } from "@arkiv-network/sdk"
@@ -93,6 +94,10 @@ const agreementKey = (i: number) => `0x${(i + 1).toString(16).padStart(64, "0")}
 const provider = (i: number) => `0x${(i + 1).toString(16).padStart(40, "0")}` as Hex
 const wei = "1000000000000000"
 
+// The records are shaped as the LB writes them (docs/ENTITIES.md), so a
+// settle rehearsal over the kept ones reads them as real.
+const opened = Number(BigInt((await rawRpc("eth_blockNumber", [])) as Hex))
+
 const createdEntities = await createInBatches(
   "counters create",
   Array.from({ length: n }, (_, i) => ({
@@ -103,7 +108,7 @@ const createdEntities = await createInBatches(
       agreement: key(agreementKey(i)),
       provider: addr(provider(i)),
       state: str("open"),
-      payload: document({ count: 48213 + i, wei_per_call: wei }),
+      payload: document({ count: 48213 + i, wei_per_call: wei, opened_block: opened }),
     },
     expiration: ExpirationTime.fromBlocks(300),
   })),
@@ -113,16 +118,25 @@ const { txHash: patchTx } = await writer.executeBatch({
   patches: createdEntities.map((entityKey, i) => ({
     schema: Counter,
     entityKey,
-    set: { payload: document({ count: 96426 + i, wei_per_call: wei }) },
+    set: { payload: document({ count: 96426 + i, wei_per_call: wei, opened_block: opened }) },
   })),
 })
 await report("counters patch (count)", patchTx, n)
 
+const closed = Number(BigInt((await rawRpc("eth_blockNumber", [])) as Hex))
 const { txHash: closeTx } = await writer.executeBatch({
   patches: createdEntities.map((entityKey, i) => ({
     schema: Counter,
     entityKey,
-    set: { payload: document({ count: 144639 + i, wei_per_call: wei }), state: str("closed") },
+    set: {
+      payload: document({
+        count: 144639 + i,
+        wei_per_call: wei,
+        opened_block: opened,
+        closed_block: closed,
+      }),
+      state: str("closed"),
+    },
   })),
 })
 await report("counters close (count and state)", closeTx, n)
@@ -148,7 +162,11 @@ const receipts = await createInBatches(
   })),
 )
 
-await writer.executeBatch({
-  deletes: [...createdEntities, ...receipts].map((entityKey) => ({ entityKey })),
-})
+if (process.env.COUNTERS_KEEP === "1") {
+  console.log(`\nkept: ${n} closed counter records and their receipts, written by ${writer.address}`)
+} else {
+  await writer.executeBatch({
+    deletes: [...createdEntities, ...receipts].map((entityKey) => ({ entityKey })),
+  })
+}
 console.log("\ncounters probe done")

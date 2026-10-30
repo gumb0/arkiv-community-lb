@@ -155,8 +155,10 @@ settlement_period = "7d"
 # counts first. At most agreement_life.
 flush_interval = "1d"
 # The signing key's balance, in GLM, below which every refresh logs a
-# warning.
-gas_warn_below = "0.02"
+# warning. A write needs more in the key than it costs, because the node
+# checks the gas limit at twice the gas price: the largest batch costs
+# about 0.03 GLM and needs about 0.065.
+gas_warn_below = "0.1"
 
 # Integrity checks run when this section is present and the LB has a
 # reference endpoint (ARKIV_RPC_URL); the section without one refuses

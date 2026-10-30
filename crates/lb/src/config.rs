@@ -275,7 +275,7 @@ fn default_flush_interval() -> Duration {
     Duration::from_secs(24 * 60 * 60)
 }
 fn default_gas_warn_below() -> Wei {
-    glm("0.02").expect("the default parses")
+    glm("0.1").expect("the default parses")
 }
 
 impl Marketplace {
@@ -649,7 +649,10 @@ mod tests {
             Duration::from_secs(15_552_000)
         );
         assert_eq!(marketplace.offer_max_lifetime, Duration::from_secs(86_400));
-        assert_eq!(marketplace.gas_warn_below, Wei::new(20_000_000_000_000_000));
+        assert_eq!(
+            marketplace.gas_warn_below,
+            Wei::new(100_000_000_000_000_000)
+        );
         assert_eq!(
             marketplace.settlement_period,
             Duration::from_secs(7 * 86_400)

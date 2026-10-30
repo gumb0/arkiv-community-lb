@@ -258,7 +258,7 @@ async fn the_head_height_is_a_hex_quantity() {
 
 #[tokio::test]
 async fn a_balance_is_asked_at_the_head_and_read_as_wei() {
-    // 0.02 GLM, the gas warning's default threshold.
+    // 0.02 GLM.
     let (reader, reference) = reference(ok(json!("0x470de4df820000")), None).await;
     let balance = reader.balance(lb()).await.expect("balance");
     assert_eq!(

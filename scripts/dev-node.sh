@@ -34,7 +34,7 @@ EOF
 PORT="${DEV_NODE_PORT:-8645}"
 # The release the network's own EL is pinned to, so the probes measure
 # the engine the network runs. The digest holds the tag still.
-IMAGE="${DEV_NODE_IMAGE:-ghcr.io/arkiv-network/arkiv-reth-dev:sha-4edb6b1@sha256:8d6b41cd86c5cdea3f4d86520be5fc653390b0ee117fea2b4c6ae8efc359f266}"
+IMAGE="${DEV_NODE_IMAGE:-ghcr.io/arkiv-network/arkiv-reth-dev:v1.0.0@sha256:14d904319d0154ec5a5855b6c301cf90e53fc139829f580a237d6f44158a766c}"
 NAME="${DEV_NODE_NAME:-arkiv-dev-node}"
 BLOCK_TIME="${DEV_NODE_BLOCK_TIME:-250ms}"
 URL="http://127.0.0.1:${PORT}"

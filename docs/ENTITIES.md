@@ -299,7 +299,7 @@ Payload:
 ```
 
 - `agreement`, `count` and `wei_per_call` are copied from the counter
-  record: the receipt is permanent and the counter record is not.
+  record: the receipt outlives the counter record.
 - `amount_wei` is `count × wei_per_call`.
 - `payout` names the chain the transfer was made on and the transaction
   hash. A settle run pays each provider once for all of its closed
@@ -308,7 +308,9 @@ Payload:
   key on both chains: the transfer's sender is the receipt's creator,
   so anyone can check a receipt against the payout chain.
 
-Lifetime: permanent.
+Lifetime: the chain's maximum, 7,884,000 blocks (about 182 days at
+2 s). A receipt is written after the record it pays, so it outlives
+that record, and a record that has expired cannot be paid again.
 
 Query, by settle before paying, per provider with closed records:
 `$creator == SETTLE_ADDRESS AND kind == "rpc.receipt" AND provider ==

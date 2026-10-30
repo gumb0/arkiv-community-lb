@@ -44,8 +44,8 @@ not operator-chosen.
 - **The settle CLI** (`settle/`): pays the providers. It reads the
   closed counter records and the receipts of earlier runs from Arkiv,
   sends one GLM transfer per provider on the payout chain, and writes
-  one permanent receipt per record it paid, which is what keeps a
-  record from being paid twice. A run rehearses unless told to pay,
+  one receipt per record it paid, which is what keeps a record from
+  being paid twice. A run rehearses unless told to pay,
   and rehearsing needs no key at all. It talks to no part of the load
   balancer, so it runs anywhere with access to both chains. How to run
   it is in [docs/RUNBOOK.md](docs/RUNBOOK.md).

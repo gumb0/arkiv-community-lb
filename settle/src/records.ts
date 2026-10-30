@@ -118,14 +118,17 @@ export const RECEIPT = defineSchema({
   payload: bytes(),
 })
 
+/** The chain's longest lifetime, in blocks: about 182 days at 2 s. */
+export const RECEIPT_LIFE_BLOCKS = 7_884_000
+
 /** A receipt as settle writes it: the whole create, nothing added later. */
 export type ReceiptRecord = CreateEntityParameters<typeof RECEIPT>
 
 /**
  * The receipt for one counter record, paid in full by one transfer.
  * The count and the rate are copied rather than pointed at: the
- * receipt is permanent and the counter record is not, so it has to
- * carry what it was paid for.
+ * receipt outlives the counter record, so it has to carry what it was
+ * paid for.
  */
 export function receiptFor(record: Counter, payout: { chainId: number; tx: Hex }): ReceiptRecord {
   return {
@@ -150,7 +153,9 @@ export function receiptFor(record: Counter, payout: { chainId: number; tx: Hex }
     // A receipt has to outlive the record it paid for: settle reads a
     // record as unpaid until one of its own receipts names it, so a
     // receipt that expired first would have the next run pay again.
-    expiration: ExpirationTime.permanent(),
+    // It does: it is written after the record, and no record's life
+    // can be longer than the chain's longest.
+    expiration: ExpirationTime.fromBlocks(RECEIPT_LIFE_BLOCKS),
     // And not even its writer may change one afterwards.
     flags: { readonly: true },
   }

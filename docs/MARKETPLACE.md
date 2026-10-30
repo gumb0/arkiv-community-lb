@@ -240,8 +240,9 @@ owed: count times rate, from the records. It pays each provider once
 for all of its records, with one GLM transfer on the payout chain, and
 writes one **[receipt](ENTITIES.md#receipt)** per counter record. A
 provider's receipts from one run all carry the hash of that one
-transfer, and each names its own share of it. Receipts are permanent
-and cannot be changed, not even by settle.
+transfer, and each names its own share of it. Receipts last about six
+months, the chain's longest lifetime, which is longer than the record
+each one pays, and cannot be changed, not even by settle.
 
 Settle uses one key on both chains: the same address sends the
 transfer and writes the receipt, so anyone can check a receipt against

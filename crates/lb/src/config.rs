@@ -240,7 +240,7 @@ fn default_writer_url() -> String {
     "http://127.0.0.1:8560/".to_owned()
 }
 fn default_max_providers() -> u32 {
-    100
+    90
 }
 fn default_remote_port_start() -> u16 {
     20000
@@ -627,8 +627,8 @@ mod tests {
         assert_eq!(marketplace.writer_url, "http://127.0.0.1:8560/");
         assert_eq!(marketplace.wei_per_call, Wei::new(1_000_000_000_000_000));
         assert_eq!(marketplace.tunnel_server, "203.0.113.10:7000");
-        assert_eq!(marketplace.max_providers, 100);
-        assert!(marketplace.remote_ports().eq(20000..=20099));
+        assert_eq!(marketplace.max_providers, 90);
+        assert!(marketplace.remote_ports().eq(20000..=20089));
         assert_eq!(marketplace.discovery_interval, Duration::from_secs(300));
         assert_eq!(marketplace.refresh_interval, Duration::from_secs(3600));
         assert_eq!(marketplace.agreement_life, Duration::from_secs(259_200));

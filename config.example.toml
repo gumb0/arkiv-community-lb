@@ -84,9 +84,13 @@ wei_per_call = "1000000000000000"
 # Published in the LB listing. Yours to set, like the price.
 tunnel_server = "203.0.113.10:7000"
 # Agreement slots. At the cap a valid offer waits and expires on its
-# own. At most 100, the node's page: the agreement records are reloaded
-# in one page at startup, and the LB refuses to start otherwise.
-max_providers = 100
+# own. At most 100, the node's page: the agreement records and the open
+# counter records are each reloaded in one page at startup, and the LB
+# refuses to start with more. The page also has to hold the duplicate
+# records the LB tolerates for a while (an offer accepted twice during
+# a stall, a counter record created twice when a write's answer was
+# lost), one row each, so the default leaves room under the page.
+max_providers = 90
 # One loopback port on this host per slot, assigned at acceptance and
 # written into the agreement record; the tunnel server binds them. The
 # ports run from here up, max_providers of them.

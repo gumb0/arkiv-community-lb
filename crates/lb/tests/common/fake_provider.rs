@@ -268,6 +268,7 @@ fn render_entity(entity: &ArkivEntity) -> Value {
         "key": entity.key,
         "creator": entity.creator,
         "createdAt": format!("{:#x}", entity.created_at),
+        "updatedAt": format!("{:#x}", entity.updated_at),
         "expiresAt": format!("{:#x}", entity.expires_at),
         "attributes": attributes,
     })

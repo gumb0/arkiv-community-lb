@@ -312,6 +312,7 @@ impl Reader {
                 "key": true,
                 "creator": true,
                 "createdAt": true,
+                "updatedAt": true,
                 "expiresAt": true,
                 "attributes": true,
             },

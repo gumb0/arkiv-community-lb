@@ -289,6 +289,10 @@ pub struct ArkivEntity {
     pub creator: Address,
     #[serde(rename = "createdAt", deserialize_with = "deserialize_quantity")]
     pub created_at: u64,
+    /// The block of the last write to the entity: its creation, or the
+    /// latest patch or extend.
+    #[serde(rename = "updatedAt", deserialize_with = "deserialize_quantity")]
+    pub updated_at: u64,
     #[serde(rename = "expiresAt", deserialize_with = "deserialize_quantity")]
     pub expires_at: u64,
     /// Absent for an entity without attributes, possibly; such a row must
@@ -708,6 +712,7 @@ mod tests {
             key: key(KEY),
             creator: addr(LB),
             created_at: 0x191,
+            updated_at: 0x191,
             expires_at: 0x92e21,
             attributes: encoded.to_read(),
         }
@@ -720,6 +725,7 @@ mod tests {
             "key": "0xe1d4ab361c0bc9418474a0d4e0700ed5cdb7adcc17fff88737cc15566418f58c",
             "creator": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
             "createdAt": "0x7a",
+            "updatedAt": "0x7c",
             "expiresAt": "0xa93a",
             "attributeSchema": [
                 { "name": "kind", "type": "str", "indexed": true },
@@ -736,6 +742,7 @@ mod tests {
         }))
         .expect("the node's row parses");
         assert_eq!(entity.created_at, 0x7a);
+        assert_eq!(entity.updated_at, 0x7c);
         assert_eq!(&entity.payload().expect("a payload")[..], br#"{"v":1}"#);
         assert!(entity.is("probe"));
         assert_eq!(
@@ -752,6 +759,7 @@ mod tests {
             "key": "0xe1d4ab361c0bc9418474a0d4e0700ed5cdb7adcc17fff88737cc15566418f58c",
             "creator": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
             "createdAt": "0x7a",
+            "updatedAt": "0x7a",
             "expiresAt": "0xa93a"
         }))
         .expect("a row without attributes parses");

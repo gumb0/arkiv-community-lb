@@ -327,9 +327,11 @@ next to the LB address.
   agreements and open counters in one page and refuses to start with
   more, so `max_providers` is at most 100.
 - Select the record's fields by name: `key`, `creator`, `createdAt`,
-  `expiresAt` and `attributes` (all of them, or the names wanted,
-  `payload` among them). The node rejects a `select` naming anything
-  else, `payload` and `contentType` as entity fields included.
+  `updatedAt` (the block of the last write: creation, patch or
+  extend), `expiresAt` and `attributes` (all of them, or the names
+  wanted, `payload` among them). The node rejects a `select` naming
+  anything else, `payload` and `contentType` as entity fields
+  included.
 - Add `$expiresAt > <head>` to every query even though the node hides
   expired records. It is cheap, and it guards against records that
   expire in the same block.

@@ -801,6 +801,7 @@ mod tests {
             key: EntityKey::repeat_byte(0x11),
             creator: crate::chain::records::Address::repeat_byte(0x22),
             created_at: 5,
+            updated_at: 5,
             expires_at: 900,
             attributes: vec![
                 ArkivAttribute {
@@ -840,6 +841,7 @@ mod tests {
             key: EntityKey::repeat_byte(0x11),
             creator: crate::chain::records::Address::repeat_byte(0x22),
             created_at: 5,
+            updated_at: 5,
             expires_at: 900,
             attributes: vec![attribute("kind", "rpc.offer"), attribute("lb", "0x01")],
         };

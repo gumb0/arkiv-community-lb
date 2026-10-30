@@ -66,6 +66,8 @@ pub struct Entity {
     pub creator: Address,
     /// The head when it was written, like the node's creation block.
     pub created_at: u64,
+    /// The head at its last write: its creation, patch or extend.
+    pub updated_at: u64,
     pub expires_at: u64,
     pub attributes: Attributes,
 }
@@ -253,6 +255,7 @@ impl State {
             key,
             creator,
             created_at: self.head,
+            updated_at: self.head,
             expires_at,
             attributes,
         });
@@ -364,12 +367,13 @@ impl State {
 }
 
 impl Entity {
-    fn apply(&mut self, patch: &Patch) {
+    fn apply(&mut self, patch: &Patch, head: u64) {
         let mut attributes = self.attributes.clone();
         for (name, value) in patch.set.iter() {
             attributes = attributes.with(name, value.clone());
         }
         self.attributes = attributes;
+        self.updated_at = head;
     }
 
     fn matches(&self, condition: &Condition) -> bool {
@@ -389,6 +393,7 @@ impl Entity {
             key: self.key,
             creator: self.creator,
             created_at: self.created_at,
+            updated_at: self.updated_at,
             expires_at: self.expires_at,
             attributes: self.attributes.to_read(),
         }
@@ -503,7 +508,8 @@ impl ChainWriter for FakeChain {
         let mut state = self.state();
         state.sidecar()?;
         let index = state.position(patch.entity_key)?;
-        state.entities[index].apply(patch);
+        let head = state.head;
+        state.entities[index].apply(patch, head);
         let tx_hash = state.transaction(Transaction::Patch(patch.entity_key));
         Ok(Written {
             entity_key: patch.entity_key,
@@ -529,6 +535,7 @@ impl ChainWriter for FakeChain {
         let index = state.extendable(extend)?;
         let expires_at = state.expires_at(extend.expiration);
         state.entities[index].expires_at = expires_at;
+        state.entities[index].updated_at = state.head;
         let tx_hash = state.transaction(Transaction::Extend(extend.entity_key));
         Ok(Extended {
             entity_key: extend.entity_key,
@@ -582,7 +589,8 @@ impl ChainWriter for FakeChain {
                 }
                 Operation::Patch(patch) => {
                     let index = state.position(patch.entity_key)?;
-                    state.entities[index].apply(patch);
+                    let head = state.head;
+                    state.entities[index].apply(patch, head);
                     log.patched.push(patch.entity_key);
                 }
                 Operation::Delete(delete) => {
@@ -594,6 +602,7 @@ impl ChainWriter for FakeChain {
                     let index = state.position(extend.entity_key)?;
                     let expires_at = state.expires_at(extend.expiration);
                     state.entities[index].expires_at = expires_at;
+                    state.entities[index].updated_at = state.head;
                     log.extended.push(extend.entity_key);
                 }
             }

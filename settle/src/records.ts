@@ -3,15 +3,15 @@
 
 import {
   addr,
+  bytes,
+  type CreateEntityParameters,
+  defineSchema,
   ExpirationTime,
   i32,
-  jsonToPayload,
   key as keyAttribute,
   str,
-  type AttributeInputs,
-  type Expiry,
 } from "@arkiv-network/sdk"
-import { bytesToString, type Hex } from "viem"
+import { hexToString, stringToHex, type Hex } from "viem"
 import type { Row } from "./chain.ts"
 
 const SCHEMA_VERSION = 1
@@ -44,8 +44,14 @@ function attribute(row: Row, name: string, type: string): unknown {
   return value.value
 }
 
+// A record's JSON document rides in the bytes attribute named payload
+// (docs/ENTITIES.md), hex on the wire.
 function payloadJson(row: Row): Record<string, unknown> {
-  return JSON.parse(bytesToString(row.payload)) as Record<string, unknown>
+  const payload = row.attributes.payload
+  if (payload === undefined || payload.type !== "bytes") {
+    throw new Error(`record ${row.key} came without its payload`)
+  }
+  return JSON.parse(hexToString(payload.value as Hex)) as Record<string, unknown>
 }
 
 /** One settlement period of one agreement, closed and payable. */
@@ -99,14 +105,21 @@ export function decodeReceipt(row: Row): Receipt {
 
 // --- writing ---------------------------------------------------------------
 
+/**
+ * The receipt's attributes as the SDK writes them: every pointer and
+ * the kind indexed, the payload a blob. Unnamed, so the entity carries
+ * these attributes and no schema tag, like every other record.
+ */
+export const RECEIPT = defineSchema({
+  kind: str().indexed(),
+  v: i32().indexed(),
+  counter: keyAttribute().indexed(),
+  provider: addr().indexed(),
+  payload: bytes(),
+})
+
 /** A receipt as settle writes it: the whole create, nothing added later. */
-export type ReceiptRecord = {
-  attributes: AttributeInputs
-  payload: Uint8Array
-  contentType: "application/json"
-  expires: Expiry
-  flags: { readonly: true }
-}
+export type ReceiptRecord = CreateEntityParameters<typeof RECEIPT>
 
 /**
  * The receipt for one counter record, paid in full by one transfer.
@@ -116,24 +129,28 @@ export type ReceiptRecord = {
  */
 export function receiptFor(record: Counter, payout: { chainId: number; tx: Hex }): ReceiptRecord {
   return {
-    attributes: {
+    schema: RECEIPT,
+    values: {
       kind: str(KIND.receipt),
       v: i32(SCHEMA_VERSION),
       counter: keyAttribute(record.key),
       provider: addr(record.provider),
+      payload: bytes(
+        stringToHex(
+          JSON.stringify({
+            agreement: record.agreement,
+            count: Number(record.count),
+            wei_per_call: record.weiPerCall.toString(),
+            amount_wei: (record.count * record.weiPerCall).toString(),
+            payout: { chain_id: payout.chainId, tx: payout.tx },
+          }),
+        ),
+      ),
     },
-    payload: jsonToPayload({
-      agreement: record.agreement,
-      count: Number(record.count),
-      wei_per_call: record.weiPerCall.toString(),
-      amount_wei: (record.count * record.weiPerCall).toString(),
-      payout: { chain_id: payout.chainId, tx: payout.tx },
-    }),
-    contentType: "application/json",
     // A receipt has to outlive the record it paid for: settle reads a
     // record as unpaid until one of its own receipts names it, so a
     // receipt that expired first would have the next run pay again.
-    expires: ExpirationTime.permanent(),
+    expiration: ExpirationTime.permanent(),
     // And not even its writer may change one afterwards.
     flags: { readonly: true },
   }

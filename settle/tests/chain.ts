@@ -1,7 +1,7 @@
 // A chain the ledger runs over in tests: counter records and receipts
 // as the LB and settle write them, answered by what a query names.
 
-import { stringToBytes, type Hex } from "viem"
+import { stringToHex, type Hex } from "viem"
 import type { Attribute, Reader, Row } from "../src/chain.ts"
 import { KIND, type ReceiptRecord } from "../src/records.ts"
 
@@ -25,9 +25,13 @@ function entity(
   return {
     key: entityKey,
     creator,
-    attributes,
-    payload: stringToBytes(JSON.stringify(payload)),
+    attributes: { ...attributes, payload: document(payload) },
   }
+}
+
+/** A JSON document as the bytes attribute that carries it: hex on the wire. */
+export function document(value: unknown): Attribute {
+  return { type: "bytes", value: stringToHex(JSON.stringify(value)) }
 }
 
 /** A closed counter record, as the LB's flush leaves it. */
@@ -66,13 +70,11 @@ export function closedCounter(options: {
 export function openCounter(options: { key: Hex; provider: Hex; count: number }): Row {
   const record = closedCounter(options)
   record.attributes.state = { type: "str", value: "open" }
-  record.payload = stringToBytes(
-    JSON.stringify({
-      count: options.count,
-      wei_per_call: (10n ** 15n).toString(),
-      opened_block: 100,
-    }),
-  )
+  record.attributes.payload = document({
+    count: options.count,
+    wei_per_call: (10n ** 15n).toString(),
+    opened_block: 100,
+  })
   return record
 }
 
@@ -86,8 +88,7 @@ export function written(record: ReceiptRecord, entityKey: Hex, creator: Hex = SE
   return {
     key: entityKey,
     creator,
-    attributes: record.attributes as Record<string, Attribute>,
-    payload: record.payload,
+    attributes: record.values as Record<string, Attribute>,
   }
 }
 

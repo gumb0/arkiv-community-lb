@@ -1,7 +1,7 @@
 // Arkiv as settle sees it: queries only, every page of them. Behind a
 // small surface, so the ledger is tested over a fake.
 
-import { createPublicClient, createWalletClient, type Entity } from "@arkiv-network/sdk"
+import { createPublicClient, createWalletClient } from "@arkiv-network/sdk"
 import { defineChain, http, type Hex } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import type { ReceiptRecord } from "./records.ts"
@@ -10,14 +10,13 @@ import type { ReceiptRecord } from "./records.ts"
 export type Attribute = { type: string; value: unknown }
 
 /**
- * A row as settle reads it: the entity's key and creator, its payload,
- * and its attributes by name. The one shape the rest of settle sees,
- * whatever the SDK's rows look like.
+ * A row as settle reads it: the entity's key and creator, and its
+ * attributes by name, the payload among them. The one shape the rest
+ * of settle sees, whatever the SDK's rows look like.
  */
 export type Row = {
   key: Hex
   creator: Hex
-  payload: Uint8Array
   attributes: Record<string, Attribute>
 }
 
@@ -30,7 +29,7 @@ export type Reader = {
 }
 
 /** The node's page maximum. Asking for more is an error. */
-const PAGE = 200
+const PAGE = 100
 
 export async function connectReader(rpcUrl: string, apiKey?: string): Promise<Reader> {
   const transport = http(rpcUrl, {
@@ -46,23 +45,17 @@ export async function connectReader(rpcUrl: string, apiKey?: string): Promise<Re
         const page = await client.query(text, {
           limit: PAGE,
           cursor,
-          select: { key: true, creator: true, payload: true, attributes: true },
+          select: { $key: true, $creator: true, $attributes: true },
         })
-        return { entities: page.entities.map(row), cursor: page.cursor }
+        return {
+          entities: page.entities.map((flat) => ({
+            key: flat.$key,
+            creator: flat.$creator,
+            attributes: flat.$attributes as Record<string, Attribute>,
+          })),
+          cursor: page.cursor,
+        }
       }),
-  }
-}
-
-/** The SDK's entity as a row, with every selected part present. */
-function row(entity: Entity): Row {
-  if (entity.payload === undefined) {
-    throw new Error(`record ${entity.key} came without its payload`)
-  }
-  return {
-    key: entity.key as Hex,
-    creator: entity.creator as Hex,
-    payload: entity.payload,
-    attributes: (entity.attributes ?? {}) as Record<string, Attribute>,
   }
 }
 

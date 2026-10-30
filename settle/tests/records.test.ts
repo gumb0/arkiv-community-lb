@@ -4,9 +4,8 @@
 import { deepStrictEqual as deepEqual, strictEqual as equal, throws } from "node:assert/strict"
 import { describe, it } from "node:test"
 import { ExpirationTime } from "@arkiv-network/sdk"
-import { stringToBytes } from "viem"
 import { decodeCounter, decodeReceipt, receiptFor } from "../src/records.ts"
-import { address, closedCounter, key, receipt } from "./chain.ts"
+import { address, closedCounter, document, key, receipt } from "./chain.ts"
 
 describe("a closed counter record", () => {
   it("reads its count, its own rate and the blocks it covers", () => {
@@ -33,9 +32,7 @@ describe("a closed counter record", () => {
   it("refuses one that names no closing block", () => {
     // Only a closed record is payable, and a closed record has one.
     const open = closedCounter({ key: key(7), provider: address(1), count: 1 })
-    open.payload = stringToBytes(
-      JSON.stringify({ count: 1, wei_per_call: "1000", opened_block: 10 }),
-    )
+    open.attributes.payload = document({ count: 1, wei_per_call: "1000", opened_block: 10 })
     throws(() => decodeCounter(open), /closing block/)
   })
 
@@ -66,7 +63,7 @@ describe("a receipt", () => {
       decodeCounter(closedCounter({ key: key(7), provider: address(1), count: 10 })),
       { chainId: 560048, tx: key(0xff) },
     )
-    deepEqual(record.expires, ExpirationTime.permanent())
-    equal(record.flags.readonly, true)
+    deepEqual(record.expiration, ExpirationTime.permanent())
+    equal(record.flags?.readonly, true)
   })
 })

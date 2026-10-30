@@ -11,12 +11,14 @@
 // Run: npm run replay
 // Gas cost: one small create (plus one duplicate, if the bug is present).
 
-import { ExpirationTime, str } from "@arkiv-network/sdk"
+import { bytes, defineSchema, ExpirationTime, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
 import { env, privateKeyFromFile } from "../src/env.ts"
 
 const RUN = `r${Date.now().toString(36)}`
+
+const Fixture = defineSchema({ kind: str().indexed(), run: str().indexed(), payload: bytes() })
 
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
@@ -52,10 +54,9 @@ const query = async () =>
 const created: Hex[] = []
 try {
   const { entityKey, txHash } = await writer.createEntity({
-    payload: new Uint8Array([1]),
-    contentType: "application/octet-stream",
-    attributes: { kind: str("replay-probe"), run: str(RUN) },
-    expires: ExpirationTime.fromBlocks(600),
+    schema: Fixture,
+    values: { kind: str("replay-probe"), run: str(RUN), payload: bytes(new Uint8Array([1])) },
+    expiration: ExpirationTime.fromBlocks(600),
   })
   created.push(entityKey)
   console.log(`created ${entityKey}\n  tx ${txHash} (mined - receipt seen)`)

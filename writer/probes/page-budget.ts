@@ -1,7 +1,7 @@
 // Page-budget probe: how big can one arkiv_query page get? The LB's
 // max_response_size must exceed the node's page size, or legitimate query
 // pages get truncated — and whether arkiv-reth bounds pages by bytes at
-// all (or only by the 200-row limit) is unverified. This measures it:
+// all (or only by the 100-row limit) is unverified. This measures it:
 // create fat-payload fixtures, ask for them all in one page, report rows
 // and bytes.
 //
@@ -15,7 +15,7 @@
 // "no budget hit" result is a lower bound, not proof of none — raise
 // PAGE_FIXTURES to push the bound.
 
-import { ExpirationTime, i32, str } from "@arkiv-network/sdk"
+import { bytes, defineSchema, ExpirationTime, i32, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
 import { env, privateKeyFromFile } from "../src/env.ts"
@@ -24,6 +24,13 @@ const TTL = ExpirationTime.fromBlocks(600) // blocks, so a faster chain means th
 const RUN = `r${Date.now().toString(36)}`
 const FIXTURES = Number(process.env.PAGE_FIXTURES ?? "60")
 const PAYLOAD_KB = Number(process.env.PAGE_PAYLOAD_KB ?? "100")
+
+const Fixture = defineSchema({
+  kind: str().indexed(),
+  run: str().indexed(),
+  rank: i32().indexed(),
+  payload: bytes(),
+})
 
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
@@ -69,27 +76,26 @@ const startedAll = Date.now()
 try {
   for (let i = 0; i < FIXTURES; i++) {
     const { entityKey } = await writer.createEntity({
-      payload,
-      contentType: "application/octet-stream",
-      attributes: { kind: str("page-budget"), run: str(RUN), rank: i32(i) },
-      expires: TTL,
+      schema: Fixture,
+      values: { kind: str("page-budget"), run: str(RUN), rank: i32(i), payload: bytes(payload) },
+      expiration: TTL,
     })
     created.push(entityKey)
     if ((i + 1) % 10 === 0) console.log(`  ${i + 1}/${FIXTURES} created`)
   }
   console.log(`fixtures on chain in ${((Date.now() - startedAll) / 1000).toFixed(0)}s\n`)
 
-  const { result, bytes } = await rawRpcMeasured("arkiv_query", [
+  const { result, bytes: size } = await rawRpcMeasured("arkiv_query", [
     `kind = str('page-budget') AND run = str('${RUN}')`,
     {
-      select: { key: true, payload: true, attributes: { run: true, kind: true, rank: true } },
-      limit: "0xc8", // 200, the row cap
+      select: { key: true, attributes: { run: true, kind: true, rank: true, payload: true } },
+      limit: "0x64", // 100, the row cap
     },
   ])
   type Row = { key: Hex; attributes?: { name: string; value: unknown }[] }
   const page = result as { data?: Row[]; cursor?: string }
   const rows = page.data?.length ?? 0
-  const mb = (bytes / 1024 / 1024).toFixed(2)
+  const mb = (size / 1024 / 1024).toFixed(2)
 
   // Distinctness and scoping: a run-scoped query must return exactly our
   // fixtures, once each. 2026-08-24: runs returned 109 and 112 rows from
@@ -104,7 +110,7 @@ try {
   const duplicated = [...counts.entries()].filter(([, n]) => n > 1)
   const foreign = (page.data ?? []).filter((row) => !ours.has(row.key.toLowerCase()))
 
-  console.log(`one page, limit 200, payload selected:`)
+  console.log(`one page, limit 100, payload selected:`)
   console.log(`  rows returned:  ${rows} of ${FIXTURES} fixtures`)
   console.log(
     `  distinct keys (case-normalized): ${counts.size}; duplicated: ${duplicated.length}; not ours: ${foreign.length}`,
@@ -122,7 +128,7 @@ try {
         `run=${JSON.stringify(attr("run"))} rank=${JSON.stringify(attr("rank"))}`,
     )
   }
-  console.log(`  response bytes: ${bytes} (${mb} MB, ~${Math.round(bytes / Math.max(rows, 1) / 1024)} KB/row)`)
+  console.log(`  response bytes: ${size} (${mb} MB, ~${Math.round(size / Math.max(rows, 1) / 1024)} KB/row)`)
   console.log(`  cursor present: ${page.cursor !== undefined}`)
 
   if (rows < FIXTURES) {
@@ -145,7 +151,7 @@ try {
     // explain.
     const { result } = await rawRpcMeasured("arkiv_query", [
       `kind = str('page-budget')`,
-      { select: { key: true }, limit: "0xc8" },
+      { select: { key: true }, limit: "0x64" },
     ])
     const remaining = (result as { data?: unknown[] }).data?.length ?? 0
     console.log(

@@ -264,11 +264,10 @@ await step("cleanup: one /execute-batch deletes everything this run created", as
   await ok("/execute-batch", { deletes: keys.map((key) => ({ entityKey: key })) })
   // Poll for the rows to vanish, and on failure say per row whether a $key
   // lookup still sees it: a row that is really alive after every returned
-  // key was deleted is a phantom — the dev node at fast sealing executes a
-  // create twice and mints a second entity under a key nobody was told
-  // (probes/create-dup.ts). dev-node.sh defaults to 2 s sealing for that
-  // reason; a "still visible ($key lookup: present)" line here means a node
-  // running faster.
+  // key was deleted is a phantom, an entity minted under a key nobody was
+  // told. An old node line did that at fast sealing (probes/create-dup.ts
+  // is the diagnosis); a "still visible ($key lookup: present)" line here
+  // means it is back.
   const deadline = Date.now() + 30_000
   let left: QueriedRow[] = []
   do {

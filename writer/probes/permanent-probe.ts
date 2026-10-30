@@ -7,13 +7,25 @@
 // an Authorization: Bearer header).
 // Run: npm run permanent
 
-import { ExpirationTime, jsonToPayload, MAX_EXPIRES_AT, str } from "@arkiv-network/sdk"
+import {
+  bytes,
+  defineSchema,
+  ExpirationTime,
+  type Expiry,
+  MAX_EXPIRES_AT,
+  str,
+} from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
 import { env, privateKeyFromFile } from "../src/env.ts"
 
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
+
+// A JSON document in a bytes attribute, the way the LB stores its records.
+const document = (value: unknown) => bytes(new TextEncoder().encode(JSON.stringify(value)))
+
+const Probe = defineSchema({ kind: str().indexed(), payload: bytes() })
 
 async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
   const res = await fetch(rpcUrl, {
@@ -38,10 +50,9 @@ console.log(`permanent probe: address ${writer.address}, chain ${writer.chainId}
 console.log(`MAX_EXPIRES_AT = ${MAX_EXPIRES_AT} (u64 max: ${MAX_EXPIRES_AT === 2n ** 64n - 1n})\n`)
 
 const { entityKey, txHash, expiresAt } = await writer.createEntity({
-  payload: jsonToPayload({ probe: "permanent" }),
-  contentType: "application/json",
-  attributes: { kind: str("permanent-probe") },
-  expires: ExpirationTime.permanent(),
+  schema: Probe,
+  values: { kind: str("permanent-probe"), payload: document({ probe: "permanent" }) },
+  expiration: ExpirationTime.permanent(),
 })
 const receipt = (await rawRpc("eth_getTransactionReceipt", [txHash])) as { gasUsed: Hex }
 console.log(`created ${entityKey}`)
@@ -78,12 +89,11 @@ async function attempt(label: string, run: () => Promise<unknown>) {
   }
 }
 
-async function createFor(expires: Parameters<typeof writer.createEntity>[0]["expires"]) {
+async function createFor(expiration: Expiry) {
   const { entityKey } = await writer.createEntity({
-    payload: jsonToPayload({ probe: "lifetime-bound" }),
-    contentType: "application/json",
-    attributes: { kind: str("permanent-probe") },
-    expires,
+    schema: Probe,
+    values: { kind: str("permanent-probe"), payload: document({ probe: "lifetime-bound" }) },
+    expiration,
   })
   return entityKey
 }
@@ -99,6 +109,6 @@ if (key) await writer.deleteEntity({ entityKey: key })
 // shortening the engine would refuse for that reason instead.
 const short = await createFor(ExpirationTime.fromBlocks(100))
 await attempt("extend a 100-block entity by 1 year (minLifetime)", () =>
-  writer.extendEntity({ entityKey: short, expires: ExpirationTime.fromBlocks(BLOCKS_PER_YEAR) }),
+  writer.extendEntity({ entityKey: short, expiration: ExpirationTime.fromBlocks(BLOCKS_PER_YEAR) }),
 )
 await writer.deleteEntity({ entityKey: short })

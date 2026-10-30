@@ -10,7 +10,7 @@
 // COUNTERS_N (default 100).
 // Run: npm run counters
 
-import { addr, ExpirationTime, i32, jsonToPayload, key, str } from "@arkiv-network/sdk"
+import { addr, bytes, defineSchema, ExpirationTime, i32, key, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
 import { env, privateKeyFromFile } from "../src/env.ts"
@@ -19,6 +19,26 @@ const n = Number(process.env.COUNTERS_N ?? "100")
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
 const RUN = `r${Date.now().toString(36)}`
+
+// A JSON document in a bytes attribute, the way the LB stores its records.
+const document = (value: unknown) => bytes(new TextEncoder().encode(JSON.stringify(value)))
+
+// The counter and receipt records as the LB writes them (docs/ENTITIES.md).
+const Counter = defineSchema({
+  kind: str().indexed(),
+  v: i32().indexed(),
+  agreement: key().indexed(),
+  provider: addr().indexed(),
+  state: str().indexed(),
+  payload: bytes(),
+})
+const Receipt = defineSchema({
+  kind: str().indexed(),
+  v: i32().indexed(),
+  counter: key().indexed(),
+  provider: addr().indexed(),
+  payload: bytes(),
+})
 
 let rpcId = 0
 async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
@@ -76,32 +96,33 @@ const wei = "1000000000000000"
 const createdEntities = await createInBatches(
   "counters create",
   Array.from({ length: n }, (_, i) => ({
-    payload: jsonToPayload({ count: 48213 + i, wei_per_call: wei }),
-    contentType: "application/json",
-    attributes: {
+    schema: Counter,
+    values: {
       kind: str("rpc.counter"),
       v: i32(1),
       agreement: key(agreementKey(i)),
       provider: addr(provider(i)),
       state: str("open"),
+      payload: document({ count: 48213 + i, wei_per_call: wei }),
     },
-    expires: ExpirationTime.fromBlocks(300),
+    expiration: ExpirationTime.fromBlocks(300),
   })),
 )
 
 const { txHash: patchTx } = await writer.executeBatch({
   patches: createdEntities.map((entityKey, i) => ({
+    schema: Counter,
     entityKey,
-    payload: jsonToPayload({ count: 96426 + i, wei_per_call: wei }),
+    set: { payload: document({ count: 96426 + i, wei_per_call: wei }) },
   })),
 })
 await report("counters patch (count)", patchTx, n)
 
 const { txHash: closeTx } = await writer.executeBatch({
   patches: createdEntities.map((entityKey, i) => ({
+    schema: Counter,
     entityKey,
-    payload: jsonToPayload({ count: 144639 + i, wei_per_call: wei }),
-    set: { state: str("closed") },
+    set: { payload: document({ count: 144639 + i, wei_per_call: wei }), state: str("closed") },
   })),
 })
 await report("counters close (count and state)", closeTx, n)
@@ -109,21 +130,21 @@ await report("counters close (count and state)", closeTx, n)
 const receipts = await createInBatches(
   "receipt create",
   createdEntities.map((counterKey, i) => ({
-    payload: jsonToPayload({
-      agreement: agreementKey(i),
-      count: 144639 + i,
-      wei_per_call: wei,
-      amount_wei: "144639000000000000000",
-      payout: { chain_id: 560048, tx: `0x${"ab".repeat(32)}` },
-    }),
-    contentType: "application/json",
-    attributes: {
+    schema: Receipt,
+    values: {
       kind: str("rpc.receipt"),
       v: i32(1),
       counter: key(counterKey),
       provider: addr(provider(i)),
+      payload: document({
+        agreement: agreementKey(i),
+        count: 144639 + i,
+        wei_per_call: wei,
+        amount_wei: "144639000000000000000",
+        payout: { chain_id: 560048, tx: `0x${"ab".repeat(32)}` },
+      }),
     },
-    expires: ExpirationTime.fromBlocks(300),
+    expiration: ExpirationTime.fromBlocks(300),
   })),
 )
 

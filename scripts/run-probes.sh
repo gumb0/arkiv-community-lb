@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # run-probes.sh [npm-script...] — probes against a throwaway chain on this
-# machine. Defaults to `probes`: the two smokes, plus every probe ported
-# to the current SDK (writer/tsconfig.json lists the ones still waiting).
-# The probes beyond the smokes measure the pinned SDK and node image, so
-# they are what to run after moving either pin; CI runs the smokes.
+# machine. Defaults to `probes`: the two smokes and the probes that
+# measure the pinned SDK and node image, which is what to run after moving
+# either pin; CI runs the smokes.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"

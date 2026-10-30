@@ -4,6 +4,48 @@ Notable changes per release, newest first. The LB box deploys a tag:
 `git checkout <tag> && docker compose up -d --build`
 ([docs/RUNBOOK.md](docs/RUNBOOK.md)).
 
+## v0.5.0
+
+The move to the rabdi testnet and its node line, arkiv-reth v1.0.0.
+This release does not run on an earlier network: a node's entity is
+now its typed attributes, with no payload field and no content type.
+
+- A record's JSON payload travels in a `bytes` attribute named
+  `payload`, never indexed. The records keep their fields and `v`
+  stays 1 (docs/ENTITIES.md). `updatedAt` is selected with every read.
+- The writer sidecar and settle are on `@arkiv-network/sdk` 1.0.0. The
+  sidecar's wire format changes: attributes alone, with an `indexed`
+  flag and a `bytes` type in `0x` hex; no `payload`, no `contentType`,
+  no `bytes32`; `expires` is `expiration`, and it has no `"permanent"`
+  form (docs/CHAIN_WRITER.md).
+- A query page is 100 rows (was 200), and `max_providers` defaults to
+  90, which leaves room in the page for the duplicate records the LB
+  tolerates for a while. Reading through the cursor instead is #69.
+- The chain caps a lifetime at 7,884,000 blocks, about 182 days, and
+  refuses a permanent expiry. A lifetime in the config above the cap
+  is refused at startup (#72 is about the cap being a constant).
+- Settle's receipts live the chain's maximum lifetime, which outlasts
+  the record each one pays, so they are no longer permanent. Settle
+  pages by offset and starts a walk over if the match count changes.
+- **The integrity check is the block check alone.** Nodes serve state
+  at the chain head only, and the entity check read at the finalized
+  height, so it is switched off in the code until it is reworked. A
+  provider serving wrong entities behind right blocks is not caught
+  (docs/INTEGRITY.md). The rig's `wrong-entity` scenario is left out
+  of `rig all` until then.
+- `gas_warn_below` defaults to 0.1 GLM (was 0.02): a batch needs more
+  in the key than it costs. RUNBOOK's costs are measured again, since
+  a write is now charged for compute and for storage by lifetime.
+
+Upgrade notes: a new chain, so a new start. In `.env`, point
+`ARKIV_RPC_URL` and `ARKIV_API_KEY` at the network. In `config.toml`,
+set `health.chain_id` and check `tunnel_server`, which the listing
+publishes. Fund the LB and settle keys on the new chain, delete the
+hourly stats (`docker compose down`, then `docker volume rm
+arkiv-community-lb_lb-state`), and build: `docker compose up -d
+--build`. Settle what the previous chain owes with the previous
+release first, if it matters: this settle cannot read it.
+
 ## v0.4.0
 
 The load test and what it changed: the open-files limit, the attempt

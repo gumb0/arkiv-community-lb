@@ -20,8 +20,8 @@
     "replay": "node --env-file-if-exists=../.env probes/replay-probe.ts"
   },
   "dependencies": {
-    "@arkiv-network/sdk": "0.8.0-dev.3",
-    "viem": "^2.21.0"
+    "@arkiv-network/sdk": "0.9.0-next.3",
+    "viem": "^2.38.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

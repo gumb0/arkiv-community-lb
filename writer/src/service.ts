@@ -11,12 +11,12 @@
 // to. Everything else is a write.
 //
 // Wire format (write routes are POST, bodies and responses are JSON):
-//   payload      base64 string
 //   entity keys  0x-prefixed hex strings
 //   attributes   { name: { type: "str"|"bool"|"i32"|"u64"|"u256"|"dec"|
-//                          "addr"|"key"|"bytes32", value: ... } }
+//                          "addr"|"key"|"bytes", value: ..., indexed?: bool } }
 //                (u64/u256/dec/salt values are decimal strings, since JSON
-//                numbers cannot carry them)
+//                numbers cannot carry them; bytes is 0x hex; indexed
+//                defaults to true, and bytes is never indexed)
 //   expiration   "permanent" | { seconds: n } | { blocks: n }
 //                | { atBlock: "decimal string" }
 //   responses    the SDK's return shape, with bigints as decimal strings
@@ -30,10 +30,12 @@
 
 import {
   addr,
-  type AttributeInputs,
+  type AnyColumn,
+  type ArkivValue,
   bool,
-  bytes32,
+  bytes,
   dec,
+  defineSchema,
   EntityMutationError,
   ExpirationTime,
   type Expiry,
@@ -42,7 +44,6 @@ import {
   str,
   u64,
   u256,
-  type ValueInput,
 } from "@arkiv-network/sdk"
 import { createServer, type Server } from "node:http"
 import { pathToFileURL } from "node:url"
@@ -83,7 +84,7 @@ function asHex(value: unknown, what: string): Hex {
   return s as Hex
 }
 
-function decodeValue(wire: unknown, name: string): ValueInput {
+function decodeValue(wire: unknown, name: string): ArkivValue {
   const record = asRecord(wire, `attribute ${name}`)
   const value = record.value
   switch (record.type) {
@@ -105,18 +106,41 @@ function decodeValue(wire: unknown, name: string): ValueInput {
       return addr(asString(value, `attribute ${name}`))
     case "key":
       return key(asHex(value, `attribute ${name}`))
-    case "bytes32":
-      return bytes32(asHex(value, `attribute ${name}`))
+    case "bytes":
+      return bytes(asHex(value, `attribute ${name}`))
     default:
       fail(`attribute ${name} has unknown type ${JSON.stringify(record.type)}`)
   }
 }
 
-function decodeAttributes(wire: unknown, what: string): AttributeInputs {
-  const record = asRecord(wire, what)
-  return Object.fromEntries(
-    Object.entries(record).map(([name, value]) => [name, decodeValue(value, name)]),
-  )
+// The SDK writes through a schema, so the attributes a request carries are
+// also declared as one: each value's type constructor, called with no
+// argument, is its column. Unnamed, so the entity carries exactly the
+// attributes sent and no schema tag.
+const indexable = { str, bool, i32, u64, u256, dec, addr, key }
+
+function columnOf(value: ArkivValue, indexed: unknown, name: string): AnyColumn {
+  if (indexed !== undefined && typeof indexed !== "boolean") {
+    fail(`attribute ${name}: indexed must be a boolean`)
+  }
+  if (value.type === "bytes") {
+    if (indexed === true) fail(`attribute ${name}: bytes is never indexed`)
+    return bytes()
+  }
+  const column = indexable[value.type]()
+  return indexed === false ? column : column.indexed()
+}
+
+type Declared = { columns: Record<string, AnyColumn>; values: Record<string, ArkivValue> }
+
+function decodeAttributes(wire: unknown, what: string): Declared {
+  const declared: Declared = { columns: {}, values: {} }
+  for (const [name, entry] of Object.entries(asRecord(wire, what))) {
+    const value = decodeValue(entry, name)
+    declared.columns[name] = columnOf(value, asRecord(entry, `attribute ${name}`).indexed, name)
+    declared.values[name] = value
+  }
+  return declared
 }
 
 function decodeExpiry(wire: unknown): Expiry {
@@ -128,19 +152,13 @@ function decodeExpiry(wire: unknown): Expiry {
   fail(`expiration must be "permanent", { seconds }, { blocks } or { atBlock }`)
 }
 
-function decodePayload(wire: unknown, what: string): Uint8Array {
-  return Uint8Array.from(Buffer.from(asString(wire, what), "base64"))
-}
-
 function decodeCreate(wire: unknown): CreateOp {
   const record = asRecord(wire, "create")
+  const { columns, values } = decodeAttributes(record.attributes, "create.attributes")
   const op: CreateOp = {
-    payload: decodePayload(record.payload, "create.payload"),
-    contentType: asString(record.contentType, "create.contentType"),
-    expires: decodeExpiry(record.expiration),
-  }
-  if (record.attributes !== undefined) {
-    op.attributes = decodeAttributes(record.attributes, "create.attributes")
+    schema: defineSchema(columns),
+    values,
+    expiration: decodeExpiry(record.expiration),
   }
   if (record.flags !== undefined) {
     const flags = asRecord(record.flags, "create.flags")
@@ -155,17 +173,25 @@ function decodeCreate(wire: unknown): CreateOp {
 
 function decodePatch(wire: unknown): PatchOp {
   const record = asRecord(wire, "patch")
-  const op: PatchOp = { entityKey: asHex(record.entityKey, "patch.entityKey") }
-  if (record.set !== undefined) op.set = decodeAttributes(record.set, "patch.set")
+  const entityKey = asHex(record.entityKey, "patch.entityKey")
+  const columns: Record<string, AnyColumn> = {}
+  const changes: { set?: Record<string, ArkivValue>; unset?: string[] } = {}
+  if (record.set !== undefined) {
+    const declared = decodeAttributes(record.set, "patch.set")
+    Object.assign(columns, declared.columns)
+    changes.set = declared.values
+  }
   if (record.unset !== undefined) {
     if (!Array.isArray(record.unset)) fail("patch.unset must be an array")
-    op.unset = record.unset.map((name, i) => asString(name, `patch.unset[${i}]`))
+    changes.unset = record.unset.map((name, i) => asString(name, `patch.unset[${i}]`))
+    // An unset names a column the schema must know as optional; its type
+    // is not part of the tombstone, so any will do.
+    for (const name of changes.unset) columns[name] ??= str().optional()
   }
-  if (record.payload !== undefined) op.payload = decodePayload(record.payload, "patch.payload")
-  if (record.contentType !== undefined) {
-    op.contentType = asString(record.contentType, "patch.contentType")
+  if (changes.set === undefined && changes.unset === undefined) {
+    fail("patch needs set or unset")
   }
-  return op
+  return { schema: defineSchema(columns), entityKey, ...changes }
 }
 
 function decodeDelete(wire: unknown): DeleteOp {
@@ -176,7 +202,7 @@ function decodeExtend(wire: unknown): ExtendOp {
   const record = asRecord(wire, "extend")
   return {
     entityKey: asHex(record.entityKey, "extend.entityKey"),
-    expires: decodeExpiry(record.expiration),
+    expiration: decodeExpiry(record.expiration),
   }
 }
 

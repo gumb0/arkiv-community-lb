@@ -1,12 +1,12 @@
-// Smoke test for the writer module against a live Arkiv network (0.8 API).
-// Reads stay raw JSON-RPC on purpose: they validate the read path the
-// LB itself will use, not the SDK's reader.
+// Smoke test for the writer module against a live Arkiv network. Reads
+// stay raw JSON-RPC on purpose: they validate the read path the LB itself
+// will use, not the SDK's reader.
 //
 // Env: WRITER_PRIVATE_KEY_FILE, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
 // an Authorization: Bearer header).
 // Run: npm run writer-smoke
 
-import { ExpirationTime, i32, jsonToPayload, str } from "@arkiv-network/sdk"
+import { bytes, defineSchema, ExpirationTime, i32, str } from "@arkiv-network/sdk"
 import { toHex, type Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
 import { env, privateKeyFromFile } from "../src/env.ts"
@@ -36,21 +36,12 @@ async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
 
 type QueriedRow = {
   key?: Hex
-  payload?: Hex
   expiresAt?: Hex
   creator?: Hex
-  contentType?: string
   attributes?: { name: string; type: string; value: unknown }[]
 }
 
-const SELECT_ALL = {
-  key: true,
-  payload: true,
-  attributes: true,
-  expiresAt: true,
-  creator: true,
-  contentType: true,
-}
+const SELECT_ALL = { key: true, attributes: true, expiresAt: true, creator: true }
 
 async function query(q: string, options: Record<string, unknown> = {}): Promise<QueriedRow[]> {
   const result = (await rawRpc("arkiv_query", [q, { select: SELECT_ALL, ...options }])) as {
@@ -101,14 +92,27 @@ await step("account is funded", async () => {
   assert(balance > 0n, "account has gas")
 })
 
-const payload = jsonToPayload({ probe: "arkiv-writer-smoke", run: RUN })
+// A JSON document in a bytes attribute, the way the LB stores its records.
+const json = (document: unknown) => new TextEncoder().encode(JSON.stringify(document))
+const payload = json({ probe: "arkiv-writer-smoke", run: RUN })
+
+// Unnamed, so the entity carries exactly these attributes and no schema
+// tag. flag is optional: the patch below unsets it.
+const Probe = defineSchema({
+  kind: str().indexed(),
+  run: str().indexed(),
+  rank: i32().indexed(),
+  flag: str().indexed().optional(),
+  status: str().indexed().optional(),
+  batched: str().indexed().optional(),
+  payload: bytes(),
+})
 
 const { entityKey } = await step("create entity", async () => {
   const created = await writer.createEntity({
-    payload,
-    contentType: "application/json",
-    attributes: { kind: str("smoke"), run: str(RUN), rank: i32(1), flag: str("y") },
-    expires: TTL,
+    schema: Probe,
+    values: { kind: str("smoke"), run: str(RUN), rank: i32(1), flag: str("y"), payload: bytes(payload) },
+    expiration: TTL,
   })
   console.log(`  key ${created.entityKey}, expiresAt ${created.expiresAt}`)
   return created
@@ -117,16 +121,20 @@ const { entityKey } = await step("create entity", async () => {
 await step("raw read-back matches (new grammar + select)", async () => {
   const row = await byKey(entityKey)
   assert(row !== undefined, "entity found via arkiv_query")
-  assert(row.payload === toHex(payload), "payload round-trips byte-identical")
+  assert(attrValue(row, "payload") === toHex(payload), "payload round-trips byte-identical")
   assert(row.creator?.toLowerCase() === writer.address.toLowerCase(), "creator is the writer")
-  assert(row.contentType === "application/json", "contentType round-trips")
   assert(attrValue(row, "rank") === 1, "i32 attribute comes back as JSON number")
   assert(attrValue(row, "run") === RUN, "str attribute round-trips")
+  assert(
+    !row.attributes?.some((attribute) => attribute.name === "arkiv.schema"),
+    "an unnamed schema leaves no tag",
+  )
 })
 
 await step("patch: set + tombstone unset, expiry untouched", async () => {
   const before = await byKey(entityKey)
   await writer.patchEntity({
+    schema: Probe,
     entityKey,
     set: { rank: i32(2), status: str("patched") },
     unset: ["flag"],
@@ -136,18 +144,18 @@ await step("patch: set + tombstone unset, expiry untouched", async () => {
   assert(attrValue(after, "rank") === 2, "set overwrote rank")
   assert(attrValue(after, "status") === "patched", "set added status")
   assert(attrValue(after, "flag") === undefined, "unset removed flag (tombstone)")
-  assert(after.payload === toHex(payload), "payload untouched by attribute patch")
+  assert(attrValue(after, "payload") === toHex(payload), "payload untouched by attribute patch")
   assert(after.expiresAt === before?.expiresAt, "patch never moves expiry")
 })
 
 await step("extend: grows, and shrinking reverts with a cause", async () => {
   const before = BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
-  await writer.extendEntity({ entityKey, expires: ExpirationTime.fromBlocks(150) })
+  await writer.extendEntity({ entityKey, expiration: ExpirationTime.fromBlocks(150) })
   const grown = BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
   console.log(`  expiresAt ${before} -> ${grown}`)
   assert(grown > before, "expiry strictly increased")
   try {
-    await writer.extendEntity({ entityKey, expires: ExpirationTime.fromBlocks(1) })
+    await writer.extendEntity({ entityKey, expiration: ExpirationTime.fromBlocks(1) })
     assert(false, "shrinking extend should revert")
   } catch (error) {
     assert((error as Error).name === "EntityMutationError", "typed EntityMutationError")
@@ -157,14 +165,18 @@ await step("extend: grows, and shrinking reverts with a cause", async () => {
 
 await step("readonly: patching a readonly entity reverts", async () => {
   const ro = await writer.createEntity({
-    payload: jsonToPayload({ probe: "smoke-readonly", run: RUN }),
-    contentType: "application/json",
-    attributes: { kind: str("smoke"), run: str(RUN) },
-    expires: TTL,
+    schema: Probe,
+    values: {
+      kind: str("smoke"),
+      run: str(RUN),
+      rank: i32(0),
+      payload: bytes(json({ probe: "smoke-readonly", run: RUN })),
+    },
+    expiration: TTL,
     flags: { readonly: true },
   })
   try {
-    await writer.patchEntity({ entityKey: ro.entityKey, set: { rank: i32(9) } })
+    await writer.patchEntity({ schema: Probe, entityKey: ro.entityKey, set: { rank: i32(9) } })
     assert(false, "patching readonly should revert")
   } catch (error) {
     assert((error as Error).name === "EntityMutationError", "typed EntityMutationError")
@@ -173,14 +185,18 @@ await step("readonly: patching a readonly entity reverts", async () => {
 
 await step("batch: two creates + one patch in one transaction", async () => {
   const make = (n: number) => ({
-    payload: jsonToPayload({ probe: "smoke-batch", n, run: RUN }),
-    contentType: "application/json",
-    attributes: { kind: str("smoke-batch"), run: str(RUN), rank: i32(n) },
-    expires: TTL,
+    schema: Probe,
+    values: {
+      kind: str("smoke-batch"),
+      run: str(RUN),
+      rank: i32(n),
+      payload: bytes(json({ probe: "smoke-batch", n, run: RUN })),
+    },
+    expiration: TTL,
   })
   const { txHash, createdEntities } = await writer.executeBatch({
     creates: [make(1), make(2)],
-    patches: [{ entityKey, set: { batched: str("yes") } }],
+    patches: [{ schema: Probe, entityKey, set: { batched: str("yes") } }],
   })
   assert(createdEntities.length === 2, "two entity keys returned")
   const [a, b, patched] = await Promise.all([
@@ -195,10 +211,14 @@ await step("batch: two creates + one patch in one transaction", async () => {
 
 await step("delete removes immediately", async () => {
   const victim = await writer.createEntity({
-    payload: jsonToPayload({ probe: "smoke-delete", run: RUN }),
-    contentType: "application/json",
-    attributes: { kind: str("smoke"), run: str(RUN) },
-    expires: TTL,
+    schema: Probe,
+    values: {
+      kind: str("smoke"),
+      run: str(RUN),
+      rank: i32(0),
+      payload: bytes(json({ probe: "smoke-delete", run: RUN })),
+    },
+    expiration: TTL,
   })
   await writer.deleteEntity({ entityKey: victim.entityKey })
   assert((await byKey(victim.entityKey)) === undefined, "deleted entity gone from queries")
@@ -206,10 +226,14 @@ await step("delete removes immediately", async () => {
 
 await step("expiry: entity leaves queries; the $expiresAt filter is exact at the boundary", async () => {
   const short = await writer.createEntity({
-    payload: jsonToPayload({ probe: "smoke-expiry", run: RUN }),
-    contentType: "application/json",
-    attributes: { kind: str("smoke-expiry"), run: str(RUN) },
-    expires: ExpirationTime.fromBlocks(5),
+    schema: Probe,
+    values: {
+      kind: str("smoke-expiry"),
+      run: str(RUN),
+      rank: i32(0),
+      payload: bytes(json({ probe: "smoke-expiry", run: RUN })),
+    },
+    expiration: ExpirationTime.fromBlocks(5),
   })
   const expiresAt = short.expiresAt
   const deadline = Date.now() + 2 * 60_000

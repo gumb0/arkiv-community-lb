@@ -6,7 +6,6 @@
 // an Authorization: Bearer header).
 // Run: npm run service-smoke
 
-import { ExpirationTime, jsonToPayload } from "@arkiv-network/sdk"
 import { toHex, type Hex } from "viem"
 import { startService } from "../src/service.ts"
 import { createWriter } from "../src/writer.ts"
@@ -35,16 +34,14 @@ async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
 
 type QueriedRow = {
   key?: Hex
-  payload?: Hex
   expiresAt?: Hex
-  contentType?: string
   attributes?: { name: string; type: string; value: unknown }[]
 }
 
 async function query(q: string): Promise<QueriedRow[]> {
   const result = (await rawRpc("arkiv_query", [
     q,
-    { select: { key: true, payload: true, attributes: true, expiresAt: true, contentType: true } },
+    { select: { key: true, attributes: true, expiresAt: true } },
   ])) as { data?: QueriedRow[] }
   return result.data ?? []
 }
@@ -102,8 +99,11 @@ async function ok(route: string, body: unknown): Promise<Record<string, unknown>
   return result
 }
 
-const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64")
-const payload = jsonToPayload({ probe: "service-smoke", run: RUN })
+// A JSON document in a bytes attribute, the way the LB stores its records:
+// 0x hex on the wire, never indexed.
+const json = (document: unknown) => toHex(new TextEncoder().encode(JSON.stringify(document)))
+const blob = (hex: Hex) => ({ type: "bytes", value: hex, indexed: false })
+const payload = json({ probe: "service-smoke", run: RUN })
 
 await step("GET /identity — the signing address and the chain", async () => {
   const res = await fetch(`${base}/identity`)
@@ -113,10 +113,8 @@ await step("GET /identity — the signing address and the chain", async () => {
   assert(identity.chainId === writer.chainId, "the chain id is the writer's")
 })
 
-const entityKey = await step("POST /create — typed attributes and base64 payload", async () => {
+const entityKey = await step("POST /create — typed attributes, the payload a bytes one", async () => {
   const result = await ok("/create", {
-    payload: b64(payload),
-    contentType: "application/json",
     attributes: {
       kind: { type: "str", value: "service-smoke" },
       run: { type: "str", value: RUN },
@@ -125,6 +123,8 @@ const entityKey = await step("POST /create — typed attributes and base64 paylo
       big: { type: "u256", value: "123456789012345678901234567890" },
       owner: { type: "addr", value: writer.address },
       price: { type: "dec", value: "1.25" },
+      note: { type: "str", value: "stored, not indexed", indexed: false },
+      payload: blob(payload),
     },
     expiration: TTL,
   })
@@ -134,29 +134,36 @@ const entityKey = await step("POST /create — typed attributes and base64 paylo
 
   const row = await byKey(key)
   assert(row !== undefined, "entity readable over raw JSON-RPC")
-  assert(row.payload === toHex(payload), "base64 payload round-trips byte-identical")
+  assert(attrValue(row, "payload") === payload, "bytes round-trip byte-identical")
   assert(attrValue(row, "run") === RUN, "str attribute round-trips")
   assert(attrValue(row, "rank") === 1, "i32 attribute round-trips")
   assert(attrValue(row, "live") === true, "bool attribute round-trips")
+  assert(attrValue(row, "note") === "stored, not indexed", "an unindexed str is stored")
+  assert(
+    !row.attributes?.some((attribute) => attribute.name === "arkiv.schema"),
+    "no schema tag on the entity",
+  )
   const types = (row.attributes ?? []).map((a) => `${a.name}:${a.type}=${a.value}`).join(" ")
   console.log(`  attributes ${types}`)
   return key
 })
 
 await step("POST /patch — set, unset, payload replacement", async () => {
-  const replacement = jsonToPayload({ probe: "service-smoke", run: RUN, patched: true })
+  const replacement = json({ probe: "service-smoke", run: RUN, patched: true })
   await ok("/patch", {
     entityKey,
-    set: { rank: { type: "i32", value: 2 }, status: { type: "str", value: "patched" } },
+    set: {
+      rank: { type: "i32", value: 2 },
+      status: { type: "str", value: "patched" },
+      payload: blob(replacement),
+    },
     unset: ["live"],
-    payload: b64(replacement),
-    contentType: "application/json",
   })
   const row = await byKey(entityKey)
   assert(attrValue(row, "rank") === 2, "set overwrote rank")
   assert(attrValue(row, "status") === "patched", "set added status")
   assert(attrValue(row, "live") === undefined, "unset removed live")
-  assert(row?.payload === toHex(replacement), "payload replaced")
+  assert(attrValue(row, "payload") === replacement, "payload replaced")
 })
 
 await step("POST /extend — expiry grows", async () => {
@@ -169,12 +176,11 @@ await step("POST /extend — expiry grows", async () => {
 
 const batched = await step("POST /execute-batch — two creates and a patch in one tx", async () => {
   const make = (n: number) => ({
-    payload: b64(jsonToPayload({ probe: "service-batch", n, run: RUN })),
-    contentType: "application/json",
     attributes: {
       kind: { type: "str", value: "service-smoke" },
       run: { type: "str", value: RUN },
       rank: { type: "i32", value: n },
+      payload: blob(json({ probe: "service-batch", n, run: RUN })),
     },
     expiration: TTL,
   })
@@ -200,12 +206,11 @@ const batched = await step("POST /execute-batch — two creates and a patch in o
 const parallel = await step("parallel /create requests both land (the queue serializes)", async () => {
   const fire = (tag: string) =>
     ok("/create", {
-      payload: b64(jsonToPayload({ probe: "service-parallel", tag, run: RUN })),
-      contentType: "application/json",
       attributes: {
         kind: { type: "str", value: "service-smoke" },
         run: { type: "str", value: RUN },
         tag: { type: "str", value: tag },
+        payload: blob(json({ probe: "service-parallel", tag, run: RUN })),
       },
       expiration: TTL,
     })
@@ -219,9 +224,11 @@ const parallel = await step("parallel /create requests both land (the queue seri
 })
 
 await step("bad request bodies are 400, not 500", async () => {
+  const attributes = { kind: { type: "str", value: "service-smoke" } }
   const cases: [string, unknown][] = [
-    ["/create", { payload: b64(payload), contentType: "application/json" }],
-    ["/create", { payload: b64(payload), contentType: "application/json", expiration: { years: 3 } }],
+    ["/create", { attributes }],
+    ["/create", { attributes, expiration: { years: 3 } }],
+    ["/create", { attributes: { b: { type: "bytes", value: "0x00", indexed: true } }, expiration: TTL }],
     ["/patch", { entityKey: "no-0x-prefix" }],
     ["/patch", { entityKey, set: { rank: { type: "int", value: 1 } } }],
     ["/extend", { entityKey, expiration: "forever" }],

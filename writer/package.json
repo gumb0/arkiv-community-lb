@@ -20,7 +20,7 @@
     "service": "node --env-file-if-exists=../.env src/service.ts"
   },
   "dependencies": {
-    "@arkiv-network/sdk": "0.9.0-next.3",
+    "@arkiv-network/sdk": "1.0.0",
     "viem": "^2.38.2"
   },
   "devDependencies": {

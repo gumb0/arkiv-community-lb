@@ -82,6 +82,10 @@ async function createInBatches(
 
 const CREATES_PER_BATCH = 70
 
+// Long enough for a settle rehearsal to find the kept records on a chain
+// sealing every 250 ms; the cleanup deletes them otherwise.
+const LIFE = ExpirationTime.fromBlocks(process.env.COUNTERS_KEEP === "1" ? 100_000 : 300)
+
 const writer = await createWriter({
   rpcUrl,
   apiKey: apiKey || undefined,
@@ -110,7 +114,7 @@ const createdEntities = await createInBatches(
       state: str("open"),
       payload: document({ count: 48213 + i, wei_per_call: wei, opened_block: opened }),
     },
-    expiration: ExpirationTime.fromBlocks(300),
+    expiration: LIFE,
   })),
 )
 
@@ -158,7 +162,7 @@ const receipts = await createInBatches(
         payout: { chain_id: 560048, tx: `0x${"ab".repeat(32)}` },
       }),
     },
-    expiration: ExpirationTime.fromBlocks(300),
+    expiration: LIFE,
   })),
 )
 

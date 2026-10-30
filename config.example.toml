@@ -124,6 +124,7 @@ listing_life = "30d"
 # is never extended: a closed record waits this long for settle to pay
 # it, so the value must cover any lateness of settle.
 # An even number of seconds: lifetimes are whole blocks of two seconds.
+# At most 182.5 days, the chain's maximum, like every lifetime here.
 counter_record_life = "180d"
 # Spam protection. Offers expiring further out than this are ignored,
 # so nobody can post a page of long-lived offers once and crowd real

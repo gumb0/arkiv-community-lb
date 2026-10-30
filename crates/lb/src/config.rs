@@ -22,6 +22,11 @@ use serde::Deserialize;
 
 use crate::chain::{reader::PAGE_LIMIT, records::Wei};
 
+/// The longest lifetime the chain allows: 7,884,000 blocks of two
+/// seconds, a value in the network's genesis. A create or extend past it
+/// is refused at the chain.
+const MAX_LIFETIME: Duration = Duration::from_secs(15_768_000);
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
@@ -462,6 +467,12 @@ impl Marketplace {
                      are whole blocks of two seconds"
                 )));
             }
+            if duration > MAX_LIFETIME {
+                return Err(ConfigError::Invalid(format!(
+                    "marketplace.{name} ({duration:?}) must be at most {MAX_LIFETIME:?}, \
+                     the longest lifetime the chain allows"
+                )));
+            }
         }
         // An agreement that expired while its offer is still alive
         // would be accepted again from that offer. An offer is only
@@ -721,6 +732,28 @@ mod tests {
             let error = parse(&format!("{MARKETPLACE}{name} = \"0s\"\n")).expect_err("must refuse");
             assert!(error.to_string().contains(name), "{error}");
         }
+    }
+
+    #[test]
+    fn a_lifetime_past_the_chains_maximum_is_refused() {
+        for name in [
+            "agreement_life",
+            "listing_life",
+            "counter_record_life",
+            "offer_max_lifetime",
+        ] {
+            // One block more than the maximum.
+            let error =
+                parse(&format!("{MARKETPLACE}{name} = \"15768002s\"\n")).expect_err("must refuse");
+            assert!(error.to_string().contains(name), "{error}");
+            assert!(error.to_string().contains("longest lifetime"), "{error}");
+        }
+        parse(&format!(
+            "{MARKETPLACE}counter_record_life = \"15768000s\"\n"
+        ))
+        .expect("exactly the maximum is fine");
+        parse(&format!("{MARKETPLACE}listing_life = \"15768000s\"\n"))
+            .expect("exactly the maximum is fine");
     }
 
     #[test]

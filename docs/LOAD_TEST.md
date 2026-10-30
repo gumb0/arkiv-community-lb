@@ -68,8 +68,12 @@ any. The generator is the rig's `load` command
   memory (`eth_blockNumber`, `eth_chainId`, `eth_gasPrice`,
   `net_version`), which cost the node nothing and so measure how
   many requests the LB box can forward a second; and `query`, one
-  `arkiv_query` for a full page of 200 entities with their payloads,
-  170 KB, selected by one attribute, for the heavy case. Each step
+  `arkiv_query` for a full page of entities with their payloads,
+  selected by one attribute, for the heavy case: 200 entities and
+  170 KB when these runs were made, the node's page at the time; the
+  page is 100 now, so a re-run of `query` carries half as much per
+  request and its figures are not comparable with the ones below.
+  Each step
   ran its number of concurrent clients for 60 s, every client sending
   its next request as soon as the answer came back.
 

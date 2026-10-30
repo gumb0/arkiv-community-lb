@@ -177,6 +177,10 @@ itself:
 - **The gas checks only ask whether a balance is zero**, so a run can
   start and stop part-way
   ([#39](https://github.com/gumb0/arkiv-community-lb/issues/39)).
+- **Only one settle run at a time.** A run reads the receipts page by
+  page and starts over if their number changes. If one receipt expires
+  and another run writes one between two pages, the number stays the
+  same and a receipt can be missed, and its record paid twice.
 - **Settle needs Node on the machine that runs it**
   ([#38](https://github.com/gumb0/arkiv-community-lb/issues/38)).
 

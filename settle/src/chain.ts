@@ -41,43 +41,69 @@ export async function connectReader(rpcUrl: string, apiKey?: string): Promise<Re
     chainId,
     balance: (address) => client.getBalance({ address }),
     query: (text) =>
-      everyPage(async (cursor) => {
+      everyPage(async (offset) => {
         const page = await client.query(text, {
           limit: PAGE,
-          cursor,
+          offset,
+          count: true,
           select: { $key: true, $creator: true, $attributes: true },
         })
+        if (page.count === undefined) {
+          throw new Error("the node did not say how many rows the query matches")
+        }
         return {
           entities: page.entities.map((flat) => ({
             key: flat.$key,
             creator: flat.$creator,
             attributes: flat.$attributes as Record<string, Attribute>,
           })),
-          cursor: page.cursor,
+          count: Number(page.count),
         }
       }),
   }
 }
 
-/** One page of a query: what it holds, and where the next one starts. */
-export type Page = { entities: Row[]; cursor: string | undefined }
+/** One page of a query, and how many rows the whole query matches. */
+export type Page = { entities: Row[]; count: number }
+
+/** How many times a query is walked before the run gives up. */
+const WALK_TRIES = 3
 
 /**
- * Every page of a query, from the first to the one that names no
- * next. Settle reads what has piled up since its last run, which is
- * not bounded by the provider cap the LB's own reads rely on.
+ * Every row of a query. Settle reads what has piled up since its last
+ * run, which is not bounded by the provider cap the LB's own reads rely
+ * on.
+ *
+ * Pages go by offset, so a row that expires during a walk shifts the
+ * rows after it and one is skipped, and a skipped receipt would read as
+ * an unpaid record. If the count changes, the walk starts over. After
+ * three walks the run stops, before anything is paid. If a row expires
+ * and another appears, the count stays the same and the skipped row is
+ * not noticed. A skipped closed record is paid by the next run. Receipts
+ * are only written by settle, so this needs two runs at the same time
+ * (docs/LIMITATIONS.md).
  */
-export async function everyPage(
-  read: (cursor: string | undefined) => Promise<Page>,
-): Promise<Row[]> {
-  const entities: Row[] = []
-  let cursor: string | undefined
-  do {
-    const page = await read(cursor)
-    entities.push(...page.entities)
-    cursor = page.cursor
-  } while (cursor !== undefined)
-  return entities
+export async function everyPage(read: (offset: number) => Promise<Page>): Promise<Row[]> {
+  for (let attempt = 0; attempt < WALK_TRIES; attempt += 1) {
+    const rows = await walk(read)
+    if (rows !== undefined) return rows
+  }
+  throw new Error(`a query's rows kept changing over ${WALK_TRIES} reads: nothing was paid`)
+}
+
+/** One walk from the first page, or undefined if the rows changed during it. */
+async function walk(read: (offset: number) => Promise<Page>): Promise<Row[] | undefined> {
+  const first = await read(0)
+  const rows = [...first.entities]
+  while (rows.length < first.count) {
+    const page = await read(rows.length)
+    // An empty page while the count says more rows exist: the two answers
+    // disagree, so the rows changed. The offset would not move either, and
+    // the same read would repeat forever.
+    if (page.count !== first.count || page.entities.length === 0) return undefined
+    rows.push(...page.entities)
+  }
+  return rows
 }
 
 /**

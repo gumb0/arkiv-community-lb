@@ -433,13 +433,14 @@ async fn a_newcomer_serving_wrong_data_is_out_and_kept_on_its_window() {
     let chain = FakeChain::new(LB, 1337);
     chain.advance(200);
     // The reference and the node are both fakes over the chain, the
-    // node on the agreement's port and lying about entities.
+    // node on the agreement's port and lying about blocks (the entity
+    // check is off as shipped; the block check runs at admission).
     let (reference, reference_rpc) = rpc_provider_on(&chain).await;
     let (node_addr, node) = rpc_provider_on(&chain).await;
     for rpc in [&reference_rpc, &node] {
         rpc.height.store(chain.head(), Ordering::Relaxed);
     }
-    node.lie_entity.store(true, Ordering::Relaxed);
+    node.lie_block.store(true, Ordering::Relaxed);
     let (service, key) = service_on(&chain, &provider, node_addr.port(), |config| {
         config.reference = Some(format!("http://{reference}"));
         config.integrity = Some(lb::config::Integrity {

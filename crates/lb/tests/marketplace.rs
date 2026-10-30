@@ -2896,7 +2896,8 @@ async fn a_tunnel_that_reconnects_during_the_wait_is_checked_once() {
 #[tokio::test]
 async fn a_newcomer_serving_wrong_data_is_out_and_not_extended() {
     let fleet = checked().await;
-    fleet.node.lie_entity.store(true, Ordering::Relaxed);
+    // Lying about blocks: the entity check is off as shipped.
+    fleet.node.lie_block.store(true, Ordering::Relaxed);
     let stored = fleet.agent.agreement(fleet.key).expect("known");
     let writes_before = fleet.chain.transactions().len();
     fleet.agent.clone().admitted(&stored);
@@ -2915,8 +2916,8 @@ async fn a_newcomer_serving_wrong_data_is_out_and_not_extended() {
 #[tokio::test]
 async fn a_check_that_judges_nothing_does_not_cost_the_extend() {
     let fleet = checked().await;
-    // The reference's queries fail: no key to sample, nobody judged.
-    fleet.chain.fail_queries("reference down");
+    // The reference is down: no finalized block, nobody judged.
+    fleet.chain.fail_reference("reference down");
     let stored = fleet.agent.agreement(fleet.key).expect("known");
     let writes_before = fleet.chain.transactions().len();
     fleet.agent.clone().admitted(&stored);

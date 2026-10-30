@@ -113,6 +113,13 @@ pub struct IntegrityChecker<R> {
     /// How long a page is kept before it is read again: a day, unless
     /// a test shortens it.
     key_page_interval: Duration,
+    /// Whether a round reads and compares the sampled entity. Off: an
+    /// Arkiv node serves state at the chain head alone, and the entity
+    /// read here pins both sides to the finalized height, which every
+    /// node refuses, so it could judge nobody. The block leg judges on
+    /// its own until the entity check is reworked for a read at the
+    /// head; the tests switch it on to keep that code exercised.
+    entity_check: bool,
 }
 
 /// One provider's verdict from one look, and the two answers that
@@ -153,11 +160,18 @@ enum ReadFailure {
 }
 
 /// What the reference answered this round: its finalized block, and
-/// the sampled entity read at that height. Every provider is asked the
-/// same two reads at the same height, so the answers are comparable as
-/// they are, whatever block either side is at by then.
+/// the sampled entity read at that height when the entity check is
+/// on. Every provider is asked the same reads at the same height, so
+/// the answers are comparable as they are, whatever block either side
+/// is at by then.
 struct Expected {
     finalized: BlockFields,
+    /// `None` with the entity check off: the block alone is judged.
+    entity: Option<ExpectedEntity>,
+}
+
+/// The sampled entity as the reference has it.
+struct ExpectedEntity {
     key: EntityKey,
     /// `Err` when the reference's entity read failed: the entity is
     /// unknown for every provider this round; the block is still judged.
@@ -276,8 +290,9 @@ struct Answers {
     block: Result<Option<BlockFields>, ReadFailure>,
     /// The rows a query by key answered, one or none from an honest
     /// node, kept as answered so the comparison is exactly what the two
-    /// nodes said.
-    rows: Result<Vec<ArkivEntity>, ReadFailure>,
+    /// nodes said. `None` when the entity was not read: the entity
+    /// check is off.
+    rows: Option<Result<Vec<ArkivEntity>, ReadFailure>>,
 }
 
 impl<R: ChainReader> IntegrityChecker<R> {
@@ -298,7 +313,15 @@ impl<R: ChainReader> IntegrityChecker<R> {
             ready,
             keys: Mutex::new(KeyPage::default()),
             key_page_interval: KEY_PAGE_INTERVAL,
+            entity_check: false,
         }
+    }
+
+    /// With the entity check on or off; off unless asked. For the
+    /// tests of the entity leg.
+    pub fn with_entity_check(mut self, on: bool) -> Self {
+        self.entity_check = on;
+        self
     }
 
     /// The page of keys read again this often instead of daily. For
@@ -362,21 +385,21 @@ impl<R: ChainReader> IntegrityChecker<R> {
             );
             return;
         };
-        self.load_keys_if_due(finalized.number).await;
-        let Some(key) = self.pick_key(finalized.number) else {
-            tracing::info!(
-                providers = providers.len(),
-                "integrity round: no live key to sample, nobody is judged"
-            );
-            return;
+        let entity = if self.entity_check {
+            self.load_keys_if_due(finalized.number).await;
+            let Some(key) = self.pick_key(finalized.number) else {
+                tracing::info!(
+                    providers = providers.len(),
+                    "integrity round: no live key to sample, nobody is judged"
+                );
+                return;
+            };
+            let rows = self.reference_rows(key, finalized.number).await;
+            Some(ExpectedEntity { key, rows })
+        } else {
+            None
         };
-
-        let rows = self.reference_rows(key, finalized.number).await;
-        let expected = Expected {
-            finalized,
-            key,
-            rows,
-        };
+        let expected = Expected { finalized, entity };
 
         let mut findings = self.check(&providers, &expected).await;
         self.confirm(&mut findings, &expected).await;
@@ -632,11 +655,16 @@ impl<R: ChainReader> IntegrityChecker<R> {
             .block(BlockAt::Number(height))
             .await
             .map_err(|error| read_failure(&provider, "block", &error));
-        let rows = reader
-            .query(&Query::by_key(expected.key).at_block(height))
-            .await
-            .map(|page| page.entities)
-            .map_err(|error| read_failure(&provider, "entity", &error));
+        let mut rows = None;
+        if let Some(entity) = &expected.entity {
+            rows = Some(
+                reader
+                    .query(&Query::by_key(entity.key).at_block(height))
+                    .await
+                    .map(|page| page.entities)
+                    .map_err(|error| read_failure(&provider, "entity", &error)),
+            );
+        }
         Answers {
             provider,
             block,
@@ -696,7 +724,11 @@ fn judge(answer: &Answers, expected: &Expected) -> (Verdict, Option<Evidence>) {
             }),
         );
     }
-    let rows = match &answer.rows {
+    // With the entity check off, the block is the whole round.
+    let (Some(expected), Some(rows)) = (&expected.entity, &answer.rows) else {
+        return (Verdict::Match, None);
+    };
+    let rows = match rows {
         Err(ReadFailure::Error) => return (Verdict::Unknown, None),
         Err(ReadFailure::TooLarge) => {
             return (
@@ -861,8 +893,10 @@ mod tests {
         };
         let expected = Expected {
             finalized: finalized.clone(),
-            key: reference_row.key,
-            rows: Ok(vec![reference_row]),
+            entity: Some(ExpectedEntity {
+                key: reference_row.key,
+                rows: Ok(vec![reference_row]),
+            }),
         };
         let pool = Pool::new(&[config::Provider {
             id: "node".into(),
@@ -873,7 +907,7 @@ mod tests {
         let answers = |row: ArkivEntity| Answers {
             provider: provider.clone(),
             block: Ok(Some(finalized.clone())),
-            rows: Ok(vec![row]),
+            rows: Some(Ok(vec![row])),
         };
 
         assert_eq!(judge(&answers(reordered), &expected).0, Verdict::Match);

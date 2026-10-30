@@ -8,6 +8,17 @@ a provider answers at all and keeps up with the chain, is in
 official Arkiv RPC endpoint the LB is configured with; a *round* is one
 pass of the checks over every provider.
 
+**In this version the entity check is switched off in the code, and a
+round is the block check alone.** An Arkiv node serves state at the
+chain head only: a query pinned to a past block, however recent, is
+refused, on the reference as on every provider, and the entity read
+described below pins both sides to the finalized height. Until it is
+reworked to read at the head, a provider is judged on the block at
+the finalized height, a block match is a pass, and what the entity
+check would catch, a provider serving wrong entities behind right
+blocks, goes unseen. The rest of this document describes the check
+as designed, which the code still holds and the tests still run.
+
 ## Why it exists
 
 Providers are permissionless and paid per request. Nothing stops one

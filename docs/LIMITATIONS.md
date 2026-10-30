@@ -86,6 +86,11 @@ not to the checks; a provider that proxies an honest node; one
 operator behind several identities. Open issues on the mechanism
 itself:
 
+- The entity check is switched off: Arkiv nodes serve state at the
+  head only and the check reads at the finalized height, so a round is
+  the block check alone and a provider serving wrong entities behind
+  right blocks is not caught
+  ([INTEGRITY.md](INTEGRITY.md)).
 - A divergence whose second look comes back unknown is forgotten
   until a later round sees it twice again
   ([#46](https://github.com/gumb0/arkiv-community-lb/issues/46)).

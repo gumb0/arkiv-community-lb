@@ -111,7 +111,7 @@ difference between two providers is one the LB has to explain.
 
 The relay is `rig relay`, a JSON-RPC relay that passes everything
 through, or lies in one way: `--lie entity` adds a byte to the payload
-of every entity answered to a query by key, `--lie block` changes the
+attribute of every entity answered to a query by key, `--lie block` changes the
 hash of every block answered to `eth_getBlockByNumber`, and with either
 nothing else changes, so the probes see an honest node and only the
 integrity round can notice; `--lie frozen-head` keeps answering the

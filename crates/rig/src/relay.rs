@@ -21,7 +21,7 @@ use tokio::net::TcpListener;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lie {
     /// Every entity answered to a query by key comes back with one
-    /// byte added to its payload.
+    /// byte added to its payload, the `bytes` attribute named `payload`.
     Entity,
     /// Every block answered to `eth_getBlockByNumber` comes back with
     /// another hash.
@@ -100,8 +100,9 @@ fn altered(request: &Bytes, answer: Bytes, lie: Lie, frozen: &Mutex<Option<Value
         .unwrap_or(answer)
 }
 
-/// Adds a byte to the payload of every row in the answer to a query by
-/// key; returns whether any row was altered.
+/// Adds a byte to the payload attribute of every row in the answer to a
+/// query by key; returns whether any row was altered. A row without
+/// one is left as it is: there is nothing of the record to lie about.
 fn alter_entities(request: &Value, answer: &mut Value) -> bool {
     let by_key = request["method"] == "arkiv_query"
         && request["params"][0]
@@ -113,11 +114,20 @@ fn alter_entities(request: &Value, answer: &mut Value) -> bool {
     let Some(rows) = answer["result"]["data"].as_array_mut() else {
         return false;
     };
+    let mut altered = false;
     for row in rows.iter_mut() {
-        let payload = row["payload"].as_str().unwrap_or("0x");
-        row["payload"] = Value::String(format!("{payload}00"));
+        let Some(attributes) = row["attributes"].as_array_mut() else {
+            continue;
+        };
+        for attribute in attributes.iter_mut() {
+            if attribute["name"] == "payload" && attribute["type"] == "bytes" {
+                let payload = attribute["value"].as_str().unwrap_or("0x");
+                attribute["value"] = Value::String(format!("{payload}00"));
+                altered = true;
+            }
+        }
     }
-    !rows.is_empty()
+    altered
 }
 
 /// Changes the hash of the block in the answer to `eth_getBlockByNumber`;
@@ -165,7 +175,10 @@ mod tests {
 
     fn answer() -> Value {
         json!({"jsonrpc": "2.0", "id": 1, "result": {
-            "data": [{"key": "0x01", "payload": "0xabcd"}],
+            "data": [{"key": "0x01", "attributes": [
+                {"name": "kind", "type": "str", "value": "rpc.offer"},
+                {"name": "payload", "type": "bytes", "value": "0xabcd"},
+            ]}],
             "blockNumber": "0x10",
         }})
     }
@@ -176,8 +189,19 @@ mod tests {
             "params": ["$key = key(0x01)", {}]});
         let mut answer = answer();
         assert!(alter_entities(&request, &mut answer));
-        assert_eq!(answer["result"]["data"][0]["payload"], "0xabcd00");
+        let attributes = &answer["result"]["data"][0]["attributes"];
+        assert_eq!(attributes[1]["value"], "0xabcd00");
+        assert_eq!(attributes[0]["value"], "rpc.offer", "only the payload");
         assert_eq!(answer["result"]["blockNumber"], "0x10", "only the payload");
+    }
+
+    #[test]
+    fn a_row_without_a_payload_is_not_a_lie() {
+        let request = json!({"method": "arkiv_query", "params": ["$key = key(0x01)", {}]});
+        let mut answer = json!({"result": {"data": [{"key": "0x01", "attributes": [
+            {"name": "kind", "type": "str", "value": "x"},
+        ]}]}});
+        assert!(!alter_entities(&request, &mut answer));
     }
 
     #[test]

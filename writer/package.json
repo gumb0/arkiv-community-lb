@@ -5,24 +5,23 @@
   "type": "module",
   "description": "Chain-writer sidecar for the Arkiv community LB: schema-blind entity operations over the official SDK, and the HTTP service around them.",
   "scripts": {
-    "probes": "npm run writer-smoke && npm run service-smoke && npm run queries && npm run batch && npm run permanent && npm run concurrency && npm run page-budget",
-    "page-budget": "node --env-file-if-exists=../.env probes/page-budget.ts",
-    "create-dup": "node --env-file-if-exists=../.env probes/create-dup.ts",
+    "probes": "npm run writer-smoke && npm run service-smoke && npm run queries && npm run batch && npm run permanent && npm run page-budget && npm run replay",
     "writer-smoke": "node --env-file-if-exists=../.env probes/writer-smoke.ts",
+    "service-smoke": "node --env-file-if-exists=../.env probes/service-smoke.ts",
+    "queries": "node --env-file-if-exists=../.env probes/queries.ts",
+    "batch": "node --env-file-if-exists=../.env probes/batch-experiment.ts",
+    "permanent": "node --env-file-if-exists=../.env probes/permanent-probe.ts",
+    "page-budget": "node --env-file-if-exists=../.env probes/page-budget.ts",
+    "replay": "node --env-file-if-exists=../.env probes/replay-probe.ts",
+    "create-dup": "node --env-file-if-exists=../.env probes/create-dup.ts",
+    "counters": "node --env-file-if-exists=../.env probes/counters-probe.ts",
     "test": "node --test \"tests/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "service": "node --env-file-if-exists=../.env src/service.ts",
-    "service-smoke": "node --env-file-if-exists=../.env probes/service-smoke.ts",
-    "batch": "node --env-file-if-exists=../.env probes/batch-experiment.ts",
-    "counters": "node --env-file-if-exists=../.env probes/counters-probe.ts",
-    "permanent": "node --env-file-if-exists=../.env probes/permanent-probe.ts",
-    "queries": "node --env-file-if-exists=../.env probes/queries.ts",
-    "concurrency": "node --env-file-if-exists=../.env probes/concurrency-probe.ts",
-    "replay": "node --env-file-if-exists=../.env probes/replay-probe.ts"
+    "service": "node --env-file-if-exists=../.env src/service.ts"
   },
   "dependencies": {
-    "@arkiv-network/sdk": "0.8.0-dev.3",
-    "viem": "^2.21.0"
+    "@arkiv-network/sdk": "1.0.0",
+    "viem": "^2.38.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

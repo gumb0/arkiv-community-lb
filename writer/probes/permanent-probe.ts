@@ -1,19 +1,33 @@
-// One-off probe: does the chain accept a permanent entity (expiry = u64 max),
-// what does it cost, and is it still deletable? A second leg asks whether
-// finite lifetimes are capped (the doc's MAX_LIFETIME): a create ten years
-// out and an extend asking for one more year, each accepted or reverted.
+// Lifetime probe: the chain caps an entity's lifetime. A permanent
+// expiry (u64 max) is refused, and the refusal names the cap. This
+// probe reads the cap from that refusal and checks it: a create at the
+// cap is accepted, one block more is refused, and an extend past it is
+// refused. The cap is set in the genesis, so it can differ per network.
+// Settle's receipts are written for exactly this long.
 //
 // Env: WRITER_PRIVATE_KEY_FILE, ARKIV_RPC_URL, optional ARKIV_API_KEY (sent as
 // an Authorization: Bearer header).
 // Run: npm run permanent
 
-import { ExpirationTime, jsonToPayload, MAX_EXPIRES_AT, str } from "@arkiv-network/sdk"
+import {
+  bytes,
+  defineSchema,
+  ExpirationTime,
+  type Expiry,
+  MAX_EXPIRES_AT,
+  str,
+} from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
 import { env, privateKeyFromFile } from "../src/env.ts"
 
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
+
+// A JSON document in a bytes attribute, the way the LB stores its records.
+const document = (value: unknown) => bytes(new TextEncoder().encode(JSON.stringify(value)))
+
+const Probe = defineSchema({ kind: str().indexed(), payload: bytes() })
 
 async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
   const res = await fetch(rpcUrl, {
@@ -29,76 +43,93 @@ async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
   return body.result
 }
 
+function assert(cond: boolean, what: string): asserts cond {
+  if (!cond) throw new Error(`assertion failed: ${what}`)
+}
+
+/** The error chain's messages, first lines, top to bottom. */
+function reasons(error: unknown): string {
+  const chain: string[] = []
+  for (let e: unknown = error; e instanceof Error; e = e.cause) chain.push(e.message.split("\n")[0] ?? "")
+  return chain.join(" | ")
+}
+
 const writer = await createWriter({
   rpcUrl,
   apiKey: apiKey || undefined,
   privateKey: privateKeyFromFile(),
 })
-console.log(`permanent probe: address ${writer.address}, chain ${writer.chainId}`)
-console.log(`MAX_EXPIRES_AT = ${MAX_EXPIRES_AT} (u64 max: ${MAX_EXPIRES_AT === 2n ** 64n - 1n})\n`)
+console.log(`lifetime probe: address ${writer.address}, chain ${writer.chainId}\n`)
 
-const { entityKey, txHash, expiresAt } = await writer.createEntity({
-  payload: jsonToPayload({ probe: "permanent" }),
-  contentType: "application/json",
-  attributes: { kind: str("permanent-probe") },
-  expires: ExpirationTime.permanent(),
-})
-const receipt = (await rawRpc("eth_getTransactionReceipt", [txHash])) as { gasUsed: Hex }
-console.log(`created ${entityKey}`)
-console.log(`  SDK-reported expiresAt: ${expiresAt} (sentinel: ${expiresAt === MAX_EXPIRES_AT})`)
-console.log(`  gasUsed: ${BigInt(receipt.gasUsed)} (finite-TTL create baseline: ~95,926 + 21,000 intrinsic)`)
-
-const row = (
-  (await rawRpc("arkiv_query", [
-    `$key = key(${entityKey})`,
-    { select: { key: true, expiresAt: true } },
-  ])) as { data?: { expiresAt?: Hex }[] }
-).data?.[0]
-console.log(`  chain-reported $expiresAt: ${row?.expiresAt} (${BigInt(row?.expiresAt ?? "0x0")})`)
-
-await writer.deleteEntity({ entityKey })
-console.log(`deleted — a permanent entity is still owner-deletable`)
-
-// Lifetime bound. Blocks, not seconds: the SDK converts durations at a
-// fixed 2 s per block, and the point is how far the engine lets a finite
-// expiry reach, whatever the block time.
-const BLOCKS_PER_YEAR = (365 * 24 * 3600) / 2
-const head = BigInt((await rawRpc("eth_blockNumber", [])) as Hex)
-
-async function attempt(label: string, run: () => Promise<unknown>) {
-  try {
-    await run()
-    console.log(`${label}: accepted`)
-    return true
-  } catch (error) {
-    const chain: string[] = []
-    for (let e: unknown = error; e instanceof Error; e = e.cause) chain.push(`${e.name}: ${e.message.split("\n")[0]}`)
-    console.log(`${label}: reverted\n  ${chain.join("\n  ")}`)
-    return false
-  }
-}
-
-async function createFor(expires: Parameters<typeof writer.createEntity>[0]["expires"]) {
+async function createFor(expiration: Expiry): Promise<Hex> {
   const { entityKey } = await writer.createEntity({
-    payload: jsonToPayload({ probe: "lifetime-bound" }),
-    contentType: "application/json",
-    attributes: { kind: str("permanent-probe") },
-    expires,
+    schema: Probe,
+    values: { kind: str("permanent-probe"), payload: document({ probe: "lifetime" }) },
+    expiration,
   })
   return entityKey
 }
 
-console.log(`\nlifetime bound (head ${head}, ${BLOCKS_PER_YEAR} blocks per year):`)
-let key: Hex | undefined
-await attempt("create at head + 10 years", async () => {
-  key = await createFor(ExpirationTime.atBlock(head + BigInt(10 * BLOCKS_PER_YEAR)))
-})
-if (key) await writer.deleteEntity({ entityKey: key })
+/** Runs a write expected to be refused; returns the refusal's reasons. */
+async function refused(label: string, run: () => Promise<unknown>): Promise<string> {
+  try {
+    await run()
+  } catch (error) {
+    const why = reasons(error)
+    console.log(`${label}: refused\n  ${why}`)
+    return why
+  }
+  throw new Error(`${label}: accepted, expected a refusal`)
+}
 
-// A short-lived entity, so the extend is a real extension and not a
-// shortening the engine would refuse for that reason instead.
-const short = await createFor(ExpirationTime.fromBlocks(100))
-await attempt("extend a 100-block entity by 1 year (minLifetime)", () =>
-  writer.extendEntity({ entityKey: short, expires: ExpirationTime.fromBlocks(BLOCKS_PER_YEAR) }),
+// The SDK's largest expiry, u64 max, is refused, and the refusal says
+// what the cap is.
+const permanent = await refused("create with expiry u64 max (permanent)", () =>
+  createFor(ExpirationTime.atBlock(MAX_EXPIRES_AT)),
 )
-await writer.deleteEntity({ entityKey: short })
+const named = /maximum lifetime of (\d+) blocks/.exec(permanent)
+assert(named !== null, "the refusal names the chain's maximum lifetime")
+const cap = BigInt(named[1] ?? "0")
+console.log(`\nthe chain's maximum lifetime: ${cap} blocks (${(Number(cap) * 2) / 86400} days at 2 s)\n`)
+
+// The edge: exactly the cap is accepted, one more is refused. A create
+// lands a block or two after the head is read, so the ask is in blocks
+// from the landing block, which the SDK's fromBlocks resolves on chain.
+const atCap = await createFor(ExpirationTime.fromBlocks(Number(cap)))
+console.log(`create for exactly ${cap} blocks: accepted (${atCap})`)
+const overCap = await refused(`create for ${cap + 1n} blocks`, () =>
+  createFor(ExpirationTime.fromBlocks(Number(cap) + 1)),
+)
+assert(overCap.includes("maximum lifetime"), "one block over the cap is refused for the cap")
+
+// An extend is bound the same way: a short-lived entity cannot be
+// extended past the cap from the current block.
+const short = await createFor(ExpirationTime.fromBlocks(100))
+const extended = await refused(`extend a 100-block entity to ${cap + 1n} blocks`, () =>
+  writer.extendEntity({ entityKey: short, expiration: ExpirationTime.fromBlocks(Number(cap) + 1) }),
+)
+assert(extended.includes("maximum lifetime"), "an extend past the cap is refused for the cap")
+await writer.extendEntity({ entityKey: short, expiration: ExpirationTime.fromBlocks(Number(cap)) })
+console.log(`extend the same entity to exactly ${cap} blocks: accepted`)
+
+// What a lifetime costs: the cap against a day, on the same record.
+const gasOf = async (txHash: Hex) =>
+  BigInt(((await rawRpc("eth_getTransactionReceipt", [txHash])) as { gasUsed: Hex }).gasUsed)
+const day = await writer.createEntity({
+  schema: Probe,
+  values: { kind: str("permanent-probe"), payload: document({ probe: "lifetime" }) },
+  expiration: ExpirationTime.fromDays(1),
+})
+const capped = await writer.createEntity({
+  schema: Probe,
+  values: { kind: str("permanent-probe"), payload: document({ probe: "lifetime" }) },
+  expiration: ExpirationTime.fromBlocks(Number(cap)),
+})
+console.log(
+  `\ngas: a one-day create ${await gasOf(day.txHash)}, the same create at the cap ${await gasOf(capped.txHash)}`,
+)
+
+await writer.executeBatch({
+  deletes: [atCap, short, day.entityKey, capped.entityKey].map((entityKey) => ({ entityKey })),
+})
+console.log("\nlifetime probe done")

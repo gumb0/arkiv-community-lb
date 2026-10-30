@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use alloy_primitives::{Address, U256, keccak256};
 use lb::chain::{
     reader::{Query, Reader},
-    records::{Agreement, KIND_AGREEMENT, Record, Stored, Wei},
+    records::{Agreement, KIND_AGREEMENT, PAYLOAD_ATTRIBUTE, Record, Stored, Wei},
     writer::{Batch, Create, Delete, Expiry, Extend, Operation, Patch, Writer},
 };
 
@@ -100,7 +100,7 @@ async fn records_are_written_read_back_changed_and_expire() {
     // runs out.
     let batch = Batch::single(Operation::Extend(Extend {
         entity_key: kept.entity_key,
-        expires: Expiry::Seconds(30),
+        expiration: Expiry::Seconds(30),
     }));
     let extended = writer.execute_batch(&batch).await.expect("batch lands");
     assert_eq!(extended.extended_entities, [kept.entity_key]);
@@ -113,8 +113,7 @@ async fn records_are_written_read_back_changed_and_expire() {
     let patched = writer
         .patch(&Patch {
             entity_key: kept.entity_key,
-            set: None,
-            payload: Some(changed.encode().payload),
+            set: changed.encode().keep(&[PAYLOAD_ATTRIBUTE]),
         })
         .await
         .expect("patch lands");

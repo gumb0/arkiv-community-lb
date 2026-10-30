@@ -10,16 +10,21 @@ records is in [MARKETPLACE.md](MARKETPLACE.md).
 
 ## Rules for every record
 
-- **Attributes hold only the fields that queries filter by.** All other
-  data is in the payload, as JSON (`application/json`). Each attribute
-  costs gas, and a string attribute value is at most 128 bytes. The
-  payload has no fixed structure and can be up to 128 KiB.
-- **A field lives in exactly one place**, as an attribute or in the
-  payload, never both. A record's fields are the union of the two. A
-  reader gets attributes and payload together, so a copy would add
-  nothing except the question of which copy wins.
-- **Every record has `kind` and `v`.** `kind` is a string that starts
-  with `rpc.`. One query, `kind STARTSWITH "rpc."`, returns every record
+- **Indexed attributes hold only the fields that queries filter by.**
+  All other data is in the payload: JSON, carried in a `bytes`
+  attribute named `payload`. The node never indexes a `bytes`
+  attribute, and the payload has no fixed structure; the whole entity
+  is at most 128 KiB, an indexed string value at most 128 bytes, and
+  each attribute costs gas. On the wire the payload is `0x`-prefixed
+  hex, like any `bytes` value. (The node's own entity payload and
+  content type of the earlier line are gone: an entity is attributes
+  and nothing else.)
+- **A field lives in exactly one place**, as an indexed attribute or in
+  the payload, never both. A record's fields are the union of the two.
+  A reader selects the attributes and gets the payload with them, so a
+  copy would add nothing except the question of which copy wins.
+- **Every record has `kind`, `v` and `payload`.** `kind` is a string
+  that starts with `rpc.`. One query, `kind STARTSWITH "rpc."`, returns every record
   of this system, and the names cannot collide with another
   application's records on a shared network. `v` is the schema version,
   an `i32`, currently `1`. A reader skips records with a `v` it does not
@@ -31,8 +36,9 @@ records is in [MARKETPLACE.md](MARKETPLACE.md).
 - **Records point at each other by entity key.** An offer points at the
   LB listing it answers, an agreement record at its offer, a counter
   record at its agreement record, a receipt at the counter record it
-  pays. Each pointer is a `key` attribute, so the chain can be walked in
-  both directions. A pointer finds a record; only the creator makes it
+  pays. Each pointer is a `key` attribute (written as the SDK's `key`,
+  read back under the node's name for a 32-byte value, `bytes32`), so
+  the chain can be walked in both directions. A pointer finds a record; only the creator makes it
   trusted. A pointer can be followed only while its target lives. So
   each record copies the fields it still needs after its target has
   expired.
@@ -50,6 +56,11 @@ records is in [MARKETPLACE.md](MARKETPLACE.md).
   unix seconds.
 - **Addresses** are `0x`-prefixed lowercase hex. **Entity keys** are
   `0x`-prefixed 32-byte hex.
+- **Writers declare the record's attributes as a schema with no name.**
+  The node sees attributes with a type and an indexed flag; a named
+  schema would tag the entity with an `arkiv.schema` attribute, which
+  no record carries. Every attribute named under a record below is
+  indexed; `payload` is not.
 
 ## Who writes what
 
@@ -288,7 +299,7 @@ Payload:
 ```
 
 - `agreement`, `count` and `wei_per_call` are copied from the counter
-  record: the receipt is permanent and the counter record is not.
+  record: the receipt outlives the counter record.
 - `amount_wei` is `count × wei_per_call`.
 - `payout` names the chain the transfer was made on and the transaction
   hash. A settle run pays each provider once for all of its closed
@@ -297,7 +308,9 @@ Payload:
   key on both chains: the transfer's sender is the receipt's creator,
   so anyone can check a receipt against the payout chain.
 
-Lifetime: permanent.
+Lifetime: the chain's maximum, 7,884,000 blocks (about 182 days at
+2 s). A receipt is written after the record it pays, so it outlives
+that record, and a record that has expired cannot be paid again.
 
 Query, by settle before paying, per provider with closed records:
 `$creator == SETTLE_ADDRESS AND kind == "rpc.receipt" AND provider ==
@@ -311,8 +324,16 @@ next to the LB address.
 
 ## Reading rules
 
-- Request at most 200 rows per query. The node's page maximum is 200,
-  and a larger limit is an error, not a smaller page.
+- Request at most 100 rows per query. The node's page maximum is 100,
+  and a larger limit is an error, not a smaller page. The LB reads its
+  agreements and open counters in one page and refuses to start with
+  more, so `max_providers` is at most 100.
+- Select the record's fields by name: `key`, `creator`, `createdAt`,
+  `updatedAt` (the block of the last write: creation, patch or
+  extend), `expiresAt` and `attributes` (all of them, or the names
+  wanted, `payload` among them). The node rejects a `select` naming
+  anything else, `payload` and `contentType` as entity fields
+  included.
 - Add `$expiresAt > <head>` to every query even though the node hides
   expired records. It is cheap, and it guards against records that
   expire in the same block.

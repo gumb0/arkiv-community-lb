@@ -33,7 +33,7 @@ async fn provider_and_chain() -> (Reader, std::sync::Arc<FakeProvider>, FakeChai
     (reader, rpc, chain)
 }
 
-fn an_agreement() -> lb::chain::records::EncodedRecord {
+fn an_agreement() -> lb::chain::records::Attributes {
     Agreement {
         provider: Address::ZERO,
         offer: alloy_primitives::B256::ZERO,
@@ -60,7 +60,7 @@ async fn an_honest_provider_holds_the_chain_s_block_and_entity() {
     let entity = chain.entity(key).expect("stored").as_arkiv_entity();
     assert_eq!(page.entities.len(), 1);
     assert_eq!(page.entities[0].key, key);
-    assert_eq!(page.entities[0].payload, entity.payload);
+    assert_eq!(page.entities[0].payload(), entity.payload());
     assert_eq!(page.block, chain.head(), "answered at its own height");
 }
 
@@ -89,7 +89,7 @@ async fn a_lying_provider_serves_another_hash_and_another_payload() {
         "only the hash lies"
     );
     let page = reader.query(&Query::by_key(key)).await.expect("page");
-    assert_ne!(page.entities[0].payload, truth.payload);
+    assert_ne!(page.entities[0].payload(), truth.payload());
 }
 
 #[tokio::test]

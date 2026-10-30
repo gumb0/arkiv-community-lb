@@ -77,6 +77,8 @@ pub enum AttributeValue {
     U64(u64),
     Addr(Address),
     Key(EntityKey),
+    /// Never indexed; `0x`-prefixed hex both ways, like the node's.
+    Bytes(Vec<u8>),
 }
 
 impl AttributeValue {
@@ -87,6 +89,7 @@ impl AttributeValue {
             Self::U64(_) => "u64",
             Self::Addr(_) => "addr",
             Self::Key(_) => "key",
+            Self::Bytes(_) => "bytes",
         }
     }
 
@@ -109,6 +112,10 @@ impl AttributeValue {
             // says lowercase.
             Self::Addr(a) => serde_json::Value::String(format!("{a:#x}")),
             Self::Key(k) => serde_json::Value::String(format!("{k:#x}")),
+            Self::Bytes(b) => {
+                let value = Bytes::copy_from_slice(b).to_string();
+                return serde_json::json!({ "type": "bytes", "value": value, "indexed": false });
+            }
         };
         serde_json::json!({ "type": self.type_tag(), "value": value })
     }
@@ -126,8 +133,29 @@ impl AttributeValue {
                 .map(Self::I32),
             "u64" => parse_u64(value).map(Self::U64),
             "addr" => value.as_str().and_then(|s| s.parse().ok()).map(Self::Addr),
-            "key" => value.as_str().and_then(|s| s.parse().ok()).map(Self::Key),
+            // Written as the SDK's `key`, read back under the node's own
+            // name for a 32-byte value.
+            "key" | "bytes32" => value.as_str().and_then(|s| s.parse().ok()).map(Self::Key),
+            "bytes" => value
+                .as_str()
+                .and_then(|s| s.parse::<Bytes>().ok())
+                .map(|b| Self::Bytes(b.to_vec())),
             _ => None,
+        }
+    }
+
+    /// The inverse of `from_read`: the entry a query would return for
+    /// this value, which carries the write-side value as it is. For the
+    /// fakes and tests that play the node.
+    pub fn to_read(&self, name: &str) -> ArkivAttribute {
+        let type_tag = match self {
+            Self::Key(_) => "bytes32",
+            other => other.type_tag(),
+        };
+        ArkivAttribute {
+            name: name.to_owned(),
+            type_tag: type_tag.to_owned(),
+            value: self.to_wire()["value"].clone(),
         }
     }
 }
@@ -180,6 +208,33 @@ impl Attributes {
             .into()
     }
 
+    /// The attribute list a query returns for these; see
+    /// `AttributeValue::to_read`.
+    pub fn to_read(&self) -> Vec<ArkivAttribute> {
+        self.iter()
+            .map(|(name, value)| value.to_read(name))
+            .collect()
+    }
+
+    /// The named ones of these, for a patch that sets some.
+    pub fn keep(&self, names: &[&str]) -> Self {
+        Self(
+            self.0
+                .iter()
+                .filter(|(name, _)| names.contains(&name.as_str()))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+        )
+    }
+
+    /// The record's payload: the `bytes` attribute named `payload`.
+    pub fn payload(&self) -> Option<&[u8]> {
+        match self.get(PAYLOAD_ATTRIBUTE)? {
+            AttributeValue::Bytes(bytes) => Some(bytes),
+            _ => None,
+        }
+    }
+
     fn present(&self, name: &'static str) -> Result<&AttributeValue, RecordError> {
         self.get(name).ok_or(RecordError::MissingAttribute(name))
     }
@@ -222,17 +277,24 @@ pub struct ArkivAttribute {
     pub value: serde_json::Value,
 }
 
+/// The attribute that carries a record's payload: `bytes`, never
+/// indexed, `0x`-prefixed hex on the wire (docs/ENTITIES.md).
+pub const PAYLOAD_ATTRIBUTE: &str = "payload";
+
 /// An entity as `arkiv_query` returns it, with the fields every read
-/// selects. The payload arrives as `0x`-prefixed hex.
+/// selects. An entity is its attributes; the payload is one of them.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ArkivEntity {
     pub key: EntityKey,
     pub creator: Address,
     #[serde(rename = "createdAt", deserialize_with = "deserialize_quantity")]
     pub created_at: u64,
+    /// The block of the last write to the entity: its creation, or the
+    /// latest patch or extend.
+    #[serde(rename = "updatedAt", deserialize_with = "deserialize_quantity")]
+    pub updated_at: u64,
     #[serde(rename = "expiresAt", deserialize_with = "deserialize_quantity")]
     pub expires_at: u64,
-    pub payload: Bytes,
     /// Absent for an entity without attributes, possibly; such a row must
     /// still parse, and then it is simply not one of our records.
     #[serde(default)]
@@ -267,24 +329,29 @@ impl ArkivEntity {
         }
     }
 
-    fn payload<T: DeserializeOwned>(&self) -> Result<T, RecordError> {
-        serde_json::from_slice(&self.payload).map_err(|e| RecordError::Payload(e.to_string()))
+    /// The payload, decoded from its hex. None without one, or with a
+    /// value that is not hex; such an entity is not one of our records.
+    pub fn payload(&self) -> Option<Bytes> {
+        self.typed_attributes()
+            .payload()
+            .map(Bytes::copy_from_slice)
     }
-}
 
-/// What a record contributes to a write: its attributes and its payload
-/// bytes. The chain writer adds the lifetime.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EncodedRecord {
-    pub attributes: Attributes,
-    pub payload: Vec<u8>,
+    fn payload_json<T: DeserializeOwned>(&self) -> Result<T, RecordError> {
+        let payload = self
+            .payload()
+            .ok_or_else(|| RecordError::Payload("no payload attribute".to_owned()))?;
+        serde_json::from_slice(&payload).map_err(|e| RecordError::Payload(e.to_string()))
+    }
 }
 
 /// One of the five records: what it is called on chain, and how it turns
 /// into a write and back out of a read.
 pub trait Record: Sized {
     const KIND: &'static str;
-    fn encode(&self) -> EncodedRecord;
+    /// What the record contributes to a write: its attributes, the
+    /// payload among them. The chain writer adds the lifetime.
+    fn encode(&self) -> Attributes;
     /// The record's own fields, from an entity already known to be of
     /// this kind and version.
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError>;
@@ -331,11 +398,9 @@ impl<T: Record> Stored<T> {
     }
 }
 
-fn encode<T: Serialize>(attributes: Attributes, payload: &T) -> EncodedRecord {
-    EncodedRecord {
-        attributes,
-        payload: serde_json::to_vec(payload).expect("record payloads always serialize"),
-    }
+fn encode<T: Serialize>(attributes: Attributes, payload: &T) -> Attributes {
+    let payload = serde_json::to_vec(payload).expect("record payloads always serialize");
+    attributes.with(PAYLOAD_ATTRIBUTE, AttributeValue::Bytes(payload))
 }
 
 // ---------------------------------------------------------------------------
@@ -362,12 +427,12 @@ impl std::fmt::Display for LbListing {
 impl Record for LbListing {
     const KIND: &'static str = KIND_LB_LISTING;
 
-    fn encode(&self) -> EncodedRecord {
+    fn encode(&self) -> Attributes {
         encode(Attributes::new(Self::KIND), self)
     }
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
-        entity.payload()
+        entity.payload_json()
     }
 }
 
@@ -404,7 +469,7 @@ pub struct Offer {
 impl Record for Offer {
     const KIND: &'static str = KIND_OFFER;
 
-    fn encode(&self) -> EncodedRecord {
+    fn encode(&self) -> Attributes {
         encode(
             Attributes::new(Self::KIND).with("lb_listing", AttributeValue::Key(self.lb_listing)),
             &OfferPayload {
@@ -415,7 +480,7 @@ impl Record for Offer {
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let lb_listing = entity.typed_attributes().key("lb_listing")?;
-        let payload: OfferPayload = entity.payload()?;
+        let payload: OfferPayload = entity.payload_json()?;
         Ok(Self {
             lb_listing,
             specs: payload.specs,
@@ -444,7 +509,7 @@ pub struct Agreement {
 impl Record for Agreement {
     const KIND: &'static str = KIND_AGREEMENT;
 
-    fn encode(&self) -> EncodedRecord {
+    fn encode(&self) -> Attributes {
         encode(
             Attributes::new(Self::KIND)
                 .with("provider", AttributeValue::Addr(self.provider))
@@ -458,7 +523,7 @@ impl Record for Agreement {
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let attributes = entity.typed_attributes();
-        let payload: AgreementPayload = entity.payload()?;
+        let payload: AgreementPayload = entity.payload_json()?;
         Ok(Self {
             provider: attributes.addr("provider")?,
             offer: attributes.key("offer")?,
@@ -513,7 +578,7 @@ pub struct CounterRecord {
 impl Record for CounterRecord {
     const KIND: &'static str = KIND_COUNTER;
 
-    fn encode(&self) -> EncodedRecord {
+    fn encode(&self) -> Attributes {
         encode(
             Attributes::new(Self::KIND)
                 .with("agreement", AttributeValue::Key(self.agreement))
@@ -541,7 +606,7 @@ impl Record for CounterRecord {
                 });
             }
         };
-        let payload: CounterPayload = entity.payload()?;
+        let payload: CounterPayload = entity.payload_json()?;
         Ok(Self {
             agreement: attributes.key("agreement")?,
             provider: attributes.addr("provider")?,
@@ -589,7 +654,7 @@ pub struct Receipt {
 impl Record for Receipt {
     const KIND: &'static str = KIND_RECEIPT;
 
-    fn encode(&self) -> EncodedRecord {
+    fn encode(&self) -> Attributes {
         encode(
             Attributes::new(Self::KIND)
                 .with("counter", AttributeValue::Key(self.counter))
@@ -606,7 +671,7 @@ impl Record for Receipt {
 
     fn decode_fields(entity: &ArkivEntity) -> Result<Self, RecordError> {
         let attributes = entity.typed_attributes();
-        let payload: ReceiptPayload = entity.payload()?;
+        let payload: ReceiptPayload = entity.payload_json()?;
         Ok(Self {
             counter: attributes.key("counter")?,
             provider: attributes.addr("provider")?,
@@ -637,36 +702,68 @@ mod tests {
         text.parse().expect("test key parses")
     }
 
-    fn payload_json(encoded: &EncodedRecord) -> serde_json::Value {
-        serde_json::from_slice(&encoded.payload).expect("payloads are JSON")
+    fn payload_json(encoded: &Attributes) -> serde_json::Value {
+        serde_json::from_slice(encoded.payload().expect("a payload")).expect("payloads are JSON")
     }
 
-    /// Builds the entity a read would return for what a write sent: the
-    /// payload as hex, the attributes as the node's list.
-    fn read_back(encoded: &EncodedRecord) -> ArkivEntity {
-        let attributes = encoded
-            .attributes
-            .0
-            .iter()
-            .map(|(name, value)| {
-                let wire = value.to_wire();
-                json!({ "name": name, "type": wire["type"], "value": wire["value"] })
-            })
-            .collect::<Vec<_>>();
-        let payload_hex = encoded
-            .payload
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        serde_json::from_value(json!({
-            "key": KEY,
-            "creator": LB,
-            "createdAt": "0x191",
-            "expiresAt": "0x92e21",
-            "payload": format!("0x{payload_hex}"),
-            "attributes": attributes,
+    /// Builds the entity a read would return for what a write sent.
+    fn read_back(encoded: &Attributes) -> ArkivEntity {
+        ArkivEntity {
+            key: key(KEY),
+            creator: addr(LB),
+            created_at: 0x191,
+            updated_at: 0x191,
+            expires_at: 0x92e21,
+            attributes: encoded.to_read(),
+        }
+    }
+
+    #[test]
+    fn a_row_as_the_node_sends_it_carries_the_payload_as_an_attribute() {
+        // A row from a dev node of the GolemDB line, its payload shortened.
+        let entity: ArkivEntity = serde_json::from_value(json!({
+            "key": "0xe1d4ab361c0bc9418474a0d4e0700ed5cdb7adcc17fff88737cc15566418f58c",
+            "creator": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+            "createdAt": "0x7a",
+            "updatedAt": "0x7c",
+            "expiresAt": "0xa93a",
+            "attributeSchema": [
+                { "name": "kind", "type": "str", "indexed": true },
+                { "name": "offer", "type": "bytes32", "indexed": true },
+                { "name": "payload", "type": "bytes", "indexed": false },
+                { "name": "v", "type": "i32", "indexed": true }
+            ],
+            "attributes": [
+                { "name": "kind", "type": "str", "value": "probe" },
+                { "name": "offer", "type": "bytes32", "value": OFFER },
+                { "name": "payload", "type": "bytes", "value": "0x7b2276223a317d" },
+                { "name": "v", "type": "i32", "value": 1 }
+            ]
         }))
-        .expect("a read row parses")
+        .expect("the node's row parses");
+        assert_eq!(entity.created_at, 0x7a);
+        assert_eq!(entity.updated_at, 0x7c);
+        assert_eq!(&entity.payload().expect("a payload")[..], br#"{"v":1}"#);
+        assert!(entity.is("probe"));
+        assert_eq!(
+            entity.typed_attributes().get("offer"),
+            Some(&AttributeValue::Key(key(OFFER))),
+            "a key written through the SDK reads back as the node's bytes32"
+        );
+        assert_eq!(
+            entity.typed_attributes().get("payload"),
+            Some(&AttributeValue::Bytes(br#"{"v":1}"#.to_vec()))
+        );
+
+        let bare: ArkivEntity = serde_json::from_value(json!({
+            "key": "0xe1d4ab361c0bc9418474a0d4e0700ed5cdb7adcc17fff88737cc15566418f58c",
+            "creator": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+            "createdAt": "0x7a",
+            "updatedAt": "0x7a",
+            "expiresAt": "0xa93a"
+        }))
+        .expect("a row without attributes parses");
+        assert!(bare.payload().is_none());
     }
 
     #[test]
@@ -677,13 +774,18 @@ mod tests {
             max_providers: 100,
         };
         let encoded = listing.encode();
+        let wire = encoded.to_wire();
         assert_eq!(
-            encoded.attributes.to_wire(),
-            json!({
-                "kind": { "type": "str", "value": "rpc.lb_listing" },
-                "v": { "type": "i32", "value": 1 },
-            })
+            wire["kind"],
+            json!({ "type": "str", "value": "rpc.lb_listing" })
         );
+        assert_eq!(wire["v"], json!({ "type": "i32", "value": 1 }));
+        assert_eq!(wire["payload"]["type"], "bytes");
+        assert_eq!(
+            wire["payload"]["indexed"], false,
+            "a payload is never indexed"
+        );
+        assert_eq!(wire.as_object().unwrap().len(), 3);
         assert_eq!(
             payload_json(&encoded),
             json!({
@@ -714,7 +816,7 @@ mod tests {
         };
         let encoded = offer.encode();
         assert_eq!(
-            encoded.attributes.to_wire()["lb_listing"],
+            encoded.to_wire()["lb_listing"],
             json!({ "type": "key", "value": KEY })
         );
         assert_eq!(
@@ -743,7 +845,7 @@ mod tests {
             remote_port: 20007,
         };
         let encoded = agreement.encode();
-        let wire = encoded.attributes.to_wire();
+        let wire = encoded.to_wire();
         assert_eq!(
             wire["provider"],
             json!({ "type": "addr", "value": PROVIDER })
@@ -791,7 +893,7 @@ mod tests {
             closed_block: None,
         };
         let encoded = open.encode();
-        let wire = encoded.attributes.to_wire();
+        let wire = encoded.to_wire();
         assert_eq!(wire["agreement"], json!({ "type": "key", "value": KEY }));
         assert_eq!(
             wire["provider"],
@@ -819,7 +921,7 @@ mod tests {
         };
         let encoded = closed.encode();
         assert_eq!(
-            encoded.attributes.to_wire()["state"],
+            encoded.to_wire()["state"],
             json!({ "type": "str", "value": "closed" })
         );
         assert_eq!(
@@ -836,7 +938,7 @@ mod tests {
 
     #[test]
     fn an_unknown_counter_state_is_an_error() {
-        let mut encoded = CounterRecord {
+        let encoded = CounterRecord {
             agreement: key(KEY),
             provider: addr(PROVIDER),
             state: CounterState::Open,
@@ -846,9 +948,7 @@ mod tests {
             closed_block: None,
         }
         .encode();
-        encoded.attributes = encoded
-            .attributes
-            .with("state", AttributeValue::Str("paid".to_owned()));
+        let encoded = encoded.with("state", AttributeValue::Str("paid".to_owned()));
         assert_eq!(
             CounterRecord::decode(&read_back(&encoded)),
             Err(RecordError::AttributeType {
@@ -875,7 +975,7 @@ mod tests {
             },
         };
         let encoded = receipt.encode();
-        let wire = encoded.attributes.to_wire();
+        let wire = encoded.to_wire();
         assert_eq!(wire["counter"], json!({ "type": "key", "value": KEY }));
         assert_eq!(
             wire["provider"],
@@ -899,15 +999,19 @@ mod tests {
 
     #[test]
     fn unknown_payload_fields_are_ignored() {
-        let mut encoded = Agreement {
+        let encoded = Agreement {
             provider: addr(PROVIDER),
             offer: key(OFFER),
             wei_per_call: Wei::new(5),
             remote_port: 20000,
         }
         .encode();
-        encoded.payload =
-            br#"{"wei_per_call":"5","remote_port":20000,"added_later":true}"#.to_vec();
+        let encoded = encoded.with(
+            PAYLOAD_ATTRIBUTE,
+            AttributeValue::Bytes(
+                br#"{"wei_per_call":"5","remote_port":20000,"added_later":true}"#.to_vec(),
+            ),
+        );
         assert!(Agreement::decode(&read_back(&encoded)).is_ok());
     }
 
@@ -936,17 +1040,14 @@ mod tests {
             max_providers: 1,
         }
         .encode();
-        let newer = read_back(&EncodedRecord {
-            attributes: encoded.attributes.clone().with("v", AttributeValue::I32(2)),
-            payload: encoded.payload.clone(),
-        });
+        let newer = read_back(&encoded.clone().with("v", AttributeValue::I32(2)));
         assert!(newer.is(KIND_LB_LISTING), "the kind is right");
         let error = Stored::<LbListing>::decode(&newer).unwrap_err();
         assert_eq!(error, RecordError::Version(2));
         assert_eq!(error.to_string(), "schema version 2, this code reads 1");
 
         let mut unversioned = encoded;
-        unversioned.attributes.0.remove("v");
+        unversioned.0.remove("v");
         assert_eq!(
             LbListing::decode(&read_back(&unversioned)),
             Err(RecordError::MissingAttribute("v"))
@@ -962,7 +1063,7 @@ mod tests {
             remote_port: 20000,
         }
         .encode();
-        encoded.attributes.0.remove("provider");
+        encoded.0.remove("provider");
         assert_eq!(
             Agreement::decode(&read_back(&encoded)),
             Err(RecordError::MissingAttribute("provider"))
@@ -971,7 +1072,7 @@ mod tests {
 
     #[test]
     fn an_attribute_of_the_wrong_type_is_an_error() {
-        let mut encoded = Agreement {
+        let encoded = Agreement {
             provider: addr(PROVIDER),
             offer: key(OFFER),
             wei_per_call: Wei::new(5),
@@ -979,9 +1080,7 @@ mod tests {
         }
         .encode();
         // The provider written as a string, where the record needs an address.
-        encoded.attributes = encoded
-            .attributes
-            .with("provider", AttributeValue::Str(PROVIDER.to_owned()));
+        let encoded = encoded.with("provider", AttributeValue::Str(PROVIDER.to_owned()));
         assert_eq!(
             Agreement::decode(&read_back(&encoded)),
             Err(RecordError::AttributeType {

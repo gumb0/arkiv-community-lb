@@ -16,7 +16,7 @@ use axum::{
     routing::{get, post},
 };
 use lb::chain::{
-    records::{Agreement, Record, Wei},
+    records::{Agreement, AttributeValue, Attributes, PAYLOAD_ATTRIBUTE, Record, Wei},
     writer::{Batch, Create, Delete, Expiry, Extend, Operation, Patch, WriteError, Writer},
 };
 use serde_json::{Value, json};
@@ -119,13 +119,13 @@ async fn a_create_lands_and_returns_the_key_and_expiry() {
     let seen = sidecar.seen.lock().expect("seen");
     let (route, body) = &seen[0];
     assert_eq!(route, "create");
-    assert_eq!(body["contentType"], "application/json");
-    assert_eq!(body["expires"], json!({ "seconds": 7200 }));
+    assert_eq!(body["expiration"], json!({ "seconds": 7200 }));
     assert_eq!(
         body["attributes"]["provider"],
         json!({ "type": "addr", "value": format!("{:#x}", Address::ZERO) })
     );
-    assert!(body["payload"].is_string());
+    assert_eq!(body["attributes"]["payload"]["type"], "bytes");
+    assert!(body["attributes"]["payload"]["value"].is_string());
 }
 
 #[tokio::test]
@@ -138,8 +138,8 @@ async fn patch_delete_and_extend_hit_their_routes() {
     writer
         .patch(&Patch {
             entity_key: key(),
-            set: None,
-            payload: Some(b"{}".to_vec()),
+            set: Attributes::default()
+                .with(PAYLOAD_ATTRIBUTE, AttributeValue::Bytes(b"{}".to_vec())),
         })
         .await
         .expect("patched");
@@ -150,7 +150,7 @@ async fn patch_delete_and_extend_hit_their_routes() {
     let extended = writer
         .extend(&Extend {
             entity_key: key(),
-            expires: Expiry::Seconds(259_200),
+            expiration: Expiry::Seconds(259_200),
         })
         .await
         .expect("extended");
@@ -160,8 +160,8 @@ async fn patch_delete_and_extend_hit_their_routes() {
     let routes: Vec<&str> = seen.iter().map(|(route, _)| route.as_str()).collect();
     assert_eq!(routes, ["patch", "delete", "extend"]);
     assert_eq!(seen[0].1["entityKey"], KEY);
-    assert_eq!(seen[0].1["payload"], "e30=");
-    assert_eq!(seen[2].1["expires"], json!({ "seconds": 259200 }));
+    assert_eq!(seen[0].1["set"]["payload"]["value"], "0x7b7d");
+    assert_eq!(seen[2].1["expiration"], json!({ "seconds": 259200 }));
 }
 
 #[tokio::test]
@@ -182,7 +182,7 @@ async fn a_batch_returns_the_extended_keys() {
     for _ in 0..2 {
         batch.push(Operation::Extend(Extend {
             entity_key: key(),
-            expires: Expiry::Seconds(1),
+            expiration: Expiry::Seconds(1),
         }));
     }
     let result = writer.execute_batch(&batch).await.expect("batch");

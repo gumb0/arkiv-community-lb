@@ -22,6 +22,11 @@ use serde::Deserialize;
 
 use crate::chain::{reader::PAGE_LIMIT, records::Wei};
 
+/// The longest lifetime the chain allows: 7,884,000 blocks of two
+/// seconds, a value in the network's genesis. A create or extend past it
+/// is refused at the chain.
+const MAX_LIFETIME: Duration = Duration::from_secs(15_768_000);
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
@@ -240,7 +245,7 @@ fn default_writer_url() -> String {
     "http://127.0.0.1:8560/".to_owned()
 }
 fn default_max_providers() -> u32 {
-    100
+    90
 }
 fn default_remote_port_start() -> u16 {
     20000
@@ -270,7 +275,7 @@ fn default_flush_interval() -> Duration {
     Duration::from_secs(24 * 60 * 60)
 }
 fn default_gas_warn_below() -> Wei {
-    glm("0.02").expect("the default parses")
+    glm("0.1").expect("the default parses")
 }
 
 impl Marketplace {
@@ -462,6 +467,12 @@ impl Marketplace {
                      are whole blocks of two seconds"
                 )));
             }
+            if duration > MAX_LIFETIME {
+                return Err(ConfigError::Invalid(format!(
+                    "marketplace.{name} ({duration:?}) must be at most {MAX_LIFETIME:?}, \
+                     the longest lifetime the chain allows"
+                )));
+            }
         }
         // An agreement that expired while its offer is still alive
         // would be accepted again from that offer. An offer is only
@@ -520,12 +531,11 @@ impl Marketplace {
                 self.flush_interval, self.agreement_life
             )));
         }
-        if u64::from(self.max_providers) >= PAGE_LIMIT {
+        if u64::from(self.max_providers) > PAGE_LIMIT {
             return Err(ConfigError::Invalid(format!(
-                "marketplace.max_providers is {}, maximum is {}: the agreement records \
-                 are reloaded in one page of {PAGE_LIMIT} at startup",
-                self.max_providers,
-                PAGE_LIMIT - 1
+                "marketplace.max_providers is {}, maximum is {PAGE_LIMIT}: the agreement \
+                 records are reloaded in one page of {PAGE_LIMIT} at startup",
+                self.max_providers
             )));
         }
         let last = u32::from(self.remote_port_start) + self.max_providers;
@@ -628,8 +638,8 @@ mod tests {
         assert_eq!(marketplace.writer_url, "http://127.0.0.1:8560/");
         assert_eq!(marketplace.wei_per_call, Wei::new(1_000_000_000_000_000));
         assert_eq!(marketplace.tunnel_server, "203.0.113.10:7000");
-        assert_eq!(marketplace.max_providers, 100);
-        assert!(marketplace.remote_ports().eq(20000..=20099));
+        assert_eq!(marketplace.max_providers, 90);
+        assert!(marketplace.remote_ports().eq(20000..=20089));
         assert_eq!(marketplace.discovery_interval, Duration::from_secs(300));
         assert_eq!(marketplace.refresh_interval, Duration::from_secs(3600));
         assert_eq!(marketplace.agreement_life, Duration::from_secs(259_200));
@@ -639,7 +649,10 @@ mod tests {
             Duration::from_secs(15_552_000)
         );
         assert_eq!(marketplace.offer_max_lifetime, Duration::from_secs(86_400));
-        assert_eq!(marketplace.gas_warn_below, Wei::new(20_000_000_000_000_000));
+        assert_eq!(
+            marketplace.gas_warn_below,
+            Wei::new(100_000_000_000_000_000)
+        );
         assert_eq!(
             marketplace.settlement_period,
             Duration::from_secs(7 * 86_400)
@@ -725,6 +738,28 @@ mod tests {
     }
 
     #[test]
+    fn a_lifetime_past_the_chains_maximum_is_refused() {
+        for name in [
+            "agreement_life",
+            "listing_life",
+            "counter_record_life",
+            "offer_max_lifetime",
+        ] {
+            // One block more than the maximum.
+            let error =
+                parse(&format!("{MARKETPLACE}{name} = \"15768002s\"\n")).expect_err("must refuse");
+            assert!(error.to_string().contains(name), "{error}");
+            assert!(error.to_string().contains("longest lifetime"), "{error}");
+        }
+        parse(&format!(
+            "{MARKETPLACE}counter_record_life = \"15768000s\"\n"
+        ))
+        .expect("exactly the maximum is fine");
+        parse(&format!("{MARKETPLACE}listing_life = \"15768000s\"\n"))
+            .expect("exactly the maximum is fine");
+    }
+
+    #[test]
     fn lifetimes_must_be_even_seconds() {
         for name in [
             "agreement_life",
@@ -759,12 +794,11 @@ mod tests {
     }
 
     #[test]
-    fn the_cap_stays_below_the_page_limit() {
-        let error = parse(&format!("{MARKETPLACE}max_providers = 200\n")).expect_err("must refuse");
+    fn the_cap_fits_one_page() {
+        let error = parse(&format!("{MARKETPLACE}max_providers = 101\n")).expect_err("must refuse");
         assert!(error.to_string().contains("max_providers"), "{error}");
         assert!(error.to_string().contains("one page"), "{error}");
-        parse(&format!("{MARKETPLACE}max_providers = 199\n"))
-            .expect("one below the page limit is fine");
+        parse(&format!("{MARKETPLACE}max_providers = 100\n")).expect("a full page is fine");
         let config = parse(&format!("{MARKETPLACE}max_providers = 0\n"))
             .expect("a cap of zero accepts nobody");
         let marketplace = config.marketplace.expect("the section is present");

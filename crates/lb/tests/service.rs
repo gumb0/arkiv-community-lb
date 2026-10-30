@@ -353,7 +353,8 @@ async fn integrity_fleet() -> IntegrityFleet {
     for rpc in [&reference, &honest, &liar] {
         rpc.height.store(chain.head(), Ordering::Relaxed);
     }
-    liar.lie_entity.store(true, Ordering::Relaxed);
+    // About blocks: the entity check is off as shipped.
+    liar.lie_block.store(true, Ordering::Relaxed);
 
     let mut config = config();
     config.reference = Some(format!("http://{reference_addr}"));

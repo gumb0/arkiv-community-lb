@@ -1,4 +1,4 @@
-// Batch-scale tariff probe on the 0.8 API: N-op transactions, one phase
+// Batch-scale tariff probe: N-op transactions, one phase
 // per op kind — wall time, gas (total and per op), calldata size. The
 // patch phases run twice (one vs three mutations) to separate per-op
 // from per-mutation pricing. A last phase checks that a batch is
@@ -9,19 +9,32 @@
 // BATCH_N (default 50).
 // Run: npm run batch
 //
-// The node caps raw transaction size at 128 KiB (txpool default), and the
-// create phase reaches it at N=98 with these payloads — the error is
-// "oversized data", and a gateway in front may reject the same batch earlier
-// as HTTP 413. The default leaves room for payloads to grow; raise it to
+// The node caps raw transaction size at 128 KiB (txpool default); on the
+// previous node line the create phase reached it at N=98 with these
+// payloads — the error is "oversized data", which the sidecar's 413
+// keys on, and a gateway in front may reject the same batch earlier as
+// HTTP 413. The default leaves room for payloads to grow; raise it to
 // find the ceiling again.
 
-import { ExpirationTime, i32, jsonToPayload, str } from "@arkiv-network/sdk"
+import { bytes, defineSchema, ExpirationTime, i32, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
 import { env, privateKeyFromFile } from "../src/env.ts"
 
 const TTL = ExpirationTime.fromBlocks(300) // blocks, so a faster chain means the same thing
 const RUN = `r${Date.now().toString(36)}`
+
+// A JSON document in a bytes attribute, the way the LB stores its records.
+const document = (value: unknown) => bytes(new TextEncoder().encode(JSON.stringify(value)))
+
+const Fixture = defineSchema({
+  kind: str().indexed(),
+  run: str().indexed(),
+  rank: i32().indexed(),
+  status: str().indexed().optional(),
+  extra: str().indexed().optional(),
+  payload: bytes(),
+})
 
 const batchN = Number(process.env.BATCH_N ?? "50")
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
@@ -67,10 +80,14 @@ console.log(
 let started = Date.now()
 const { txHash: createTx, createdEntities } = await writer.executeBatch({
   creates: Array.from({ length: batchN }, (_, i) => ({
-    payload: jsonToPayload({ probe: "batch", i, run: RUN }),
-    contentType: "application/json",
-    attributes: { kind: str("batch-experiment"), run: str(RUN), rank: i32(i) },
-    expires: TTL,
+    schema: Fixture,
+    values: {
+      kind: str("batch-experiment"),
+      run: str(RUN),
+      rank: i32(i),
+      payload: document({ probe: "batch", i, run: RUN }),
+    },
+    expiration: TTL,
   })),
 })
 report(`create x${batchN}`, (Date.now() - started) / 1000, await txStats(createTx))
@@ -82,7 +99,7 @@ started = Date.now()
 const { txHash: extendTx } = await writer.executeBatch({
   extensions: createdEntities.map((entityKey) => ({
     entityKey,
-    expires: ExpirationTime.fromBlocks(450),
+    expiration: ExpirationTime.fromBlocks(450),
   })),
 })
 report(`extend x${batchN}`, (Date.now() - started) / 1000, await txStats(extendTx))
@@ -90,6 +107,7 @@ report(`extend x${batchN}`, (Date.now() - started) / 1000, await txStats(extendT
 started = Date.now()
 const { txHash: patch1Tx } = await writer.executeBatch({
   patches: createdEntities.map((entityKey) => ({
+    schema: Fixture,
     entityKey,
     set: { status: str("patched") },
   })),
@@ -99,6 +117,7 @@ report(`patch x${batchN} (1 mutation)`, (Date.now() - started) / 1000, await txS
 started = Date.now()
 const { txHash: patch3Tx } = await writer.executeBatch({
   patches: createdEntities.map((entityKey, i) => ({
+    schema: Fixture,
     entityKey,
     set: { status: str("repatched"), extra: str("x"), rank: i32(i + 1000) },
   })),
@@ -120,13 +139,17 @@ try {
   await writer.executeBatch({
     creates: [
       {
-        payload: jsonToPayload({ probe: "atomicity", run: RUN }),
-        contentType: "application/json",
-        attributes: { kind: str("batch-atomicity"), run: str(RUN) },
-        expires: TTL,
+        schema: Fixture,
+        values: {
+          kind: str("batch-atomicity"),
+          run: str(RUN),
+          rank: i32(0),
+          payload: document({ probe: "atomicity", run: RUN }),
+        },
+        expiration: TTL,
       },
     ],
-    extensions: [{ entityKey: doomedKey, expires: ExpirationTime.fromBlocks(450) }],
+    extensions: [{ entityKey: doomedKey, expiration: ExpirationTime.fromBlocks(450) }],
   })
 } catch (error) {
   reverted = true

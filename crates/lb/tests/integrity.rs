@@ -105,6 +105,9 @@ fn checker(
         ATTEMPT_TIMEOUT,
         ready.clone(),
     )
+    // The entity leg is off by default (see the checker); these tests
+    // cover it, so it is on here.
+    .with_entity_check(true)
 }
 
 fn entry(pool: &Pool, i: usize) -> Arc<Provider> {
@@ -121,6 +124,43 @@ async fn an_honest_fleet_matches_and_stays_in_rotation() {
         assert!(provider.eligible());
         assert_eq!(provider.last_verdict(), Some((Verdict::Match, finalized)));
     }
+}
+
+#[tokio::test]
+async fn the_entity_check_is_off_unless_switched_on() {
+    // As shipped, a round is the block alone: a provider lying about
+    // entities passes, no key is read from the reference, no entity
+    // is asked of the provider.
+    let fleet = fleet(1).await;
+    let checker = IntegrityChecker::new(
+        fleet.pool.clone(),
+        reqwest::Client::new(),
+        fleet.chain.clone(),
+        config::Integrity {
+            interval: INTERVAL,
+            confirm_after: CONFIRM_AFTER,
+        },
+        ATTEMPT_TIMEOUT,
+        fleet.ready.clone(),
+    );
+    fleet.providers[0].lie_entity.store(true, Ordering::Relaxed);
+    checker.round().await;
+    let provider = entry(&fleet.pool, 0);
+    assert!(provider.eligible());
+    assert_eq!(
+        provider.last_verdict().map(|(v, _)| v),
+        Some(Verdict::Match)
+    );
+    assert_eq!(fleet.chain.unpinned_reads(), 0, "no page of keys");
+    assert!(fleet.chain.pinned_at().is_empty(), "no entity read");
+    assert!(
+        fleet.providers[0]
+            .asked_keys
+            .lock()
+            .expect("asked")
+            .is_empty()
+    );
+    assert_eq!(fleet.providers[0].blocks.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

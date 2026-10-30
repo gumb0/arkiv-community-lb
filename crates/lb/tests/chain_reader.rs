@@ -89,7 +89,14 @@ async fn a_query_selects_every_record_field_at_the_page_limit_with_the_key() {
     assert_eq!(body["params"][0], query.text());
     assert_eq!(
         body["params"][1]["select"],
-        json!({ "key": true, "creator": true, "createdAt": true, "expiresAt": true, "payload": true, "attributes": true })
+        json!({
+            "key": true,
+            "creator": true,
+            "createdAt": true,
+            "updatedAt": true,
+            "expiresAt": true,
+            "attributes": true,
+        })
     );
     assert_eq!(body["params"][1]["limit"], format!("{PAGE_LIMIT:#x}"));
 }
@@ -103,21 +110,17 @@ async fn rows_parse_into_stored_records_and_a_cursor_means_more() {
         remote_port: 20001,
     }
     .encode();
-    let payload_hex: String = encoded.payload.iter().map(|b| format!("{b:02x}")).collect();
     let attributes: Vec<Value> = encoded
-        .attributes
-        .to_wire()
-        .as_object()
-        .unwrap()
+        .to_read()
         .iter()
-        .map(|(name, wire)| json!({ "name": name, "type": wire["type"], "value": wire["value"] }))
+        .map(|a| json!({ "name": a.name, "type": a.type_tag, "value": a.value }))
         .collect();
     let row = json!({
         "key": KEY,
         "creator": LB,
         "createdAt": "0x191",
+        "updatedAt": "0x191",
         "expiresAt": "0x92e21",
-        "payload": format!("0x{payload_hex}"),
         "attributes": attributes,
     });
     let (reader, _) = reference(
@@ -255,7 +258,7 @@ async fn the_head_height_is_a_hex_quantity() {
 
 #[tokio::test]
 async fn a_balance_is_asked_at_the_head_and_read_as_wei() {
-    // 0.02 GLM, the gas warning's default threshold.
+    // 0.02 GLM.
     let (reader, reference) = reference(ok(json!("0x470de4df820000")), None).await;
     let balance = reader.balance(lb()).await.expect("balance");
     assert_eq!(

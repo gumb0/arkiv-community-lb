@@ -56,8 +56,9 @@ impl Requests {
                 "method": "arkiv_query",
                 "params": [
                     filter,
-                    // The node's page maximum, 200 rows.
-                    {"select": {"key": true, "payload": true, "attributes": true}, "limit": "0xc8"},
+                    // The node's page maximum, 100 rows; the payload is
+                    // one of the attributes.
+                    {"select": {"key": true, "attributes": true}, "limit": "0x64"},
                 ],
             }),
         }

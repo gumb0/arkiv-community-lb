@@ -213,9 +213,14 @@ impl FakeProvider {
             .map(|entity| {
                 let mut entity = entity.as_arkiv_entity();
                 if self.lie_entity.load(Ordering::Relaxed) {
-                    let mut altered = entity.payload.to_vec();
-                    altered.push(0);
-                    entity.payload = altered.into();
+                    // One byte more on the payload attribute's hex.
+                    let payload = entity
+                        .attributes
+                        .iter_mut()
+                        .find(|a| a.name == "payload")
+                        .expect("every record carries a payload");
+                    let altered = format!("{}00", payload.value.as_str().expect("hex"));
+                    payload.value = Value::String(altered);
                 }
                 render_entity(&entity)
             })
@@ -263,8 +268,8 @@ fn render_entity(entity: &ArkivEntity) -> Value {
         "key": entity.key,
         "creator": entity.creator,
         "createdAt": format!("{:#x}", entity.created_at),
+        "updatedAt": format!("{:#x}", entity.updated_at),
         "expiresAt": format!("{:#x}", entity.expires_at),
-        "payload": entity.payload,
         "attributes": attributes,
     })
 }

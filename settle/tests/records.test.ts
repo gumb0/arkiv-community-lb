@@ -4,9 +4,8 @@
 import { deepStrictEqual as deepEqual, strictEqual as equal, throws } from "node:assert/strict"
 import { describe, it } from "node:test"
 import { ExpirationTime } from "@arkiv-network/sdk"
-import { stringToBytes } from "viem"
-import { decodeCounter, decodeReceipt, receiptFor } from "../src/records.ts"
-import { address, closedCounter, key, receipt } from "./chain.ts"
+import { decodeCounter, decodeReceipt, RECEIPT_LIFE_BLOCKS, receiptFor } from "../src/records.ts"
+import { address, closedCounter, document, key, receipt } from "./chain.ts"
 
 describe("a closed counter record", () => {
   it("reads its count, its own rate and the blocks it covers", () => {
@@ -33,15 +32,13 @@ describe("a closed counter record", () => {
   it("refuses one that names no closing block", () => {
     // Only a closed record is payable, and a closed record has one.
     const open = closedCounter({ key: key(7), provider: address(1), count: 1 })
-    open.payload = stringToBytes(
-      JSON.stringify({ count: 1, wei_per_call: "1000", opened_block: 10 }),
-    )
+    open.attributes.payload = document({ count: 1, wei_per_call: "1000", opened_block: 10 })
     throws(() => decodeCounter(open), /closing block/)
   })
 
   it("refuses one whose attributes are missing", () => {
     const record = closedCounter({ key: key(7), provider: address(1), count: 1 })
-    delete (record.attributes as Record<string, unknown>).provider
+    delete record.attributes.provider
     throws(() => decodeCounter(record), /addr attribute provider/)
   })
 })
@@ -57,7 +54,7 @@ describe("a receipt", () => {
     equal(paid.payout.chainId, 560048)
   })
 
-  it("is written permanent and readonly", () => {
+  it("is written for the chain's longest lifetime, readonly", () => {
     // Settle reads a counter record as unpaid until one of its own
     // receipts names it, so a receipt that expired before its record
     // would have the next run pay for it again. Readonly because the
@@ -66,7 +63,7 @@ describe("a receipt", () => {
       decodeCounter(closedCounter({ key: key(7), provider: address(1), count: 10 })),
       { chainId: 560048, tx: key(0xff) },
     )
-    deepEqual(record.expires, ExpirationTime.permanent())
-    equal(record.flags.readonly, true)
+    deepEqual(record.expiration, ExpirationTime.fromBlocks(RECEIPT_LIFE_BLOCKS))
+    equal(record.flags?.readonly, true)
   })
 })

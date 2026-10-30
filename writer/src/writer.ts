@@ -1,12 +1,15 @@
 // Generic entity write operations over the official Arkiv SDK.
-// Schema-blind: payloads are opaque bytes, attributes are generic name→value
-// pairs — domain encoding belongs to the caller (see AGENTS.md).
+// Schema-blind: an operation carries the schema it is typed by, built by
+// the caller from the attributes it sends — domain encoding belongs to the
+// caller (see AGENTS.md).
 
 import {
-  type AttributeInputs,
-  type CreationFlags,
+  type CreateEntityParameters,
   createWalletClient,
-  type Expiry,
+  type DeleteEntityParameters,
+  type ExecuteBatchParameters,
+  type ExtendEntityParameters,
+  type PatchEntityParameters,
 } from "@arkiv-network/sdk"
 import {
   createPublicClient,
@@ -17,36 +20,15 @@ import {
 } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 
-// Callers build these with the SDK's own vocabulary: tagged value
-// constructors (i32, u256, str, …) and ExpirationTime helpers.
-export type { AttributeInputs, CreationFlags, Expiry }
-
-export type CreateOp = {
-  payload: Uint8Array
-  contentType: string
-  attributes?: AttributeInputs
-  expires: Expiry
-  flags?: CreationFlags
-  salt?: bigint
-}
-
-export type PatchOp = {
-  entityKey: Hex
-  set?: AttributeInputs
-  unset?: readonly string[]
-  payload?: Uint8Array
-  contentType?: string
-}
-
-export type ExtendOp = { entityKey: Hex; expires: Expiry }
-export type DeleteOp = { entityKey: Hex }
-
-export type BatchOps = {
-  creates?: CreateOp[]
-  patches?: PatchOp[]
-  deletes?: DeleteOp[]
-  extensions?: ExtendOp[]
-}
+// The SDK's own parameter shapes, so an operation goes into a batch as it
+// is. Callers build them with the SDK's vocabulary: defineSchema and the
+// type constructors (i32, u256, str, …) for columns and values,
+// ExpirationTime for lifetimes.
+export type CreateOp = CreateEntityParameters
+export type PatchOp = PatchEntityParameters
+export type ExtendOp = ExtendEntityParameters
+export type DeleteOp = DeleteEntityParameters
+export type BatchOps = ExecuteBatchParameters
 
 export type WriterConfig = {
   rpcUrl: string
@@ -89,8 +71,8 @@ export async function createWriter(config: WriterConfig) {
     address: account.address,
     chainId,
 
-    createEntity: (op: CreateOp) => wallet.createEntity(op),
-    patchEntity: (op: PatchOp) => wallet.patchEntity(op),
+    createEntity: (op: CreateOp) => wallet.createEntity(op.schema, op.values, op),
+    patchEntity: (op: PatchOp) => wallet.patchEntity(op.schema, op.entityKey, op),
     deleteEntity: (op: DeleteOp) => wallet.deleteEntity(op),
     extendEntity: (op: ExtendOp) => wallet.extendEntity(op),
     /** All operations in one transaction — one nonce, atomic on-chain. */

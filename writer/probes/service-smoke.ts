@@ -6,7 +6,6 @@
 // an Authorization: Bearer header).
 // Run: npm run service-smoke
 
-import { ExpirationTime, jsonToPayload } from "@arkiv-network/sdk"
 import { toHex, type Hex } from "viem"
 import { startService } from "../src/service.ts"
 import { createWriter } from "../src/writer.ts"
@@ -35,16 +34,14 @@ async function rawRpc(method: string, params: unknown[]): Promise<unknown> {
 
 type QueriedRow = {
   key?: Hex
-  payload?: Hex
   expiresAt?: Hex
-  contentType?: string
   attributes?: { name: string; type: string; value: unknown }[]
 }
 
 async function query(q: string): Promise<QueriedRow[]> {
   const result = (await rawRpc("arkiv_query", [
     q,
-    { select: { key: true, payload: true, attributes: true, expiresAt: true, contentType: true } },
+    { select: { key: true, attributes: true, expiresAt: true } },
   ])) as { data?: QueriedRow[] }
   return result.data ?? []
 }
@@ -102,8 +99,11 @@ async function ok(route: string, body: unknown): Promise<Record<string, unknown>
   return result
 }
 
-const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64")
-const payload = jsonToPayload({ probe: "service-smoke", run: RUN })
+// A JSON document in a bytes attribute, the way the LB stores its records:
+// 0x hex on the wire, never indexed.
+const json = (document: unknown) => toHex(new TextEncoder().encode(JSON.stringify(document)))
+const blob = (hex: Hex) => ({ type: "bytes", value: hex, indexed: false })
+const payload = json({ probe: "service-smoke", run: RUN })
 
 await step("GET /identity — the signing address and the chain", async () => {
   const res = await fetch(`${base}/identity`)
@@ -113,10 +113,8 @@ await step("GET /identity — the signing address and the chain", async () => {
   assert(identity.chainId === writer.chainId, "the chain id is the writer's")
 })
 
-const entityKey = await step("POST /create — typed attributes and base64 payload", async () => {
+const entityKey = await step("POST /create — typed attributes, the payload a bytes one", async () => {
   const result = await ok("/create", {
-    payload: b64(payload),
-    contentType: "application/json",
     attributes: {
       kind: { type: "str", value: "service-smoke" },
       run: { type: "str", value: RUN },
@@ -125,8 +123,10 @@ const entityKey = await step("POST /create — typed attributes and base64 paylo
       big: { type: "u256", value: "123456789012345678901234567890" },
       owner: { type: "addr", value: writer.address },
       price: { type: "dec", value: "1.25" },
+      note: { type: "str", value: "stored, not indexed", indexed: false },
+      payload: blob(payload),
     },
-    expires: TTL,
+    expiration: TTL,
   })
   const key = result.entityKey as Hex
   console.log(`  key ${key}, expiresAt ${result.expiresAt} (bigint as string)`)
@@ -134,34 +134,41 @@ const entityKey = await step("POST /create — typed attributes and base64 paylo
 
   const row = await byKey(key)
   assert(row !== undefined, "entity readable over raw JSON-RPC")
-  assert(row.payload === toHex(payload), "base64 payload round-trips byte-identical")
+  assert(attrValue(row, "payload") === payload, "bytes round-trip byte-identical")
   assert(attrValue(row, "run") === RUN, "str attribute round-trips")
   assert(attrValue(row, "rank") === 1, "i32 attribute round-trips")
   assert(attrValue(row, "live") === true, "bool attribute round-trips")
+  assert(attrValue(row, "note") === "stored, not indexed", "an unindexed str is stored")
+  assert(
+    !row.attributes?.some((attribute) => attribute.name === "arkiv.schema"),
+    "no schema tag on the entity",
+  )
   const types = (row.attributes ?? []).map((a) => `${a.name}:${a.type}=${a.value}`).join(" ")
   console.log(`  attributes ${types}`)
   return key
 })
 
 await step("POST /patch — set, unset, payload replacement", async () => {
-  const replacement = jsonToPayload({ probe: "service-smoke", run: RUN, patched: true })
+  const replacement = json({ probe: "service-smoke", run: RUN, patched: true })
   await ok("/patch", {
     entityKey,
-    set: { rank: { type: "i32", value: 2 }, status: { type: "str", value: "patched" } },
+    set: {
+      rank: { type: "i32", value: 2 },
+      status: { type: "str", value: "patched" },
+      payload: blob(replacement),
+    },
     unset: ["live"],
-    payload: b64(replacement),
-    contentType: "application/json",
   })
   const row = await byKey(entityKey)
   assert(attrValue(row, "rank") === 2, "set overwrote rank")
   assert(attrValue(row, "status") === "patched", "set added status")
   assert(attrValue(row, "live") === undefined, "unset removed live")
-  assert(row?.payload === toHex(replacement), "payload replaced")
+  assert(attrValue(row, "payload") === replacement, "payload replaced")
 })
 
 await step("POST /extend — expiry grows", async () => {
   const before = BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
-  const result = await ok("/extend", { entityKey, expires: { seconds: 900 } })
+  const result = await ok("/extend", { entityKey, expiration: { seconds: 900 } })
   const after = BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
   console.log(`  expiresAt ${before} -> ${after} (service said ${result.expiresAt})`)
   assert(after > before, "expiry strictly increased")
@@ -169,14 +176,13 @@ await step("POST /extend — expiry grows", async () => {
 
 const batched = await step("POST /execute-batch — two creates and a patch in one tx", async () => {
   const make = (n: number) => ({
-    payload: b64(jsonToPayload({ probe: "service-batch", n, run: RUN })),
-    contentType: "application/json",
     attributes: {
       kind: { type: "str", value: "service-smoke" },
       run: { type: "str", value: RUN },
       rank: { type: "i32", value: n },
+      payload: blob(json({ probe: "service-batch", n, run: RUN })),
     },
-    expires: TTL,
+    expiration: TTL,
   })
   const result = await ok("/execute-batch", {
     creates: [make(10), make(11)],
@@ -200,14 +206,13 @@ const batched = await step("POST /execute-batch — two creates and a patch in o
 const parallel = await step("parallel /create requests both land (the queue serializes)", async () => {
   const fire = (tag: string) =>
     ok("/create", {
-      payload: b64(jsonToPayload({ probe: "service-parallel", tag, run: RUN })),
-      contentType: "application/json",
       attributes: {
         kind: { type: "str", value: "service-smoke" },
         run: { type: "str", value: RUN },
         tag: { type: "str", value: tag },
+        payload: blob(json({ probe: "service-parallel", tag, run: RUN })),
       },
-      expires: TTL,
+      expiration: TTL,
     })
   const results = await Promise.all([fire("p1"), fire("p2")])
   const keys = results.map((result) => result.entityKey as Hex)
@@ -219,12 +224,14 @@ const parallel = await step("parallel /create requests both land (the queue seri
 })
 
 await step("bad request bodies are 400, not 500", async () => {
+  const attributes = { kind: { type: "str", value: "service-smoke" } }
   const cases: [string, unknown][] = [
-    ["/create", { payload: b64(payload), contentType: "application/json" }],
-    ["/create", { payload: b64(payload), contentType: "application/json", expires: { years: 3 } }],
+    ["/create", { attributes }],
+    ["/create", { attributes, expiration: { years: 3 } }],
+    ["/create", { attributes: { b: { type: "bytes", value: "0x00", indexed: true } }, expiration: TTL }],
     ["/patch", { entityKey: "no-0x-prefix" }],
     ["/patch", { entityKey, set: { rank: { type: "int", value: 1 } } }],
-    ["/extend", { entityKey, expires: "forever" }],
+    ["/extend", { entityKey, expiration: "forever" }],
   ]
   for (const [route, body] of cases) {
     const { status, body: result } = await post(route, body)
@@ -241,7 +248,7 @@ await step("unknown route is 404", async () => {
 })
 
 await step("a reverting write is 500 with the walked cause chain", async () => {
-  const { status, body } = await post("/extend", { entityKey, expires: { seconds: 2 } })
+  const { status, body } = await post("/extend", { entityKey, expiration: { seconds: 2 } })
   const chain = body.error as { name: string; message: string }[]
   assert(status === 500, `shrinking extend → 500 (got ${status})`)
   assert(
@@ -257,11 +264,10 @@ await step("cleanup: one /execute-batch deletes everything this run created", as
   await ok("/execute-batch", { deletes: keys.map((key) => ({ entityKey: key })) })
   // Poll for the rows to vanish, and on failure say per row whether a $key
   // lookup still sees it: a row that is really alive after every returned
-  // key was deleted is a phantom — the dev node at fast sealing executes a
-  // create twice and mints a second entity under a key nobody was told
-  // (probes/create-dup.ts). dev-node.sh defaults to 2 s sealing for that
-  // reason; a "still visible ($key lookup: present)" line here means a node
-  // running faster.
+  // key was deleted is a phantom, an entity minted under a key nobody was
+  // told. An old node line did that at fast sealing (probes/create-dup.ts
+  // is the diagnosis); a "still visible ($key lookup: present)" line here
+  // means it is back.
   const deadline = Date.now() + 30_000
   let left: QueriedRow[] = []
   do {

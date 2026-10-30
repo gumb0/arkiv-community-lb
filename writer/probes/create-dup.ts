@@ -15,7 +15,7 @@
 // DUP_FIXTURES (default 60), DUP_PAYLOAD_KB (default 100).
 // Run: npm run create-dup
 
-import { ExpirationTime, i32, str } from "@arkiv-network/sdk"
+import { bytes, defineSchema, ExpirationTime, i32, str } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
 import { env, privateKeyFromFile } from "../src/env.ts"
@@ -24,6 +24,13 @@ const TTL = ExpirationTime.fromBlocks(600)
 const RUN = `r${Date.now().toString(36)}`
 const FIXTURES = Number(process.env.DUP_FIXTURES ?? "60")
 const PAYLOAD_KB = Number(process.env.DUP_PAYLOAD_KB ?? "100")
+
+const Fixture = defineSchema({
+  kind: str().indexed(),
+  run: str().indexed(),
+  rank: i32().indexed(),
+  payload: bytes(),
+})
 
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
@@ -66,10 +73,9 @@ const payload = new Uint8Array(PAYLOAD_KB * 1024).fill(0x61)
 const created: Created[] = []
 for (let i = 0; i < FIXTURES; i++) {
   const { entityKey, txHash } = await writer.createEntity({
-    payload,
-    contentType: "application/octet-stream",
-    attributes: { kind: str("create-dup"), run: str(RUN), rank: i32(i) },
-    expires: TTL,
+    schema: Fixture,
+    values: { kind: str("create-dup"), run: str(RUN), rank: i32(i), payload: bytes(payload) },
+    expiration: TTL,
   })
   const receipt = (await rawRpc("eth_getTransactionReceipt", [txHash])) as {
     blockNumber: Hex
@@ -116,7 +122,7 @@ const page = (await rawRpc("arkiv_query", [
   `kind = str('create-dup') AND run = str('${RUN}')`,
   {
     select: { key: true, createdAt: true, attributes: { rank: true } },
-    limit: "0xc8",
+    limit: "0x64",
   },
 ])) as { data?: Row[] }
 const rows = page.data ?? []
@@ -144,7 +150,7 @@ if (allKeys.length > 0) {
 }
 const left = (await rawRpc("arkiv_query", [
   `kind = str('create-dup')`,
-  { select: { key: true }, limit: "0xc8" },
+  { select: { key: true }, limit: "0x64" },
 ])) as { data?: unknown[] }
 console.log(
   `\ncleanup: deleted ${allKeys.length}; still visible (any run): ${left.data?.length ?? 0}`,

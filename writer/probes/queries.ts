@@ -1,4 +1,4 @@
-// Query-language probe against the 0.8 API: result semantics that only
+// Query-language probe: result semantics that only
 // real entities can prove. Parse acceptance and error codes were covered
 // by the raw curl battery; the smoke covers basic reads — this file checks
 // what queries *return*: negation semantics, typed comparisons, system
@@ -11,7 +11,7 @@
 // an Authorization: Bearer header).
 // Run: npm run queries
 
-import { dec, ExpirationTime, i32, jsonToPayload, key, str, u256 } from "@arkiv-network/sdk"
+import { bytes, dec, defineSchema, ExpirationTime, i32, key, str, u256 } from "@arkiv-network/sdk"
 import type { Hex } from "viem"
 import { createWriter } from "../src/writer.ts"
 import { env, privateKeyFromFile } from "../src/env.ts"
@@ -19,6 +19,22 @@ import { env, privateKeyFromFile } from "../src/env.ts"
 const FIXTURES = 30
 const TTL = ExpirationTime.fromBlocks(300) // blocks, so a faster chain means the same thing
 const RUN = `r${Date.now().toString(36)}`
+
+// A JSON document in a bytes attribute, the way the LB stores its records.
+const document = (value: unknown) => bytes(new TextEncoder().encode(JSON.stringify(value)))
+
+const Fixture = defineSchema({
+  kind: str().indexed(),
+  run: str().indexed(),
+  group: str().indexed(),
+  name: str().indexed(),
+  rank: i32().indexed(),
+  big: u256().indexed(),
+  score: dec().indexed(),
+  flag: str().indexed().optional(),
+  ref: key().indexed().optional(),
+  payload: bytes(),
+})
 
 const rpcUrl = env("ARKIV_RPC_URL").replace(/\/+$/, "")
 const apiKey = env("ARKIV_API_KEY", false)
@@ -79,9 +95,8 @@ const preFixtureBlock = BigInt((await rawRpc("eth_blockNumber", [])) as string)
 // i = 0..29. Evens: group a, flag set, name aa-i. Odds: group b, no flag, name ab-i.
 const { createdEntities: fixtures } = await writer.executeBatch({
   creates: Array.from({ length: FIXTURES }, (_, i) => ({
-    payload: jsonToPayload({ probe: "queries", i }),
-    contentType: "application/json",
-    attributes: {
+    schema: Fixture,
+    values: {
       kind: str("query-probe"),
       run: str(RUN),
       group: str(i % 2 === 0 ? "a" : "b"),
@@ -89,9 +104,10 @@ const { createdEntities: fixtures } = await writer.executeBatch({
       rank: i32(i),
       big: u256(BigInt(1_000_000 + i)),
       score: dec(`${i}.5`),
+      payload: document({ probe: "queries", i }),
       ...(i % 2 === 0 ? { flag: str("y") } : {}),
     },
-    expires: TTL,
+    expiration: TTL,
   })),
 })
 console.log(`fixtures: ${fixtures.length} created`)
@@ -99,7 +115,7 @@ console.log(`fixtures: ${fixtures.length} created`)
 // A key-typed attribute needs a real key, so it rides a follow-up patch.
 const [first, second] = fixtures
 if (first === undefined || second === undefined) throw new Error("fixtures were not created")
-await writer.patchEntity({ entityKey: second, set: { ref: key(first) } })
+await writer.patchEntity({ schema: Fixture, entityKey: second, set: { ref: key(first) } })
 console.log(`ref attribute patched onto fixture 1\n`)
 
 const me = writer.address
@@ -139,9 +155,17 @@ try {
   await probe("wrong-case attr name matches nothing", mine(`Group = str('a')`), 0)
 
   console.log("--- options ---")
-  await probe("atBlock before this run", mine(), 0, {
-    atBlock: `0x${preFixtureBlock.toString(16)}`,
-  })
+  // The node serves state at the head only (ARKIV_STORE_HISTORY=head-only,
+  // the default): a query at a past block is refused. Were it accepted,
+  // the node keeps history, and the integrity check's pinned read is an
+  // option again.
+  try {
+    await query(mine(), { atBlock: `0x${preFixtureBlock.toString(16)}` })
+    console.log("✗ atBlock before this run: accepted — the node keeps history now")
+  } catch (error) {
+    const headOnly = (error as Error).message.includes("not retained")
+    console.log(`${headOnly ? "✓" : "✗"} atBlock before this run: refused (${(error as Error).message})`)
+  }
   const schemaOnly = await probe("select attributeSchema only", mine(), 30, {
     select: { key: true, attributeSchema: true },
   })

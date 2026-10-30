@@ -7,11 +7,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use alloy_primitives::{B256, Bytes, U256};
+use alloy_primitives::{B256, U256};
 use lb::chain::{
     ChainReader, ChainWriter,
     reader::{BlockAt, BlockFields, Condition, PAGE_LIMIT, Page, Query, ReadError},
-    records::{Address, ArkivAttribute, ArkivEntity, Attributes, EncodedRecord, EntityKey},
+    records::{Address, ArkivEntity, Attributes, EntityKey},
     writer::{
         Batch, BatchResult, Create, Created, Delete, ErrorLink, Expiry, Extend, Extended, Identity,
         Operation, Patch, WriteError, Written,
@@ -66,9 +66,10 @@ pub struct Entity {
     pub creator: Address,
     /// The head when it was written, like the node's creation block.
     pub created_at: u64,
+    /// The head at its last write: its creation, patch or extend.
+    pub updated_at: u64,
     pub expires_at: u64,
     pub attributes: Attributes,
-    pub payload: Vec<u8>,
 }
 
 /// One write, as the fake landed it.
@@ -166,10 +167,10 @@ impl FakeChain {
     }
 
     /// A record written by someone else, for example a provider's offer.
-    pub fn write_as(&self, creator: Address, record: EncodedRecord, expires: Expiry) -> EntityKey {
+    pub fn write_as(&self, creator: Address, record: Attributes, expires: Expiry) -> EntityKey {
         let mut state = self.state();
         let expires_at = state.expires_at(expires);
-        state.insert(creator, record.attributes, record.payload, expires_at)
+        state.insert(creator, record, expires_at)
     }
 
     /// The entity as stored, expired or not; `None` once deleted.
@@ -242,27 +243,20 @@ impl FakeChain {
 impl State {
     fn expires_at(&self, expires: Expiry) -> u64 {
         match expires {
-            Expiry::Permanent => u64::MAX,
             Expiry::Seconds(seconds) => self.head + blocks(seconds),
         }
     }
 
-    fn insert(
-        &mut self,
-        creator: Address,
-        attributes: Attributes,
-        payload: Vec<u8>,
-        expires_at: u64,
-    ) -> EntityKey {
+    fn insert(&mut self, creator: Address, attributes: Attributes, expires_at: u64) -> EntityKey {
         let key = B256::from(U256::from(self.next_key));
         self.next_key += 1;
         self.entities.push(Entity {
             key,
             creator,
             created_at: self.head,
+            updated_at: self.head,
             expires_at,
             attributes,
-            payload,
         });
         key
     }
@@ -337,7 +331,7 @@ impl State {
     fn extendable(&self, extend: &Extend) -> Result<usize, WriteError> {
         let index = self.position(extend.entity_key)?;
         let current = self.entities[index].expires_at;
-        let asked = self.expires_at(extend.expires);
+        let asked = self.expires_at(extend.expiration);
         if asked < current {
             return Err(WriteError::Failed(vec![ErrorLink {
                 name: "FakeChain".to_owned(),
@@ -372,17 +366,13 @@ impl State {
 }
 
 impl Entity {
-    fn apply(&mut self, patch: &Patch) {
-        if let Some(set) = &patch.set {
-            let mut attributes = self.attributes.clone();
-            for (name, value) in set.iter() {
-                attributes = attributes.with(name, value.clone());
-            }
-            self.attributes = attributes;
+    fn apply(&mut self, patch: &Patch, head: u64) {
+        let mut attributes = self.attributes.clone();
+        for (name, value) in patch.set.iter() {
+            attributes = attributes.with(name, value.clone());
         }
-        if let Some(payload) = &patch.payload {
-            self.payload = payload.clone();
-        }
+        self.attributes = attributes;
+        self.updated_at = head;
     }
 
     fn matches(&self, condition: &Condition) -> bool {
@@ -396,26 +386,15 @@ impl Entity {
     }
 
     /// The entity the way a query returns it: attributes as the node's
-    /// list, in the same shapes the write sent.
+    /// list.
     pub fn as_arkiv_entity(&self) -> ArkivEntity {
-        let wire = self.attributes.to_wire();
-        let attributes = wire
-            .as_object()
-            .expect("attributes serialize to an object")
-            .iter()
-            .map(|(name, typed)| ArkivAttribute {
-                name: name.clone(),
-                type_tag: typed["type"].as_str().expect("a type tag").to_owned(),
-                value: typed["value"].clone(),
-            })
-            .collect();
         ArkivEntity {
             key: self.key,
             creator: self.creator,
             created_at: self.created_at,
+            updated_at: self.updated_at,
             expires_at: self.expires_at,
-            payload: Bytes::from(self.payload.clone()),
-            attributes,
+            attributes: self.attributes.to_read(),
         }
     }
 }
@@ -511,13 +490,8 @@ impl ChainWriter for FakeChain {
         let mut state = self.state();
         state.sidecar()?;
         let creator = state.address;
-        let expires_at = state.expires_at(create.expires());
-        let entity_key = state.insert(
-            creator,
-            create.attributes().clone(),
-            create.payload().to_vec(),
-            expires_at,
-        );
+        let expires_at = state.expires_at(create.expiration());
+        let entity_key = state.insert(creator, create.attributes().clone(), expires_at);
         let tx_hash = state.transaction(Transaction::Create(entity_key));
         state.answer(
             tx_hash.clone(),
@@ -533,7 +507,8 @@ impl ChainWriter for FakeChain {
         let mut state = self.state();
         state.sidecar()?;
         let index = state.position(patch.entity_key)?;
-        state.entities[index].apply(patch);
+        let head = state.head;
+        state.entities[index].apply(patch, head);
         let tx_hash = state.transaction(Transaction::Patch(patch.entity_key));
         Ok(Written {
             entity_key: patch.entity_key,
@@ -557,8 +532,9 @@ impl ChainWriter for FakeChain {
         let mut state = self.state();
         state.sidecar()?;
         let index = state.extendable(extend)?;
-        let expires_at = state.expires_at(extend.expires);
+        let expires_at = state.expires_at(extend.expiration);
         state.entities[index].expires_at = expires_at;
+        state.entities[index].updated_at = state.head;
         let tx_hash = state.transaction(Transaction::Extend(extend.entity_key));
         Ok(Extended {
             entity_key: extend.entity_key,
@@ -606,18 +582,14 @@ impl ChainWriter for FakeChain {
             match operation {
                 Operation::Create(create) => {
                     let creator = state.address;
-                    let expires_at = state.expires_at(create.expires());
-                    let key = state.insert(
-                        creator,
-                        create.attributes().clone(),
-                        create.payload().to_vec(),
-                        expires_at,
-                    );
+                    let expires_at = state.expires_at(create.expiration());
+                    let key = state.insert(creator, create.attributes().clone(), expires_at);
                     log.created.push(key);
                 }
                 Operation::Patch(patch) => {
                     let index = state.position(patch.entity_key)?;
-                    state.entities[index].apply(patch);
+                    let head = state.head;
+                    state.entities[index].apply(patch, head);
                     log.patched.push(patch.entity_key);
                 }
                 Operation::Delete(delete) => {
@@ -627,8 +599,9 @@ impl ChainWriter for FakeChain {
                 }
                 Operation::Extend(extend) => {
                     let index = state.position(extend.entity_key)?;
-                    let expires_at = state.expires_at(extend.expires);
+                    let expires_at = state.expires_at(extend.expiration);
                     state.entities[index].expires_at = expires_at;
+                    state.entities[index].updated_at = state.head;
                     log.extended.push(extend.entity_key);
                 }
             }

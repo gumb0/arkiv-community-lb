@@ -6,51 +6,44 @@
 
 use std::time::Duration;
 
-use base64::Engine;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-use super::records::{Address, Attributes, EncodedRecord, EntityKey};
+use super::records::{Address, Attributes, EntityKey};
 
 /// Above the sidecar's own 180 s receipt wait, so its 504 arrives before
 /// this client gives up.
 const TIMEOUT: Duration = Duration::from_secs(200);
 
 /// The lifetime a write asks for. Seconds are converted to blocks by the
-/// sidecar at the network's block time.
+/// sidecar at the network's block time. Nothing lives forever: the chain
+/// caps a lifetime, and a record that must outlive another is written
+/// after it with the same life.
 #[derive(Debug, Clone, Copy)]
 pub enum Expiry {
-    Permanent,
     Seconds(u64),
 }
 
 impl Serialize for Expiry {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Permanent => serializer.serialize_str("permanent"),
             Self::Seconds(n) => serde_json::json!({ "seconds": n }).serialize(serializer),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Create {
-    #[serde(serialize_with = "serialize_base64")]
-    payload: Vec<u8>,
-    content_type: &'static str,
     #[serde(serialize_with = "serialize_attributes")]
     attributes: Attributes,
-    expires: Expiry,
+    expiration: Expiry,
 }
 
 impl Create {
-    pub fn new(record: EncodedRecord, expires: Expiry) -> Self {
+    pub fn new(attributes: Attributes, expiration: Expiry) -> Self {
         Self {
-            payload: record.payload,
-            content_type: "application/json",
-            attributes: record.attributes,
-            expires,
+            attributes,
+            expiration,
         }
     }
 
@@ -58,39 +51,26 @@ impl Create {
         &self.attributes
     }
 
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
-    }
-
-    pub fn expires(&self) -> Expiry {
-        self.expires
+    pub fn expiration(&self) -> Expiry {
+        self.expiration
     }
 }
 
-/// Sets attributes and replaces the payload; nothing here unsets an
-/// attribute or changes the content type, because no record needs it.
-/// The sidecar route supports both.
+/// Sets attributes, the payload one among them; nothing here unsets an
+/// attribute, because no record needs it. The sidecar route supports it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Patch {
     pub entity_key: EntityKey,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "serialize_attributes_opt"
-    )]
-    pub set: Option<Attributes>,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "serialize_base64_opt"
-    )]
-    pub payload: Option<Vec<u8>>,
+    #[serde(serialize_with = "serialize_attributes")]
+    pub set: Attributes,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Extend {
     pub entity_key: EntityKey,
-    pub expires: Expiry,
+    pub expiration: Expiry,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -235,32 +215,11 @@ pub async fn send<W: ChainWriter>(writer: &W, batch: Batch) -> Vec<Sent> {
     sent
 }
 
-fn serialize_base64<S: serde::Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
-}
-
-fn serialize_base64_opt<S: serde::Serializer>(
-    bytes: &Option<Vec<u8>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serialize_base64(bytes.as_deref().unwrap_or_default(), serializer)
-}
-
 fn serialize_attributes<S: serde::Serializer>(
     attributes: &Attributes,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     attributes.to_wire().serialize(serializer)
-}
-
-fn serialize_attributes_opt<S: serde::Serializer>(
-    attributes: &Option<Attributes>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    match attributes {
-        Some(attributes) => serialize_attributes(attributes, serializer),
-        None => serializer.serialize_none(),
-    }
 }
 
 /// A landed create: the new entity's key and the block it expires at.
@@ -514,10 +473,10 @@ impl ChainWriter for Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chain::records::{Agreement, Record, Wei};
+    use crate::chain::records::{Agreement, AttributeValue, PAYLOAD_ATTRIBUTE, Record, Wei};
     use alloy_primitives::{Address, B256};
 
-    fn agreement() -> EncodedRecord {
+    fn agreement() -> Attributes {
         Agreement {
             provider: Address::ZERO,
             offer: B256::ZERO,
@@ -531,27 +490,33 @@ mod tests {
     fn a_create_serializes_to_the_sidecar_shape() {
         let create = Create::new(agreement(), Expiry::Seconds(7200));
         let wire = serde_json::to_value(&create).unwrap();
-        assert_eq!(wire["contentType"], "application/json");
-        assert_eq!(wire["expires"], serde_json::json!({ "seconds": 7200 }));
+        assert_eq!(wire["expiration"], serde_json::json!({ "seconds": 7200 }));
         assert_eq!(wire["attributes"]["kind"]["value"], "rpc.agreement");
-        let payload = base64::engine::general_purpose::STANDARD
-            .decode(wire["payload"].as_str().unwrap())
-            .unwrap();
-        assert_eq!(payload, agreement().payload);
+        assert!(wire.get("payload").is_none(), "{wire}");
+        let payload = &wire["attributes"]["payload"];
+        assert_eq!(payload["type"], "bytes");
+        assert_eq!(payload["indexed"], false);
+        let bytes: alloy_primitives::Bytes = payload["value"].as_str().unwrap().parse().unwrap();
+        assert_eq!(&bytes[..], agreement().payload().unwrap());
     }
 
     #[test]
-    fn a_permanent_expiry_is_the_string() {
-        assert_eq!(
-            serde_json::to_value(Expiry::Permanent).unwrap(),
-            serde_json::json!("permanent")
-        );
+    fn a_patch_serializes_its_set() {
+        let patch = Patch {
+            entity_key: B256::ZERO,
+            set: Attributes::default()
+                .with(PAYLOAD_ATTRIBUTE, AttributeValue::Bytes(b"{}".to_vec())),
+        };
+        let wire = serde_json::to_value(&patch).unwrap();
+        assert_eq!(wire["entityKey"], format!("{:#x}", B256::ZERO));
+        assert_eq!(wire["set"]["payload"]["type"], "bytes");
+        assert_eq!(wire["set"]["payload"]["value"], "0x7b7d");
     }
 
     fn extend(i: usize) -> Operation {
         Operation::Extend(Extend {
             entity_key: B256::with_last_byte(i as u8),
-            expires: Expiry::Seconds(1),
+            expiration: Expiry::Seconds(1),
         })
     }
 
@@ -577,7 +542,7 @@ mod tests {
         let wire = serde_json::to_value(&batch).unwrap();
         assert_eq!(wire["creates"].as_array().unwrap().len(), 1);
         assert_eq!(
-            wire["creates"][0]["expires"],
+            wire["creates"][0]["expiration"],
             serde_json::json!({ "seconds": 2 })
         );
         assert_eq!(
@@ -588,7 +553,7 @@ mod tests {
             wire["extensions"],
             serde_json::json!([{
                 "entityKey": format!("{:#x}", B256::with_last_byte(1)),
-                "expires": { "seconds": 1 },
+                "expiration": { "seconds": 1 },
             }])
         );
         assert!(wire.get("patches").is_none(), "an empty kind is left out");

@@ -1,21 +1,35 @@
 // Arkiv as settle sees it: queries only, every page of them. Behind a
 // small surface, so the ledger is tested over a fake.
 
-import { createPublicClient, createWalletClient, type Entity } from "@arkiv-network/sdk"
+import { createPublicClient, createWalletClient } from "@arkiv-network/sdk"
 import { defineChain, http, type Hex } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import type { ReceiptRecord } from "./records.ts"
 
+/** One attribute of a row: the node's type tag and the decoded value. */
+export type Attribute = { type: string; value: unknown }
+
+/**
+ * A row as settle reads it: the entity's key and creator, and its
+ * attributes by name, the payload among them. The one shape the rest
+ * of settle sees, whatever the SDK's rows look like.
+ */
+export type Row = {
+  key: Hex
+  creator: Hex
+  attributes: Record<string, Attribute>
+}
+
 export type Reader = {
   chainId: number
-  /** Every entity the query matches, following the node's pages. */
-  query(text: string): Promise<Entity[]>
+  /** Every row the query matches, following the node's pages. */
+  query(text: string): Promise<Row[]>
   /** What an address holds on Arkiv, which is what a write costs. */
   balance(address: Hex): Promise<bigint>
 }
 
 /** The node's page maximum. Asking for more is an error. */
-const PAGE = 200
+const PAGE = 100
 
 export async function connectReader(rpcUrl: string, apiKey?: string): Promise<Reader> {
   const transport = http(rpcUrl, {
@@ -27,35 +41,69 @@ export async function connectReader(rpcUrl: string, apiKey?: string): Promise<Re
     chainId,
     balance: (address) => client.getBalance({ address }),
     query: (text) =>
-      everyPage((cursor) =>
-        client.query(text, {
+      everyPage(async (offset) => {
+        const page = await client.query(text, {
           limit: PAGE,
-          cursor,
-          select: { key: true, creator: true, payload: true, attributes: true },
-        }),
-      ),
+          offset,
+          count: true,
+          select: { $key: true, $creator: true, $attributes: true },
+        })
+        if (page.count === undefined) {
+          throw new Error("the node did not say how many rows the query matches")
+        }
+        return {
+          entities: page.entities.map((flat) => ({
+            key: flat.$key,
+            creator: flat.$creator,
+            attributes: flat.$attributes as Record<string, Attribute>,
+          })),
+          count: Number(page.count),
+        }
+      }),
   }
 }
 
-/** One page of a query: what it holds, and where the next one starts. */
-export type Page = { entities: Entity[]; cursor: string | undefined }
+/** One page of a query, and how many rows the whole query matches. */
+export type Page = { entities: Row[]; count: number }
+
+/** How many times a query is walked before the run gives up. */
+const WALK_TRIES = 3
 
 /**
- * Every page of a query, from the first to the one that names no
- * next. Settle reads what has piled up since its last run, which is
- * not bounded by the provider cap the LB's own reads rely on.
+ * Every row of a query. Settle reads what has piled up since its last
+ * run, which is not bounded by the provider cap the LB's own reads rely
+ * on.
+ *
+ * Pages go by offset, so a row that expires during a walk shifts the
+ * rows after it and one is skipped, and a skipped receipt would read as
+ * an unpaid record. If the count changes, the walk starts over. After
+ * three walks the run stops, before anything is paid. If a row expires
+ * and another appears, the count stays the same and the skipped row is
+ * not noticed. A skipped closed record is paid by the next run. Receipts
+ * are only written by settle, so this needs two runs at the same time
+ * (docs/LIMITATIONS.md).
  */
-export async function everyPage(
-  read: (cursor: string | undefined) => Promise<Page>,
-): Promise<Entity[]> {
-  const entities: Entity[] = []
-  let cursor: string | undefined
-  do {
-    const page = await read(cursor)
-    entities.push(...page.entities)
-    cursor = page.cursor
-  } while (cursor !== undefined)
-  return entities
+export async function everyPage(read: (offset: number) => Promise<Page>): Promise<Row[]> {
+  for (let attempt = 0; attempt < WALK_TRIES; attempt += 1) {
+    const rows = await walk(read)
+    if (rows !== undefined) return rows
+  }
+  throw new Error(`a query's rows kept changing over ${WALK_TRIES} reads: nothing was paid`)
+}
+
+/** One walk from the first page, or undefined if the rows changed during it. */
+async function walk(read: (offset: number) => Promise<Page>): Promise<Row[] | undefined> {
+  const first = await read(0)
+  const rows = [...first.entities]
+  while (rows.length < first.count) {
+    const page = await read(rows.length)
+    // An empty page while the count says more rows exist: the two answers
+    // disagree, so the rows changed. The offset would not move either, and
+    // the same read would repeat forever.
+    if (page.count !== first.count || page.entities.length === 0) return undefined
+    rows.push(...page.entities)
+  }
+  return rows
 }
 
 /**

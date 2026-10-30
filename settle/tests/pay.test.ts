@@ -2,7 +2,7 @@
 
 import { deepStrictEqual as deepEqual, strictEqual as equal, rejects } from "node:assert/strict"
 import { describe, it } from "node:test"
-import { bytesToString, type Hex } from "viem"
+import { hexToString, type Hex } from "viem"
 import { ledger, type Ledger } from "../src/ledger.ts"
 import { pay } from "../src/pay.ts"
 import { Unresolved } from "../src/sent.ts"
@@ -72,7 +72,9 @@ function run(
 }
 
 function payloadOf(record: ReceiptRecord): Record<string, unknown> {
-  return JSON.parse(bytesToString(record.payload)) as Record<string, unknown>
+  // receiptFor writes the payload as a typed bytes value, hex inside.
+  const payload = record.values.payload as { value: Hex }
+  return JSON.parse(hexToString(payload.value)) as Record<string, unknown>
 }
 
 describe("a run", () => {

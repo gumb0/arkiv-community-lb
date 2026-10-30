@@ -110,12 +110,18 @@ function lastOp<T>(method: string): T {
   return call.op as T
 }
 
-const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64")
-
 const minimalCreate = {
-  payload: b64("{}"),
-  contentType: "application/json",
-  expires: { seconds: 60 },
+  attributes: { kind: { type: "str", value: "probe" } },
+  expiration: { seconds: 60 },
+}
+
+/** What a create or a patch declared and carries, as the fake saw it. */
+type Declared = {
+  schema: {
+    name: string | undefined
+    columns: Record<string, { type: string; isIndexed: boolean; isOptional: boolean }>
+  }
+  values: Record<string, { type: string; value: unknown }>
 }
 
 describe("wire format in", () => {
@@ -131,41 +137,52 @@ describe("wire format in", () => {
         owner: { type: "addr", value: ADDRESS },
         parent: { type: "key", value: KEY_B },
         live: { type: "bool", value: true },
+        blob: { type: "bytes", value: "0x00ff107f" },
       },
     })
     equal(status, 200)
-    const op = lastOp<{ attributes: Record<string, { type: string; value: unknown }> }>("create")
-    deepEqual(op.attributes.name, { type: "str", value: "provider-1" })
-    deepEqual(op.attributes.rank, { type: "i32", value: -3 })
-    deepEqual(op.attributes.slots, { type: "u64", value: 18446744073709551615n })
-    deepEqual(op.attributes.big, { type: "u256", value: 123456789012345678901234567890n })
-    deepEqual(op.attributes.price, { type: "dec", value: "1.25" })
-    deepEqual(op.attributes.owner, { type: "addr", value: ADDRESS })
-    deepEqual(op.attributes.live, { type: "bool", value: true })
-    deepEqual(op.attributes.parent, { type: "key", value: KEY_B })
+    const op = lastOp<Declared>("create")
+    deepEqual(op.values.name, { type: "str", value: "provider-1" })
+    deepEqual(op.values.rank, { type: "i32", value: -3 })
+    deepEqual(op.values.slots, { type: "u64", value: 18446744073709551615n })
+    deepEqual(op.values.big, { type: "u256", value: 123456789012345678901234567890n })
+    deepEqual(op.values.price, { type: "dec", value: "1.25" })
+    deepEqual(op.values.owner, { type: "addr", value: ADDRESS })
+    deepEqual(op.values.live, { type: "bool", value: true })
+    deepEqual(op.values.parent, { type: "key", value: KEY_B })
+    deepEqual(op.values.blob, { type: "bytes", value: "0x00ff107f" })
   })
 
-  it("decodes base64 payloads to the exact bytes", async () => {
-    const payload = Buffer.from([0x00, 0xff, 0x10, 0x7f])
-    await post("/create", { ...minimalCreate, payload: payload.toString("base64") })
-    const op = lastOp<{ payload: Uint8Array }>("create")
-    ok(op.payload instanceof Uint8Array)
-    deepEqual([...op.payload], [0, 255, 16, 127])
+  it("declares the attributes as an unnamed schema, indexed unless said otherwise", async () => {
+    await post("/create", {
+      ...minimalCreate,
+      attributes: {
+        kind: { type: "str", value: "probe" },
+        note: { type: "str", value: "stored only", indexed: false },
+        rank: { type: "i32", value: 1, indexed: true },
+        blob: { type: "bytes", value: "0x00" },
+      },
+    })
+    const { schema } = lastOp<Declared>("create")
+    equal(schema.name, undefined, "no arkiv.schema tag")
+    deepEqual(Object.keys(schema.columns).sort(), ["blob", "kind", "note", "rank"])
+    equal(schema.columns.kind?.isIndexed, true)
+    equal(schema.columns.note?.isIndexed, false)
+    equal(schema.columns.rank?.isIndexed, true)
+    equal(schema.columns.blob?.isIndexed, false)
+    equal(schema.columns.blob?.type, "bytes")
   })
 
   it("converts each expiry form, seconds to whole blocks", async () => {
-    await post("/create", { ...minimalCreate, expires: { seconds: 60 } })
-    deepEqual(lastOp<{ expires: { minLifetime: bigint; expiresAt: bigint } }>("create").expires
-      .minLifetime, 30n) // 2 s blocks
+    type Expiring = { expiration: { minLifetime: bigint; expiresAt: bigint } }
+    await post("/create", { ...minimalCreate, expiration: { seconds: 60 } })
+    equal(lastOp<Expiring>("create").expiration.minLifetime, 30n) // 2 s blocks
 
-    await post("/create", { ...minimalCreate, expires: { blocks: 7 } })
-    equal(lastOp<{ expires: { minLifetime: bigint } }>("create").expires.minLifetime, 7n)
+    await post("/create", { ...minimalCreate, expiration: { blocks: 7 } })
+    equal(lastOp<Expiring>("create").expiration.minLifetime, 7n)
 
-    await post("/create", { ...minimalCreate, expires: { atBlock: "900000" } })
-    equal(lastOp<{ expires: { expiresAt: bigint } }>("create").expires.expiresAt, 900000n)
-
-    await post("/create", { ...minimalCreate, expires: "permanent" })
-    equal(lastOp<{ expires: { expiresAt: bigint } }>("create").expires.expiresAt, 2n ** 64n - 1n)
+    await post("/create", { ...minimalCreate, expiration: { atBlock: "900000" } })
+    equal(lastOp<Expiring>("create").expiration.expiresAt, 900000n)
   })
 
   it("passes creation flags and salt through", async () => {
@@ -179,44 +196,45 @@ describe("wire format in", () => {
     equal(op.salt, 42n)
   })
 
-  it("decodes a patch's four independent parts", async () => {
+  it("decodes a patch's set and unset, and declares both as columns", async () => {
     await post("/patch", {
       entityKey: KEY_A,
-      set: { status: { type: "str", value: "dormant" } },
+      set: { status: { type: "str", value: "dormant" }, body: { type: "bytes", value: "0x01" } },
       unset: ["tag"],
-      payload: b64("body"),
-      contentType: "text/plain",
     })
-    const op = lastOp<{
-      entityKey: Hex
-      set: Record<string, unknown>
-      unset: string[]
-      payload: Uint8Array
-      contentType: string
-    }>("patch")
+    const op = lastOp<
+      { entityKey: Hex; set: Record<string, unknown>; unset: string[] } & Declared
+    >("patch")
     equal(op.entityKey, KEY_A)
     deepEqual(op.set.status, { type: "str", value: "dormant" })
+    deepEqual(op.set.body, { type: "bytes", value: "0x01" })
     deepEqual(op.unset, ["tag"])
-    equal(Buffer.from(op.payload).toString("utf8"), "body")
-    equal(op.contentType, "text/plain")
+    deepEqual(Object.keys(op.schema.columns).sort(), ["body", "status", "tag"])
+    equal(op.schema.columns.status?.isIndexed, true)
+    equal(op.schema.columns.body?.isIndexed, false)
+    // The SDK refuses to unset a required column, so the one declared
+    // for an unset name must be optional.
+    equal(op.schema.columns.tag?.isOptional, true)
+    equal(op.schema.columns.status?.isOptional, false)
   })
 
   it("keeps batch order and shape in /execute-batch", async () => {
+    const second = { ...minimalCreate, attributes: { kind: { type: "str", value: "second" } } }
     const { status } = await post("/execute-batch", {
-      creates: [minimalCreate, { ...minimalCreate, contentType: "text/plain" }],
+      creates: [minimalCreate, second],
       patches: [{ entityKey: KEY_A, set: { a: { type: "i32", value: 1 } } }],
       deletes: [{ entityKey: KEY_B }],
-      extensions: [{ entityKey: KEY_A, expires: { blocks: 10 } }],
+      extensions: [{ entityKey: KEY_A, expiration: { blocks: 10 } }],
     })
     equal(status, 200)
     const ops = lastOp<{
-      creates: { contentType: string }[]
+      creates: Declared[]
       patches: { entityKey: Hex; set: Record<string, unknown> }[]
       deletes: { entityKey: Hex }[]
-      extensions: { entityKey: Hex; expires: { minLifetime: bigint } }[]
+      extensions: { entityKey: Hex; expiration: { minLifetime: bigint } }[]
     }>("mutate")
     equal(ops.creates.length, 2)
-    equal(at(ops.creates, 1, "creates").contentType, "text/plain") // order preserved
+    equal(at(ops.creates, 1, "creates").values.kind?.value, "second") // order preserved
 
     equal(ops.patches.length, 1)
     const patch = at(ops.patches, 0, "patches")
@@ -229,14 +247,15 @@ describe("wire format in", () => {
     equal(ops.extensions.length, 1)
     const extension = at(ops.extensions, 0, "extensions")
     equal(extension.entityKey, KEY_A)
-    equal(extension.expires.minLifetime, 10n)
+    equal(extension.expiration.minLifetime, 10n)
   })
 
   it("omits absent optional fields rather than sending empty ones", async () => {
     await post("/patch", { entityKey: KEY_A, set: { a: { type: "i32", value: 1 } } })
     const op = lastOp<Record<string, unknown>>("patch")
     ok(!("unset" in op), "unset stays absent when not given")
-    ok(!("payload" in op), "payload stays absent when not given")
+    await post("/patch", { entityKey: KEY_A, unset: ["a"] })
+    ok(!("set" in lastOp<Record<string, unknown>>("patch")), "set stays absent when not given")
   })
 })
 
@@ -246,7 +265,7 @@ describe("wire format out", () => {
     equal(created.body.expiresAt, "1234")
     equal(created.body.entityKey, KEY_A)
 
-    const extended = await post("/extend", { entityKey: KEY_A, expires: { blocks: 5 } })
+    const extended = await post("/extend", { entityKey: KEY_A, expiration: { blocks: 5 } })
     equal(extended.body.expiresAt, "5678")
   })
 
@@ -260,13 +279,19 @@ describe("wire format out", () => {
 describe("bad requests are refused before the chain", () => {
   const cases: [string, string, unknown, string][] = [
     ["unknown attribute type", "/create", { ...minimalCreate, attributes: { a: { type: "int", value: 1 } } }, "unknown type"],
-    ["missing expires", "/create", { payload: b64("{}"), contentType: "application/json" }, "expires"],
-    ["missing contentType", "/create", { payload: b64("{}"), expires: { seconds: 60 } }, "contentType"],
-    ["expiry form that is not one of the four", "/create", { ...minimalCreate, expires: { years: 3 } }, "expires must be"],
+    ["the old bytes32 type", "/create", { ...minimalCreate, attributes: { a: { type: "bytes32", value: KEY_A } } }, "unknown type"],
+    ["missing attributes", "/create", { expiration: { seconds: 60 } }, "attributes"],
+    ["missing expiration", "/create", { attributes: minimalCreate.attributes }, "expiration"],
+    ["expiry form that is not one of the three", "/create", { ...minimalCreate, expiration: { years: 3 } }, "expiration must be"],
+    ["a permanent expiry, which the chain refuses", "/create", { ...minimalCreate, expiration: "permanent" }, "expiration must be"],
+    ["bytes asked to be indexed", "/create", { ...minimalCreate, attributes: { b: { type: "bytes", value: "0x00", indexed: true } } }, "never indexed"],
+    ["indexed that is not a boolean", "/create", { ...minimalCreate, attributes: { a: { type: "str", value: "x", indexed: "yes" } } }, "must be a boolean"],
+    ["bytes that are not hex", "/create", { ...minimalCreate, attributes: { b: { type: "bytes", value: "AAA=" } } }, "0x-prefixed"],
     ["entity key without 0x", "/patch", { entityKey: "1234" }, "0x-prefixed"],
+    ["a patch with nothing to apply", "/patch", { entityKey: KEY_A }, "set or unset"],
     ["unset that is not an array", "/patch", { entityKey: KEY_A, unset: "tag" }, "must be an array"],
     ["attribute value of the wrong JSON type", "/create", { ...minimalCreate, attributes: { a: { type: "i32", value: "5" } } }, "must be a number"],
-    ["batch field that is not an array", "/execute-batch", { creates: { payload: "" } }, "must be an array"],
+    ["batch field that is not an array", "/execute-batch", { creates: { attributes: {} } }, "must be an array"],
   ]
 
   for (const [name, route, body, expected] of cases) {
@@ -314,7 +339,10 @@ describe("routing", () => {
     const response = await fetch(`${base}/create`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...minimalCreate, payload: "A".repeat(3 * 1024 * 1024) }),
+      body: JSON.stringify({
+        ...minimalCreate,
+        attributes: { blob: { type: "bytes", value: `0x${"00".repeat(1536 * 1024)}` } },
+      }),
     })
     equal(response.status, 413)
     equal(fake.calls.length, before, "nothing reached the writer")
@@ -405,7 +433,7 @@ describe("client aborts do not kill the service", () => {
             `Host: ${service.host}\r\n` +
             "Content-Type: application/json\r\n" +
             "Content-Length: 1000\r\n\r\n" +
-            '{"payload":',
+            '{"attributes":',
           () => socket.destroy(),
         )
       })

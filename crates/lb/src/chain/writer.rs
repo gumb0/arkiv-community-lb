@@ -16,17 +16,17 @@ use super::records::{Address, Attributes, EntityKey};
 const TIMEOUT: Duration = Duration::from_secs(200);
 
 /// The lifetime a write asks for. Seconds are converted to blocks by the
-/// sidecar at the network's block time.
+/// sidecar at the network's block time. Nothing lives forever: the chain
+/// caps a lifetime, and a record that must outlive another is written
+/// after it with the same life.
 #[derive(Debug, Clone, Copy)]
 pub enum Expiry {
-    Permanent,
     Seconds(u64),
 }
 
 impl Serialize for Expiry {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Permanent => serializer.serialize_str("permanent"),
             Self::Seconds(n) => serde_json::json!({ "seconds": n }).serialize(serializer),
         }
     }
@@ -511,14 +511,6 @@ mod tests {
         assert_eq!(wire["entityKey"], format!("{:#x}", B256::ZERO));
         assert_eq!(wire["set"]["payload"]["type"], "bytes");
         assert_eq!(wire["set"]["payload"]["value"], "0x7b7d");
-    }
-
-    #[test]
-    fn a_permanent_expiry_is_the_string() {
-        assert_eq!(
-            serde_json::to_value(Expiry::Permanent).unwrap(),
-            serde_json::json!("permanent")
-        );
     }
 
     fn extend(i: usize) -> Operation {

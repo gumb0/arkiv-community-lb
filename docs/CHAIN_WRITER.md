@@ -72,9 +72,11 @@ JSON cannot carry bytes, 64-bit integers, or the SDK's tagged values, so:
   unpredictable. `"salt": "0"` is the SDK's `NO_SALT`: the key derives from
   the owner and nonce alone, so anyone who knows both can compute it in
   advance — only for entities that are meant to be found that way.
-- **expiration** is `"permanent"`, `{ "seconds": n }`, `{ "blocks": n }`, or
+- **expiration** is `{ "seconds": n }`, `{ "blocks": n }`, or
   `{ "atBlock": "n" }`. Ask in blocks when the chain's block time may
   differ from 2 s — the SDK converts durations at a fixed 2 s per block.
+  Nothing lives forever: the chain caps a lifetime, and a create or
+  extend past the cap is refused.
 - **responses** are the SDK's return shape with bigints as decimal strings.
 
 For example, creating an entity with four indexed attributes and the

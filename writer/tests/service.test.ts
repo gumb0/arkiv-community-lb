@@ -183,9 +183,6 @@ describe("wire format in", () => {
 
     await post("/create", { ...minimalCreate, expiration: { atBlock: "900000" } })
     equal(lastOp<Expiring>("create").expiration.expiresAt, 900000n)
-
-    await post("/create", { ...minimalCreate, expiration: "permanent" })
-    equal(lastOp<Expiring>("create").expiration.expiresAt, 2n ** 64n - 1n)
   })
 
   it("passes creation flags and salt through", async () => {
@@ -285,7 +282,8 @@ describe("bad requests are refused before the chain", () => {
     ["the old bytes32 type", "/create", { ...minimalCreate, attributes: { a: { type: "bytes32", value: KEY_A } } }, "unknown type"],
     ["missing attributes", "/create", { expiration: { seconds: 60 } }, "attributes"],
     ["missing expiration", "/create", { attributes: minimalCreate.attributes }, "expiration"],
-    ["expiry form that is not one of the four", "/create", { ...minimalCreate, expiration: { years: 3 } }, "expiration must be"],
+    ["expiry form that is not one of the three", "/create", { ...minimalCreate, expiration: { years: 3 } }, "expiration must be"],
+    ["a permanent expiry, which the chain refuses", "/create", { ...minimalCreate, expiration: "permanent" }, "expiration must be"],
     ["bytes asked to be indexed", "/create", { ...minimalCreate, attributes: { b: { type: "bytes", value: "0x00", indexed: true } } }, "never indexed"],
     ["indexed that is not a boolean", "/create", { ...minimalCreate, attributes: { a: { type: "str", value: "x", indexed: "yes" } } }, "must be a boolean"],
     ["bytes that are not hex", "/create", { ...minimalCreate, attributes: { b: { type: "bytes", value: "AAA=" } } }, "0x-prefixed"],

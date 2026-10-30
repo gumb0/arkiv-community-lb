@@ -17,8 +17,8 @@
 //                (u64/u256/dec/salt values are decimal strings, since JSON
 //                numbers cannot carry them; bytes is 0x hex; indexed
 //                defaults to true, and bytes is never indexed)
-//   expiration   "permanent" | { seconds: n } | { blocks: n }
-//                | { atBlock: "decimal string" }
+//   expiration   { seconds: n } | { blocks: n } | { atBlock: "decimal string" }
+//                (nothing lives forever: the chain caps a lifetime)
 //   responses    the SDK's return shape, with bigints as decimal strings
 // Errors: 400 for a body that does not decode, 413 for a transaction the
 // node refuses as oversized (nothing was sent: split the batch), 500 for a
@@ -144,12 +144,11 @@ function decodeAttributes(wire: unknown, what: string): Declared {
 }
 
 function decodeExpiry(wire: unknown): Expiry {
-  if (wire === "permanent") return ExpirationTime.permanent()
   const record = asRecord(wire, "expiration")
   if (typeof record.seconds === "number") return ExpirationTime.fromSeconds(record.seconds)
   if (typeof record.blocks === "number") return ExpirationTime.fromBlocks(record.blocks)
   if (typeof record.atBlock === "string") return ExpirationTime.atBlock(BigInt(record.atBlock))
-  fail(`expiration must be "permanent", { seconds }, { blocks } or { atBlock }`)
+  fail(`expiration must be { seconds }, { blocks } or { atBlock }`)
 }
 
 function decodeCreate(wire: unknown): CreateOp {

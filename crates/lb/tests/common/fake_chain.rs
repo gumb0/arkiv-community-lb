@@ -243,7 +243,6 @@ impl FakeChain {
 impl State {
     fn expires_at(&self, expires: Expiry) -> u64 {
         match expires {
-            Expiry::Permanent => u64::MAX,
             Expiry::Seconds(seconds) => self.head + blocks(seconds),
         }
     }

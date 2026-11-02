@@ -80,7 +80,8 @@ const WALK_TRIES = 3
  * three walks the run stops, before anything is paid. If a row expires
  * and another appears, the count stays the same and the skipped row is
  * not noticed. A skipped closed record is paid by the next run. Receipts
- * are only written by settle, so this needs two runs at the same time
+ * are only written by settle, so this needs two runs at the same time,
+ * and those can pay every record twice with no skip at all
  * (docs/LIMITATIONS.md).
  */
 export async function everyPage(read: (offset: number) => Promise<Page>): Promise<Row[]> {

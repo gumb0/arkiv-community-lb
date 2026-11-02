@@ -392,9 +392,11 @@ SETTLE_PRIVATE_KEY=0x... npm run settle -- --pay
 ```
 
 A run pays every closed record that has no receipt yet, so what it
-pays is decided by the chain and not by a flag, and running it twice
-pays nobody twice. A weekly cron and a command run by hand are the
-same run.
+pays is decided by the chain and not by a flag. A run started after
+another has finished pays nobody twice, so a weekly cron and a command
+run by hand are the same run. Two runs at the same time are not safe:
+both read the same records as unpaid and both pay them. Do not start a
+run by hand while the cron's run may be going.
 
 **From a cron.** On the machine that runs it: a clone of this
 repository with `settle/` installed (`npm ci`) and a `.env` at its

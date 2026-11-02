@@ -396,11 +396,13 @@ registry with a chosen set of LBs covers the stated direction.
 ### A provider's history across LBs
 
 The counter records, the receipts, the verdicts and the benchmark
-results are per LB, so with several LBs a provider's whole history
-exists only on the chain, under several creators. Anything that wants
-it, a reputation, a dashboard, a second LB deciding whether to accept
-the provider, reads it from there; which is why each of those results
-is a chain record in this note and not a number in one LB's memory.
+results are per LB, so with several LBs a provider's history exists
+only on the chain, under several creators. Anything that wants it, a
+reputation, a dashboard, a second LB deciding whether to accept the
+provider, reads it from there; which is why each of those results is a
+chain record in this note and not a number in one LB's memory. The
+chain caps a record's lifetime, so it holds about the last six months.
+Anything that wants more has to keep its own copy.
 
 ## The flow with all of it
 

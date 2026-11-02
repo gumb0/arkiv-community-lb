@@ -4,7 +4,7 @@
 import { deepStrictEqual as deepEqual, strictEqual as equal, throws } from "node:assert/strict"
 import { describe, it } from "node:test"
 import { ExpirationTime } from "@arkiv-network/sdk"
-import { decodeCounter, decodeReceipt, RECEIPT_LIFE_BLOCKS, receiptFor } from "../src/records.ts"
+import { decodeCounter, decodeReceipt, receiptFor } from "../src/records.ts"
 import { address, closedCounter, document, key, receipt } from "./chain.ts"
 
 describe("a closed counter record", () => {
@@ -63,7 +63,7 @@ describe("a receipt", () => {
       decodeCounter(closedCounter({ key: key(7), provider: address(1), count: 10 })),
       { chainId: 560048, tx: key(0xff) },
     )
-    deepEqual(record.expiration, ExpirationTime.fromBlocks(RECEIPT_LIFE_BLOCKS))
+    deepEqual(record.expiration, ExpirationTime.fromBlocks(7_884_000))
     equal(record.flags?.readonly, true)
   })
 })

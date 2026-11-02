@@ -119,7 +119,7 @@ export const RECEIPT = defineSchema({
 })
 
 /** The chain's longest lifetime, in blocks: about 182 days at 2 s. */
-export const RECEIPT_LIFE_BLOCKS = 7_884_000
+const RECEIPT_LIFE_BLOCKS = 7_884_000
 
 /** A receipt as settle writes it: the whole create, nothing added later. */
 export type ReceiptRecord = CreateEntityParameters<typeof RECEIPT>

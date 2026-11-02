@@ -355,6 +355,19 @@ offer with the key it has, once their nodes have followed the reset.
 A running LB that was not restarted shows every refresh failing with
 a not-found error; that is the symptom, and the restart is the fix.
 
+The hourly stats survive a reset, so `/stats` then mixes both chains.
+To start them clean, use these commands instead of the restart:
+
+```sh
+docker compose down
+docker volume rm arkiv-community-lb_lb-state
+docker compose up -d
+```
+
+Stop the stack first: the LB saves the file when it stops, so a file
+removed while it runs comes back. The stop tries to write the counts
+to the chain and can take up to 200 s, which is normal here.
+
 ## Paying the providers
 
 Settlement is a separate command, `settle/`, and it is not part of the

@@ -156,8 +156,8 @@ settlement_period = "7d"
 flush_interval = "1d"
 # The signing key's balance, in GLM, below which every refresh logs a
 # warning. A write needs more in the key than it costs, because the node
-# checks the gas limit at twice the gas price: the largest batch costs
-# about 0.03 GLM and needs about 0.065.
+# checks its gas limit times its max fee: the largest batch costs about
+# 0.03 GLM and needs more than that.
 gas_warn_below = "0.1"
 
 # Integrity checks run when this section is present and the LB has a

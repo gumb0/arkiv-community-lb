@@ -268,7 +268,10 @@ two; `gas_warn_below` (0.1 GLM) is a month of the first and under two
 days of the second, so size it to the fleet. Settle spends its own
 key: one receipt per closed counter record (~375,000 gas on Arkiv, at
 the chain's maximum lifetime), and the transfers' gas on the payout
-chain.
+chain. Receipts go in batches of 50, which cost about 0.019 GLM each.
+The node accepts a transaction only if the key holds its gas limit
+times its max fee, which is more than it will spend, so keep about
+0.04 GLM in the key per 50 records owed.
 
 **The box.** Measured under load in October 2026 on a two-core
 machine: the LB uses little memory whatever is in flight (about 100

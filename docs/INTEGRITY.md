@@ -217,9 +217,9 @@ has a reference endpoint; without the section there are no rounds, and
 the section without a reference is refused at start, since it cannot
 work. Two fields, documented in `config.example.toml`:
 
-- `interval`, how often a round runs. Every round costs the reference a
-  few metered calls, so this is the knob to turn if the reference's quota
-  is short, the same way as the health check's reference sampling.
+- `interval`, how often a round runs. A longer interval spends less of
+  the reference's quota, and a provider serving wrong data can go
+  unnoticed for longer.
 - `confirm_after`, how long the LB waits before asking a provider again
   after a mismatch.
 

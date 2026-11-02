@@ -180,13 +180,14 @@ only.
   low on GLM` while it is under `gas_warn_below`.
 - The reference endpoint is metered, and the LB, the sidecar and a
   settle run on this box all spend the same key's quota. The LB's
-  reads have three knobs: `discovery_interval` (by far the largest
-  consumer: each poll is several queries), `integrity.interval`, and
+  reads have two knobs: `discovery_interval` (by far the largest
+  consumer: each poll is several queries) and
   `health.ref_height_interval`. When the quota runs short, lengthen
-  them in that order. A spent quota answers 429: discovery, lag and
-  integrity checks stop and the refresh cannot write, while serving
-  goes on. Agreements then expire one `agreement_life` after their
-  last refresh.
+  them in that order. While the entity check is off,
+  `integrity.interval` hardly changes the total. A spent quota answers
+  429: discovery, lag and integrity checks stop and the refresh cannot
+  write, while serving goes on. Agreements then expire one
+  `agreement_life` after their last refresh.
 - **A lowered lifetime does not shorten records already written.** An
   expiry can only be moved later. After `agreement_life` or
   `listing_life` is lowered, a record written under the old value
@@ -234,9 +235,9 @@ units, an `arkiv_query` about 100. At the default intervals:
 | **Total** | | **~3,100,000** |
 
 That is about three times the hub's default quota, and the discovery
-poll is four fifths of it. The knobs are the three intervals, in that
-order of effect: discovery at 15 minutes brings the month to ~1.3
-million. The size of the fleet changes none of this; a settle run
+poll is four fifths of it. The knobs are `discovery_interval` and then
+`ref_height_interval`: discovery at 15 minutes brings the month to
+~1.3 million. The size of the fleet changes none of this; a settle run
 adds a few hundred units.
 
 **Running a node as the reference** is the other answer, and worth

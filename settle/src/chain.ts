@@ -83,6 +83,10 @@ const WALK_TRIES = 3
  * are only written by settle, so this needs two runs at the same time,
  * and those can pay every record twice with no skip at all
  * (docs/LIMITATIONS.md).
+ *
+ * The walk relies on the node's order with no sort, creation order,
+ * staying fixed between pages. If it changed, the count would not show
+ * it (#71).
  */
 export async function everyPage(read: (offset: number) => Promise<Page>): Promise<Row[]> {
   for (let attempt = 0; attempt < WALK_TRIES; attempt += 1) {

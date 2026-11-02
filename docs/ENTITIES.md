@@ -341,8 +341,10 @@ next to the LB address.
   and skip records with an unknown `v`.
 - When one of several records of a kind is wanted, the oldest, pick it
   by its creation block (`createdAt`, selected with the query). Not by
-  expiry, which moves with every refresh, and not by the page's order,
-  which the node does not define.
+  expiry, which moves with every refresh.
+- A page with no sort comes in creation order, and settle's walk over
+  pages relies on that order staying fixed. To find a record's age,
+  still read `createdAt` rather than its place on a page.
 - The queries above are written in a simplified form. The node's query
   language wraps every value in its type: `kind = str('rpc.offer') AND
   lb_listing = key(0x8863…9057) AND $expiresAt > u64(1204000)`.

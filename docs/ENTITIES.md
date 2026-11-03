@@ -342,9 +342,12 @@ next to the LB address.
 - When one of several records of a kind is wanted, the oldest, pick it
   by its creation block (`createdAt`, selected with the query). Not by
   expiry, which moves with every refresh.
-- A page with no sort comes in creation order, and settle's walk over
-  pages relies on that order staying fixed. To find a record's age,
-  still read `createdAt` rather than its place on a page.
+- To read more than a page, walk by key: each page is `(<query>) AND
+  $key > key(<last key read>) ORDER BY $key`, until a page comes back
+  empty. A record that expires during the walk then skips no
+  other, as it would with an offset. Settle reads this way. A page with
+  no sort comes in creation order, but to find a record's age, read
+  `createdAt` rather than its place on a page.
 - The queries above are written in a simplified form. The node's query
   language wraps every value in its type: `kind = str('rpc.offer') AND
   lb_listing = key(0x8863…9057) AND $expiresAt > u64(1204000)`.

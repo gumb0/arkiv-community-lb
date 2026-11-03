@@ -22,14 +22,17 @@ export type Row = {
 
 export type Reader = {
   chainId: number
-  /** Every row the query matches, following the node's pages. */
+  /**
+   * Every row the query matches, following the node's pages. Pass it
+   * without an `ORDER BY`: the walk sorts by key itself.
+   */
   query(text: string): Promise<Row[]>
   /** What an address holds on Arkiv, which is what a write costs. */
   balance(address: Hex): Promise<bigint>
 }
 
 /** The node's page maximum. Asking for more is an error. */
-const PAGE = 100
+export const PAGE = 100
 
 export async function connectReader(rpcUrl: string, apiKey?: string): Promise<Reader> {
   const transport = http(rpcUrl, {
@@ -41,74 +44,57 @@ export async function connectReader(rpcUrl: string, apiKey?: string): Promise<Re
     chainId,
     balance: (address) => client.getBalance({ address }),
     query: (text) =>
-      everyPage(async (offset) => {
-        const page = await client.query(text, {
-          limit: PAGE,
-          offset,
-          count: true,
-          select: { $key: true, $creator: true, $attributes: true },
-        })
-        if (page.count === undefined) {
-          throw new Error("the node did not say how many rows the query matches")
-        }
-        return {
-          entities: page.entities.map((flat) => ({
-            key: flat.$key,
-            creator: flat.$creator,
-            attributes: flat.$attributes as Record<string, Attribute>,
-          })),
-          count: Number(page.count),
-        }
+      everyPage(async (after) => {
+        // In parentheses, so the bound applies to the whole query and not
+        // only to its last term after an OR.
+        const page = await client.query(
+          `(${text})${after !== undefined ? ` AND $key > key(${after})` : ""} ORDER BY $key`,
+          { limit: PAGE, select: { $key: true, $creator: true, $attributes: true } },
+        )
+        return page.entities.map((flat) => ({
+          key: flat.$key,
+          creator: flat.$creator,
+          attributes: flat.$attributes as Record<string, Attribute>,
+        }))
       }),
   }
 }
 
-/** One page of a query, and how many rows the whole query matches. */
-export type Page = { entities: Row[]; count: number }
-
-/** How many times a query is walked before the run gives up. */
-const WALK_TRIES = 3
-
 /**
- * Every row of a query. Settle reads what has piled up since its last
- * run, which is not bounded by the provider cap the LB's own reads rely
- * on.
+ * Every row of a query, a page of keys at a time, each page the rows
+ * after the last key read, until a page comes back empty.
  *
- * Pages go by offset, so a row that expires during a walk shifts the
- * rows after it and one is skipped, and a skipped receipt would read as
- * an unpaid record. If the count changes, the walk starts over. After
- * three walks the run stops, before anything is paid. If a row expires
- * and another appears, the count stays the same and the skipped row is
- * not noticed. A skipped closed record is paid by the next run. Receipts
- * are only written by settle, so this needs two runs at the same time,
- * and those can pay every record twice with no skip at all
- * (docs/LIMITATIONS.md).
- *
- * The walk relies on the node's order with no sort, creation order,
- * staying fixed between pages. If it changed, the count would not show
- * it (#71).
+ * Settle reads what has piled up since its last run, which is not
+ * bounded by the provider cap the LB's own reads rely on. A row that
+ * expires during the walk takes no other row with it, as it would with
+ * an offset. A row created during the walk with a key below the last
+ * one read is not seen: a closed record is then paid by the next run,
+ * and a receipt can only come from a second run at the same time, which
+ * is not safe anyway (docs/LIMITATIONS.md).
  */
-export async function everyPage(read: (offset: number) => Promise<Page>): Promise<Row[]> {
-  for (let attempt = 0; attempt < WALK_TRIES; attempt += 1) {
-    const rows = await walk(read)
-    if (rows !== undefined) return rows
+export async function everyPage(read: (after: Hex | undefined) => Promise<Row[]>): Promise<Row[]> {
+  const rows: Row[] = []
+  let after: Hex | undefined
+  for (;;) {
+    const page = await read(after)
+    // Only an empty page is the end. A short one usually is too, but a
+    // node that cut a page short, by size say, would then hide the rest,
+    // and a receipt not read is a record paid twice.
+    if (page.length === 0) return rows
+    // Each key above the one before it, the first above the bound. A node
+    // that ignored the bound would hand back the same page for ever, and
+    // one that ignored the order would make the next bound skip rows.
+    let previous = after
+    for (const row of page) {
+      if (previous !== undefined && BigInt(row.key) <= BigInt(previous)) {
+        const from = after === undefined ? "the first page" : `the page after key ${after}`
+        throw new Error(`the node answered ${from} out of key order: nothing was paid`)
+      }
+      previous = row.key
+    }
+    rows.push(...page)
+    after = previous
   }
-  throw new Error(`a query's rows kept changing over ${WALK_TRIES} reads: nothing was paid`)
-}
-
-/** One walk from the first page, or undefined if the rows changed during it. */
-async function walk(read: (offset: number) => Promise<Page>): Promise<Row[] | undefined> {
-  const first = await read(0)
-  const rows = [...first.entities]
-  while (rows.length < first.count) {
-    const page = await read(rows.length)
-    // An empty page while the count says more rows exist: the two answers
-    // disagree, so the rows changed. The offset would not move either, and
-    // the same read would repeat forever.
-    if (page.count !== first.count || page.entities.length === 0) return undefined
-    rows.push(...page.entities)
-  }
-  return rows
 }
 
 /**

@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Chain-writer sidecar for the Arkiv community LB: schema-blind entity operations over the official SDK, and the HTTP service around them.",
   "scripts": {
-    "probes": "npm run writer-smoke && npm run service-smoke && npm run queries && npm run batch && npm run permanent && npm run page-budget && npm run replay",
+    "probes": "npm run writer-smoke && npm run service-smoke && npm run queries && npm run batch && npm run permanent && npm run page-budget && npm run replay && npm run paging",
     "writer-smoke": "node --env-file-if-exists=../.env probes/writer-smoke.ts",
     "service-smoke": "node --env-file-if-exists=../.env probes/service-smoke.ts",
     "queries": "node --env-file-if-exists=../.env probes/queries.ts",
@@ -13,6 +13,7 @@
     "permanent": "node --env-file-if-exists=../.env probes/permanent-probe.ts",
     "page-budget": "node --env-file-if-exists=../.env probes/page-budget.ts",
     "replay": "node --env-file-if-exists=../.env probes/replay-probe.ts",
+    "paging": "node --env-file-if-exists=../.env probes/paging-probe.ts",
     "create-dup": "node --env-file-if-exists=../.env probes/create-dup.ts",
     "counters": "node --env-file-if-exists=../.env probes/counters-probe.ts",
     "test": "node --test \"tests/*.test.ts\"",

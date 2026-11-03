@@ -246,8 +246,9 @@ it, set up like a provider's from the node repository, with its RPC
 as `ARKIV_RPC_URL`. Every reference call is then unmetered, the
 intervals can stay at their defaults, and the data is the same chain.
 What it costs is the node's own disk and keeping it synced: the
-reference is the oracle, and a reference that falls behind shows as
-every provider lagging at once ([Troubleshooting](#troubleshooting)).
+reference is the oracle, and a reference that falls behind lets
+providers that are just as far behind stay in rotation
+([Troubleshooting](#troubleshooting)).
 
 **Gas on Arkiv.** At the 1 gwei floor, with prices measured in
 October 2026 against the network's genesis (arkiv-reth v1.0.0). A
@@ -539,12 +540,12 @@ Symptom, then where to look.
   skipped`.** The reference failed the query: an outage, or a spent
   quota (429). Serving is not affected; offers wait for a poll that
   succeeds.
-- **Every provider ineligible with `source=lag` at once.** The
-  reference is the suspect, not the nodes: it is on another network or
-  far ahead. Check `ARKIV_RPC_URL`.
+- **A provider stuck far behind stays eligible.** The reference is
+  behind as well, or it is unreachable, and lag is judged only against
+  it. Check `ARKIV_RPC_URL` and look for `reference unanswered`.
 - **`boot window closed with no provider admitted` at start, with no
   `eligibility flip` lines.** Nothing passed its first probes: check the
-  tunnels and `health.chain_id`, then the reference as above.
+  tunnels and `health.chain_id`.
 - **`reference unanswered: chain head lag goes unchecked`.** Not an
   outage: serving continues, only lag verdicts stop. The line appears
   once per change of state, as does its counterpart `reference

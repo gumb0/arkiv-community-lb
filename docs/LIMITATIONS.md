@@ -68,8 +68,10 @@ for the market. How to operate with them is [RUNBOOK.md](RUNBOOK.md).
   provider is
   [#54](https://github.com/gumb0/arkiv-community-lb/issues/54).
 - **Lag is measured against the reference.** While the reference is
-  unreachable, a provider falling behind goes unnoticed; a reference
-  that is itself behind shows every provider as lagging
+  unreachable, a provider falling behind goes unnoticed, and one
+  already out for lag is let back in by its probes until the reference
+  answers again. A reference that is itself behind hides lag the same
+  way, since a provider ahead of it counts as current
   ([RUNBOOK.md](RUNBOOK.md#troubleshooting)).
 - **A provider whose first chain-id check goes unanswered waits a
   whole chain interval** (five minutes) before it is asked again

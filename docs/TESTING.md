@@ -44,6 +44,14 @@ front, and the `probes` job runs that after the writer probes; by hand
 it runs against any network with the endpoint variables set and a
 sidecar up.
 
+The settle package follows the same split. Its unit tests run over
+fakes, with no key and no chain, in the CI `settle` job. Its pay probe
+(`settle/probes/pay-probe.ts`) writes closed counter records the way
+the LB does, enough to cross a page, and runs settle's real ledger and
+payment against a dev node with only the GLM transfer faked. It
+follows our own code, so the `probes` job runs it with the writer
+smokes: `scripts/run-probes.sh settle:pay-probe`.
+
 **3. The rig.** Real containers, the shipped `arkiv-lb` binary as a
 separate process, a real config file, real sockets. It runs by hand or
 through the `rig` CI workflow, on demand and once a week; it is

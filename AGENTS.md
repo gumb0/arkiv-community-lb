@@ -193,4 +193,6 @@ first-class concern, not an add-on.
   stalls, so it never belongs in a CI job or in `npm test`. The settle
   package is the second TS package and keeps the same rule: its tests run
   over fakes, need no key and no chain, and CI runs them in a job of their
-  own.
+  own. Its `probes/` run through `scripts/run-probes.sh settle:<name>` on
+  a dev node; the pay probe, which follows settle's own code, also runs
+  in CI's `probes` job beside the writer smokes.

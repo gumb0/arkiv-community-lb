@@ -6,6 +6,7 @@
   "description": "Pays each closed counter record the LB wrote: GLM on the payout chain, one receipt per record on Arkiv.",
   "scripts": {
     "settle": "node --env-file-if-exists=../.env src/cli.ts",
+    "pay-probe": "node --env-file-if-exists=../.env probes/pay-probe.ts",
     "test": "node --test \"tests/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },

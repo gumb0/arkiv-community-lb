@@ -238,14 +238,29 @@ async fn a_block_the_node_does_not_have_is_none() {
 }
 
 #[tokio::test]
-async fn a_count_sends_the_query_and_reads_a_number() {
-    let (reader, reference) = reference(ok(json!(7)), None).await;
+async fn a_count_selects_the_count_alone_and_reads_a_hex_quantity() {
+    let (reader, reference) = reference(
+        ok(json!({ "blockNumber": "0x10", "count": "0x7", "data": [] })),
+        None,
+    )
+    .await;
     let query = Query::kind(KIND_AGREEMENT).creator(lb());
     assert_eq!(reader.count(&query).await.expect("count"), 7);
     let seen = reference.seen.lock().expect("seen");
     assert_eq!(seen[0].0, None);
-    assert_eq!(seen[0].1["method"], "arkiv_getEntityCount");
-    assert_eq!(seen[0].1["params"][0]["query"], query.text());
+    assert_eq!(seen[0].1["method"], "arkiv_query");
+    assert_eq!(seen[0].1["params"][0], query.text());
+    assert_eq!(
+        seen[0].1["params"][1],
+        json!({ "select": { "count": true } })
+    );
+}
+
+#[tokio::test]
+async fn an_answer_without_a_count_is_an_error() {
+    let (reader, _) = reference(ok(json!({ "blockNumber": "0x10", "data": [] })), None).await;
+    let query = Query::kind(KIND_AGREEMENT).creator(lb());
+    assert!(reader.count(&query).await.is_err());
 }
 
 #[tokio::test]

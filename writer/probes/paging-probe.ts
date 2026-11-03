@@ -99,7 +99,8 @@ async function walkAll(reader: Reader, q: string): Promise<Hex[]> {
   return walk.keys
 }
 
-const count = async (q: string) => Number(await rawRpc("arkiv_getEntityCount", [{ query: q }]))
+const count = async (q: string) =>
+  Number(((await rawRpc("arkiv_query", [q, { select: { count: true } }])) as { count: Hex }).count)
 
 const writer = await createWriter({ rpcUrl, apiKey: apiKey || undefined, privateKey: privateKeyFromFile() })
 console.log(`paging probe: address ${writer.address}, chain ${writer.chainId}, run ${RUN}\n`)

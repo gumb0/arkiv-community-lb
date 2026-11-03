@@ -341,12 +341,16 @@ impl Reader {
 
     /// How many records match the query, without paging.
     pub async fn count(&self, query: &Query) -> Result<u64, ReadError> {
+        // The count projection of a query, the way the node's API documents
+        // counting; with nothing else selected, no rows come back.
         let result = self
-            .call("arkiv_getEntityCount", json!([{ "query": query.text() }]))
+            .call(
+                "arkiv_query",
+                json!([query.text(), { "select": { "count": true } }]),
+            )
             .await?;
-        result
-            .as_u64()
-            .ok_or_else(|| ReadError::Unexpected(format!("count is not a number: {result}")))
+        parse_u64(&result["count"])
+            .ok_or_else(|| ReadError::Unexpected(format!("no count in the answer: {result}")))
     }
 
     async fn call(&self, method: &str, params: Value) -> Result<Value, ReadError> {

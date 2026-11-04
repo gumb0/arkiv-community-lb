@@ -1,0 +1,27 @@
+# Stops the LB stack through compose before Docker stops, so a host
+# reboot or a Docker update lets the LB write its counts first. Docker's
+# own shutdown stops every container at once, the sidecar with the LB,
+# and the counts since the last flush are lost.
+# Install: docs/RUNBOOK.md, "First deployment".
+[Unit]
+Description=Arkiv LB stack, stopped through compose before Docker
+Requires=docker.service
+# Stopped before Docker and before the network goes: the counts are
+# written to the chain on the way down.
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The clone's path; change it for a clone elsewhere.
+WorkingDirectory=/root/arkiv-community-lb
+# Brings the stack back after boot: restart: unless-stopped does not
+# restart containers that compose stopped.
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose stop
+# Above the LB's stop_grace_period (200 s); systemd's default is 90 s.
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

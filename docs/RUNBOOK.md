@@ -103,7 +103,18 @@ deployment, not to a later one.
      by their probes alone.
 4. `docker compose up -d --build` — the first build downloads the base
    images and compiles for a few minutes.
-5. Verify from the box: `curl -s 127.0.0.1:9545/health` and `/nodes`,
+5. Install the systemd unit that stops the stack in order when the host
+   shuts down ([Day to day](#day-to-day), "Reboot safety"). Change
+   `WorkingDirectory` in it first if the clone is not in
+   `/root/arkiv-community-lb`:
+
+   ```sh
+   cp deploy/arkiv-lb-stack.service /etc/systemd/system/
+   systemctl daemon-reload
+   systemctl enable --now arkiv-lb-stack
+   ```
+
+6. Verify from the box: `curl -s 127.0.0.1:9545/health` and `/nodes`,
    then `docker compose logs lb`. With the marketplace on, the log has
    `listing created` once, and a `discovery` line at every poll.
 
@@ -150,7 +161,10 @@ only.
 - Logs: `docker compose logs -f lb` (rotation is capped in the compose
   file). Default level is info. For debug detail — per-attempt and
   per-probe lines — set `RUST_LOG=info,lb=debug` in `.env` and apply
-  it with `docker compose up -d`; set it back the same way.
+  it with `docker compose up -d`; set it back the same way. A
+  container that is recreated loses its log: `docker compose up -d`
+  after a change to `.env`, `compose.yaml` or the image, and every
+  release. Copy the log out first if you need it.
 - Admin API from a workstation: the port is loopback-only by design,
   so forward it — `ssh -L 9545:127.0.0.1:9545 <box>` — and use it at
   `http://127.0.0.1:9545` locally:
@@ -210,9 +224,14 @@ only.
   holds, so what the provider served is still paid. Ask the operator
   to stop their tunnel.
 - Code updates: a release tag, below.
-- Reboot safety: Docker's enabled service plus `restart:
-  unless-stopped` bring the stack back on boot; there is no systemd
-  unit to manage.
+- Reboot safety: the `arkiv-lb-stack` unit (`deploy/`) runs `docker
+  compose stop` when the host shuts down, before Docker stops. Compose
+  stops the LB first, so it writes its counts while the sidecar is
+  still up. Without the unit, a reboot stops every container at once,
+  and the counts since the last flush are lost. At boot the unit runs
+  `docker compose up -d`, which starts the stack even if it was
+  stopped by hand before; `systemctl disable arkiv-lb-stack` keeps it
+  down across a reboot.
 
 ## What normal operation costs
 

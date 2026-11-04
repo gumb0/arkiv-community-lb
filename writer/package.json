@@ -17,6 +17,7 @@
     "create-dup": "node --env-file-if-exists=../.env probes/create-dup.ts",
     "counters": "node --env-file-if-exists=../.env probes/counters-probe.ts",
     "read-after-write": "node --env-file-if-exists=../.env probes/read-after-write.ts",
+    "gas-after-write": "node --env-file-if-exists=../.env probes/gas-after-write.ts",
     "test": "node --test \"tests/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "service": "node --env-file-if-exists=../.env src/service.ts"

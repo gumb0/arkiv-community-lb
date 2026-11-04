@@ -26,6 +26,16 @@ for the market. How to operate with them is [RUNBOOK.md](RUNBOOK.md).
   client's requests, not their cost; a cap on requests in flight per
   provider is
   [#54](https://github.com/gumb0/arkiv-community-lb/issues/54).
+- **Consecutive requests can see different blocks.** Each request goes
+  to the next provider in rotation, and providers can be a block or
+  more apart. A read right after a write may miss it, a gas estimate
+  for a write sent right after another can come out too low, so the
+  write fails out of gas, and the pages of one query can come from
+  different blocks. Clients retry reads, page by key, and set a margin
+  on the gas limit ([ENDPOINT.md](ENDPOINT.md#consecutive-requests)).
+  The LB's own writes go out the same way, through the Arkiv endpoint
+  it is given, which may sit in front of several nodes too
+  ([#77](https://github.com/gumb0/arkiv-community-lb/issues/77)).
 - **Method filtering is a text search** over the request body, not a
   JSON parse: a request that merely mentions a refused method name is
   refused, and requests cannot be counted per method

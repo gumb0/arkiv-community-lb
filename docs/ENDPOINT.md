@@ -29,6 +29,26 @@ returns is JSON-RPC.
 A read method not listed here but served by the underlying nodes will
 generally work; the lists below are what is deliberately blocked.
 
+## Consecutive requests
+
+Each request goes to the next node in rotation, and the nodes can be a
+block or more apart. Two requests in a row may therefore see different
+blocks:
+
+- A read right after a write may not show the write yet, even when the
+  receipt already came back. A client that needs to read its own write
+  repeats the read until it shows it.
+- A gas estimate for a write sent right after another write can come
+  from a node that has not applied the first one, and come out too low;
+  the transaction then fails out of gas. A client that sends writes
+  back to back sets the gas limit itself, with a margin over the
+  estimate (for example 1.2 times it). It is charged only for the gas
+  the write uses.
+- The pages of one query can come from different blocks, so paging by
+  offset can skip or repeat rows between them. A client that needs
+  every row pages by key instead: `ORDER BY $key`, each page asking for
+  the keys above the last one it got.
+
 ## Denied methods
 
 | Group | Methods | Why |

@@ -233,6 +233,8 @@ pub struct Marketplace {
     pub settlement_period: Duration,
     #[serde(with = "humantime_serde", default = "default_flush_interval")]
     pub flush_interval: Duration,
+    #[serde(default = "default_max_calls_per_period")]
+    pub max_calls_per_period: u64,
     /// In the toml as GLM, held as wei.
     #[serde(
         deserialize_with = "deserialize_glm",
@@ -273,6 +275,9 @@ fn default_settlement_period() -> Duration {
 }
 fn default_flush_interval() -> Duration {
     Duration::from_secs(24 * 60 * 60)
+}
+fn default_max_calls_per_period() -> u64 {
+    10_000_000
 }
 fn default_gas_warn_below() -> Wei {
     glm("0.1").expect("the default parses")
@@ -658,6 +663,7 @@ mod tests {
             Duration::from_secs(7 * 86_400)
         );
         assert_eq!(marketplace.flush_interval, Duration::from_secs(86_400));
+        assert_eq!(marketplace.max_calls_per_period, 10_000_000);
     }
 
     #[test]

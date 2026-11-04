@@ -303,6 +303,7 @@ async fn service_on(
         offer_max_lifetime: Duration::from_secs(24 * 3600),
         settlement_period: Duration::from_secs(7 * 24 * 3600),
         flush_interval: Duration::from_secs(24 * 3600),
+        max_calls_per_period: 10_000_000,
         gas_warn_below: Wei::new(1),
     });
     tune(&mut config);

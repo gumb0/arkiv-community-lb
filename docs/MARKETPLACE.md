@@ -221,9 +221,14 @@ nothing is shared between providers.
 
 A provider can send requests to the public endpoint itself and is
 counted for the share of them that reaches its own node. The rate
-limiter in front of the LB bounds the pace per client address, and
-nothing bounds the count per agreement; a known limitation, with a
-payout cap per settlement period as the fix.
+limiter in front of the LB bounds the pace per client address; what
+bounds the pay is a cap on the count one agreement is paid for per
+settlement period (`max_calls_per_period`, ten million by default).
+The LB keeps counting past it, so the admin view and the stats show
+what was served, but a counter record carries at most the cap, and
+the count over it is not carried into the next period. The cap is
+sized well above honest traffic: a provider past it serves the rest
+of its period for free.
 
 Each record names the first and last block its count covers, so a
 provider can check it against its own logs. Counts live in memory between

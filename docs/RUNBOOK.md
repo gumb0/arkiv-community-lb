@@ -192,6 +192,13 @@ only.
   and its balance is checked the same way as any account on the
   network. The LB checks it at every refresh and logs `the LB key is
   low on GLM` while it is under `gas_warn_below`.
+- **An agreement over the cap.** The daily flush logs `an agreement is
+  over the cap` for every agreement whose count this settlement period
+  is past `max_calls_per_period`; the count over it is not paid. Look
+  at the provider's hourly counts in `/stats` against the others': a
+  provider far ahead of the rest may be sending requests to itself. If
+  every busy provider reaches the cap, it is too low for the traffic:
+  raise it in `config.toml` and restart.
 - The reference endpoint is metered, and the LB, the sidecar and a
   settle run on this box all spend the same key's quota. The LB's
   reads have two knobs: `discovery_interval` (by far the largest

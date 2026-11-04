@@ -51,6 +51,7 @@ fn marketplace() -> Marketplace {
         offer_max_lifetime: Duration::from_secs(24 * 3600),
         settlement_period: Duration::from_secs(7 * 24 * 3600),
         flush_interval: Duration::from_secs(24 * 3600),
+        max_calls_per_period: 10_000_000,
         gas_warn_below: Wei::new(20_000_000_000_000_000),
     }
 }
@@ -60,6 +61,7 @@ fn listing_of(config: &Marketplace) -> LbListing {
         wei_per_call: config.wei_per_call,
         tunnel_server: config.tunnel_server.clone(),
         max_providers: config.max_providers,
+        max_calls_per_period: Some(config.max_calls_per_period),
     }
 }
 
@@ -269,6 +271,26 @@ async fn an_unchanged_listing_is_left_alone() {
     let agent = start(&chain, &config, &pool).await.expect("starts");
     assert_eq!(agent.listing_key(), existing);
     assert!(chain.transactions().is_empty(), "nothing to write");
+}
+
+#[tokio::test]
+async fn a_listing_written_before_the_pay_cap_is_patched_to_carry_it() {
+    let chain = FakeChain::new(LB, 1337);
+    let config = marketplace();
+    let older = LbListing {
+        max_calls_per_period: None,
+        ..listing_of(&config)
+    };
+    let existing = chain.write_as(LB, older.encode(), Expiry::Seconds(3600));
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+
+    assert_eq!(agent.listing_key(), existing);
+    assert_eq!(chain.transactions(), [Transaction::Patch(existing)]);
+    let kept = chain.entity(existing).expect("kept");
+    let stored: LbListing = serde_json::from_slice(kept.attributes.payload().expect("a payload"))
+        .expect("the payload is the listing");
+    assert_eq!(stored.max_calls_per_period, Some(10_000_000));
 }
 
 #[tokio::test]
@@ -1938,6 +1960,95 @@ async fn an_agreement_that_ends_without_a_record_writes_nothing() {
     agent.discovery_poll().await;
     assert_eq!(chain.transactions().len(), writes_before);
     assert!(agent.agreements().is_empty());
+}
+
+// The cap on what a period is paid for
+
+fn capped_at(cap: u64) -> Marketplace {
+    Marketplace {
+        max_calls_per_period: cap,
+        ..marketplace()
+    }
+}
+
+#[tokio::test]
+async fn a_count_over_the_cap_is_written_as_the_cap() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 0, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &capped_at(5), &pool).await.expect("starts");
+    serve(&pool, provider(1), 8);
+
+    agent.flush().await;
+    assert_eq!(
+        counter(&chain, key).await.count,
+        5,
+        "the cap, not the count"
+    );
+    assert_eq!(served_by(&pool, provider(1)), 8, "the entry keeps counting");
+
+    // Over the cap, the record already says all it will: nothing written.
+    serve(&pool, provider(1), 1);
+    let writes_before = chain.transactions().len();
+    agent.flush().await;
+    assert_eq!(chain.transactions().len(), writes_before);
+    assert_eq!(counter(&chain, key).await.count, 5);
+}
+
+#[tokio::test]
+async fn a_period_over_the_cap_closes_at_the_cap_and_the_excess_is_not_carried_over() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let config = Marketplace {
+        max_calls_per_period: 5,
+        ..short_periods()
+    };
+    let agreement = seed_agreement(&chain, provider(1), 20000, 3 * DAY);
+    let key = seed_counter(&chain, agreement, provider(1), 0, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+    serve(&pool, provider(1), 8);
+    chain.advance(20);
+
+    agent.flush().await;
+    let closed = counter(&chain, key).await;
+    assert_eq!(closed.state, CounterState::Closed);
+    assert_eq!(closed.count, 5);
+    assert_eq!(
+        served_by(&pool, provider(1)),
+        0,
+        "the whole period leaves the entry, the three over the cap too"
+    );
+    let successor = counter_records(&chain)
+        .await
+        .into_iter()
+        .find(|record| record.key != key)
+        .expect("the successor");
+    assert_eq!(successor.record.count, 0);
+
+    serve(&pool, provider(1), 2);
+    agent.flush().await;
+    assert_eq!(
+        counter(&chain, successor.key).await.count,
+        2,
+        "the next period counts its own requests only"
+    );
+}
+
+#[tokio::test]
+async fn an_agreement_that_ends_over_the_cap_is_closed_at_the_cap() {
+    let chain = FakeChain::new(LB, CHAIN_ID);
+    let agreement = seed_agreement(&chain, provider(1), 20000, 60);
+    let key = seed_counter(&chain, agreement, provider(1), 0, 1);
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &capped_at(5), &pool).await.expect("starts");
+    serve(&pool, provider(1), 8);
+    chain.advance(31);
+
+    agent.discovery_poll().await;
+    let closed = counter(&chain, key).await;
+    assert_eq!(closed.state, CounterState::Closed);
+    assert_eq!(closed.count, 5);
 }
 
 #[tokio::test]

@@ -86,7 +86,8 @@ Payload:
 {
   "wei_per_call": "1000000000000000",
   "tunnel_server": "203.0.113.10:7000",
-  "max_providers": 100
+  "max_providers": 100,
+  "max_calls_per_period": 10000000
 }
 ```
 
@@ -94,6 +95,11 @@ Payload:
   connects to. It is the same for all providers.
 - `max_providers` is the number of agreement slots. Tooling can show
   "N of M slots taken" by counting the LB's live agreement records.
+- `max_calls_per_period` is the most requests one agreement is paid
+  for in one settlement period; a counter record never carries more.
+  A listing written before the field existed has none; the LB adds it
+  at its next start. A reader treats a missing value as unknown, not
+  as no cap.
 
 Lifetime: 30 days, extended by the LB's hourly refresh. A listing that
 exists belongs to an LB that has run within the last month.

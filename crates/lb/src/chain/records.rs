@@ -411,6 +411,10 @@ pub struct LbListing {
     pub wei_per_call: Wei,
     pub tunnel_server: String,
     pub max_providers: u32,
+    /// Absent in a listing written before the field existed; the LB
+    /// patches such a listing at its next start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_calls_per_period: Option<u64>,
 }
 
 /// The listing as a log line reads it.
@@ -420,7 +424,11 @@ impl std::fmt::Display for LbListing {
             f,
             "rate {} wei/call, tunnel {}, cap {}",
             self.wei_per_call.0, self.tunnel_server, self.max_providers
-        )
+        )?;
+        if let Some(calls) = self.max_calls_per_period {
+            write!(f, ", paid up to {calls} calls a period")?;
+        }
+        Ok(())
     }
 }
 
@@ -772,6 +780,7 @@ mod tests {
             wei_per_call: Wei::new(1_000_000_000_000_000),
             tunnel_server: "203.0.113.10:7000".to_owned(),
             max_providers: 100,
+            max_calls_per_period: Some(10_000_000),
         };
         let encoded = listing.encode();
         let wire = encoded.to_wire();
@@ -792,11 +801,27 @@ mod tests {
                 "wei_per_call": "1000000000000000",
                 "tunnel_server": "203.0.113.10:7000",
                 "max_providers": 100,
+                "max_calls_per_period": 10_000_000,
             })
         );
         let entity = read_back(&encoded);
         assert!(entity.is(KIND_LB_LISTING));
         assert_eq!(LbListing::decode(&entity).unwrap(), listing);
+
+        // A listing written before the field existed still reads.
+        let older = LbListing {
+            max_calls_per_period: None,
+            ..listing
+        };
+        assert_eq!(
+            payload_json(&older.encode()).get("max_calls_per_period"),
+            None,
+            "an absent cap is left out, not written as null"
+        );
+        assert_eq!(
+            LbListing::decode(&read_back(&older.encode())).unwrap(),
+            older
+        );
     }
 
     #[test]
@@ -1022,6 +1047,7 @@ mod tests {
                 wei_per_call: Wei::new(1),
                 tunnel_server: "h:1".to_owned(),
                 max_providers: 1,
+                max_calls_per_period: None,
             }
             .encode(),
         );
@@ -1038,6 +1064,7 @@ mod tests {
             wei_per_call: Wei::new(1),
             tunnel_server: "h:1".to_owned(),
             max_providers: 1,
+            max_calls_per_period: None,
         }
         .encode();
         let newer = read_back(&encoded.clone().with("v", AttributeValue::I32(2)));

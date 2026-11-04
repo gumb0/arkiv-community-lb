@@ -107,11 +107,6 @@ itself:
 
 ## Marketplace
 
-- **A provider is paid for traffic it sends itself.** The public
-  endpoint is open and the pay is per answer; the rate limiter bounds
-  the pace per address, nothing bounds the count per agreement
-  ([MARKETPLACE.md](MARKETPLACE.md#counting),
-  [#56](https://github.com/gumb0/arkiv-community-lb/issues/56)).
 - **Slots can be held without a node.** An accepted offer holds a slot
   and a port for a day whether the provider connects or not, and one
   operator with many keys can hold them all

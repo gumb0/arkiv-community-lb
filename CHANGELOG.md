@@ -4,6 +4,18 @@ Notable changes per release, newest first. The LB box deploys a tag:
 `git checkout <tag> && docker compose up -d --build`
 ([docs/RUNBOOK.md](docs/RUNBOOK.md)).
 
+## Unreleased
+
+- A cap on what one agreement is paid for per settlement period:
+  `max_calls_per_period`, ten million by default. The public endpoint
+  takes requests from anyone, a provider's own included, and nothing
+  bounded the count. A counter record now carries at most the cap;
+  the LB keeps counting past it for the admin view and the stats
+  (#56). The daily flush logs `an agreement is over the cap` for each
+  agreement past it, with its count. The listing carries the cap as
+  `max_calls_per_period`, so provider tooling can show it; an existing
+  listing gains it at the LB's next start (docs/ENTITIES.md).
+
 ## v0.5.0
 
 The move to the rabdi testnet and its node line, arkiv-reth v1.0.0.

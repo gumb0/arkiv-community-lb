@@ -580,14 +580,15 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 }));
                 continue;
             }
-            tracing::info!(agreement = %key, counter = %end.counter.key, count = end.served, "the counter record is closed at the agreement's end");
+            let count = self.paid(end.served);
+            tracing::info!(agreement = %key, counter = %end.counter.key, count, "the counter record is closed at the agreement's end");
             // Built closed, from what memory holds: there is no record
             // read from the chain here to close.
             let counter = CounterRecord {
                 agreement: key,
                 provider: record.provider,
                 state: CounterState::Closed,
-                count: end.served,
+                count,
                 wei_per_call: record.wei_per_call,
                 opened_block: end.counter.opened_block,
                 closed_block: Some(head),
@@ -1235,10 +1236,19 @@ struct Landed {
 struct Closing {
     agreement: EntityKey,
     counter: EntityKey,
+    /// The entry's count the close covers, which may be over the cap
+    /// the record was written with.
     count: u64,
 }
 
 impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
+    /// What a counter record carries for an entry's count: the count,
+    /// at most the cap. The entry itself keeps counting past the cap,
+    /// so the admin view and the stats show what was served.
+    fn paid(&self, served: u64) -> u64 {
+        served.min(self.config.max_calls_per_period)
+    }
+
     /// One flush: what each provider served, into its agreement's
     /// counter record.
     pub async fn flush(&self) {
@@ -1341,6 +1351,12 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 .provider
                 .served
                 .load(std::sync::atomic::Ordering::Relaxed);
+            // Past the cap is where a provider paying itself shows, and
+            // where the cap is too low for honest traffic: either way
+            // the operator should see it, once a flush.
+            if scheduled && served > self.config.max_calls_per_period {
+                tracing::warn!(agreement = %key, provider = %record.provider, count = served, cap = self.config.max_calls_per_period, "an agreement is over the cap on what a period is paid for: the count over it is not paid");
+            }
             match counters.open.get(key) {
                 // A period is over once the head has passed the
                 // record's opening by one. A record that counted
@@ -1349,11 +1365,15 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 Some(stored)
                     if scheduled && served > 0 && head >= stored.record.opened_block + period =>
                 {
-                    tracing::info!(agreement = %key, counter = %stored.key, count = served, "the settlement period is over: the counter record is closed");
+                    let count = self.paid(served);
+                    tracing::info!(agreement = %key, counter = %stored.key, count, "the settlement period is over: the counter record is closed");
                     batch.push(Operation::Patch(patch_record(
                         stored.key,
-                        &closed(&stored.record, served, head),
+                        &closed(&stored.record, count, head),
                     )));
+                    // The whole count leaves the entry once the close
+                    // lands, the part over the cap included: it is this
+                    // period's, not the next one's.
                     closing.push(Closing {
                         agreement: *key,
                         counter: stored.key,
@@ -1361,13 +1381,13 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                     });
                 }
                 // The chain already says what the entry counted.
-                Some(stored) if stored.record.count == served => {}
+                Some(stored) if stored.record.count == self.paid(served) => {}
                 // The record is a copy of the entry's count, not a
                 // running total, so the write can be repeated freely.
                 Some(stored) => {
                     batch.push(Operation::Patch(patch_record(
                         stored.key,
-                        &counted(stored, served),
+                        &counted(stored, self.paid(served)),
                     )));
                 }
                 // At a stop there is nowhere to write this count, and
@@ -1578,6 +1598,7 @@ async fn ensure_listing<R: ChainReader, W: ChainWriter>(
         wei_per_call: config.wei_per_call,
         tunnel_server: config.tunnel_server.clone(),
         max_providers: config.max_providers,
+        max_calls_per_period: Some(config.max_calls_per_period),
     };
     let query = Query::kind(KIND_LB_LISTING).creator(lb).expires_after(head);
     let page = reader.query(&query).await.map_err(StartError::Chain)?;

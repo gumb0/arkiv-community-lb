@@ -68,6 +68,15 @@ a config rendered for them with shipped defaults, and the compiled
 rig waits until `/health` reports ready, and tears the stack down
 however the scenario ends — containers stop on drop.
 
+A dev node starts from the network's own genesis with a dev chain id
+(`scripts/dev-genesis.sh`, the file fetched at a pinned commit and
+checked against its hash), not from the image's built-in dev chain.
+The network's genesis sets what the entity store charges for each
+write, and the built-in chain charges about a third of it, so only
+this genesis makes the probes and a load test measure what writes
+cost on the network. `DEV_NODE_GENESIS=builtin` starts the built-in
+chain.
+
 ```
 cargo build --workspace
 cargo run -p rig -- all

@@ -23,11 +23,16 @@ Blocks are sealed every 250 ms by default, eight times the network's rate,
 so expiry-driven tests run fast. A lifetime asked for in seconds assumes
 2 s blocks (the SDK converts durations at that rate), so ask in blocks.
 
+The chain starts from the network's genesis with a dev chain id
+(scripts/dev-genesis.sh), so writes cost what they cost on the network.
+DEV_NODE_GENESIS=builtin starts the image's own dev chain instead.
+
 Environment:
   DEV_NODE_BLOCK_TIME  seal interval (default 250ms)
   DEV_NODE_PORT    host port for JSON-RPC (default 8645)
   DEV_NODE_IMAGE   image (default: the digest-pinned arkiv-reth-dev of the GolemDB line, the build rabdi runs)
   DEV_NODE_NAME    container name (default arkiv-dev-node)
+  DEV_NODE_GENESIS network (default) or builtin
 EOF
 }
 
@@ -36,6 +41,8 @@ PORT="${DEV_NODE_PORT:-8645}"
 # the engine the network runs. The digest holds the tag still.
 IMAGE="${DEV_NODE_IMAGE:-ghcr.io/arkiv-network/arkiv-reth-dev:v1.0.0@sha256:14d904319d0154ec5a5855b6c301cf90e53fc139829f580a237d6f44158a766c}"
 NAME="${DEV_NODE_NAME:-arkiv-dev-node}"
+GENESIS="${DEV_NODE_GENESIS:-network}"
+root="$(cd "$(dirname "$0")/.." && pwd)"
 BLOCK_TIME="${DEV_NODE_BLOCK_TIME:-250ms}"
 URL="http://127.0.0.1:${PORT}"
 READY_TIMEOUT=60
@@ -56,9 +63,28 @@ start(){
   # A stopped container of the same name would block the run.
   docker rm -f "$NAME" >/dev/null 2>&1 || true
 
-  # Everything but the block time is the image's own default command.
-  if ! docker run -d --name "$NAME" -p "${PORT}:8545" "$IMAGE" \
-      node --dev --dev.block-time "$BLOCK_TIME" \
+  # The genesis is made once and kept beside the build output; its name
+  # carries the making script's hash, so a new pin or a change makes a
+  # new file.
+  local mount=() chain=()
+  case "$GENESIS" in
+    network)
+      local made
+      made="$root/target/dev-genesis-$(sha256sum "$root/scripts/dev-genesis.sh" | cut -c1-12).json"
+      if [ ! -s "$made" ]; then
+        mkdir -p "$root/target"
+        "$root/scripts/dev-genesis.sh" "$made.tmp" && mv "$made.tmp" "$made"
+      fi
+      mount=(-v "$made:/genesis.json:ro")
+      chain=(--chain /genesis.json)
+      ;;
+    builtin) ;;
+    *) printf 'DEV_NODE_GENESIS is network or builtin, not %s\n' "$GENESIS" >&2; exit 2;;
+  esac
+
+  # Everything but the block time and the chain is the image's own default command.
+  if ! docker run -d --name "$NAME" -p "${PORT}:8545" "${mount[@]}" "$IMAGE" \
+      node --dev --dev.block-time "$BLOCK_TIME" "${chain[@]}" \
       --http --http.addr 0.0.0.0 --http.api eth,net,web3,txpool \
       --datadir /data >/dev/null; then
     printf 'could not start %s\n' "$IMAGE" >&2

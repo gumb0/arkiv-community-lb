@@ -61,6 +61,7 @@ fn listing_of(config: &Marketplace) -> LbListing {
         wei_per_call: config.wei_per_call,
         tunnel_server: config.tunnel_server.clone(),
         max_providers: config.max_providers,
+        max_calls_per_period: Some(config.max_calls_per_period),
     }
 }
 
@@ -270,6 +271,26 @@ async fn an_unchanged_listing_is_left_alone() {
     let agent = start(&chain, &config, &pool).await.expect("starts");
     assert_eq!(agent.listing_key(), existing);
     assert!(chain.transactions().is_empty(), "nothing to write");
+}
+
+#[tokio::test]
+async fn a_listing_written_before_the_pay_cap_is_patched_to_carry_it() {
+    let chain = FakeChain::new(LB, 1337);
+    let config = marketplace();
+    let older = LbListing {
+        max_calls_per_period: None,
+        ..listing_of(&config)
+    };
+    let existing = chain.write_as(LB, older.encode(), Expiry::Seconds(3600));
+    let pool = Arc::new(Pool::new(&[]).expect("empty pool"));
+    let agent = start(&chain, &config, &pool).await.expect("starts");
+
+    assert_eq!(agent.listing_key(), existing);
+    assert_eq!(chain.transactions(), [Transaction::Patch(existing)]);
+    let kept = chain.entity(existing).expect("kept");
+    let stored: LbListing = serde_json::from_slice(kept.attributes.payload().expect("a payload"))
+        .expect("the payload is the listing");
+    assert_eq!(stored.max_calls_per_period, Some(10_000_000));
 }
 
 #[tokio::test]

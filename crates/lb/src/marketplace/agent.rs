@@ -1598,6 +1598,7 @@ async fn ensure_listing<R: ChainReader, W: ChainWriter>(
         wei_per_call: config.wei_per_call,
         tunnel_server: config.tunnel_server.clone(),
         max_providers: config.max_providers,
+        max_calls_per_period: Some(config.max_calls_per_period),
     };
     let query = Query::kind(KIND_LB_LISTING).creator(lb).expires_after(head);
     let page = reader.query(&query).await.map_err(StartError::Chain)?;

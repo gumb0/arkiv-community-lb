@@ -1351,6 +1351,12 @@ impl<R: ChainReader, W: ChainWriter> Agent<R, W> {
                 .provider
                 .served
                 .load(std::sync::atomic::Ordering::Relaxed);
+            // Past the cap is where a provider paying itself shows, and
+            // where the cap is too low for honest traffic: either way
+            // the operator should see it, once a flush.
+            if scheduled && served > self.config.max_calls_per_period {
+                tracing::warn!(agreement = %key, provider = %record.provider, count = served, cap = self.config.max_calls_per_period, "an agreement is over the cap on what a period is paid for: the count over it is not paid");
+            }
             match counters.open.get(key) {
                 // A period is over once the head has passed the
                 // record's opening by one. A record that counted

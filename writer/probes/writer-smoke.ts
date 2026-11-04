@@ -52,6 +52,18 @@ async function query(q: string, options: Record<string, unknown> = {}): Promise<
 
 const byKey = async (entityKey: Hex) => (await query(`$key = key(${entityKey})`))[0]
 
+// A query answer labeled with a write's block can miss that write for a
+// moment after its receipt, so a read that follows a write repeats until
+// it shows the write, for up to 2 s; the assertions judge the last answer.
+async function settled<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
+  const until = Date.now() + 2000
+  for (;;) {
+    const value = await read()
+    if (done(value) || Date.now() > until) return value
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
 async function blockNumber(): Promise<bigint> {
   return BigInt((await rawRpc("eth_blockNumber", [])) as string)
 }
@@ -119,7 +131,7 @@ const { entityKey } = await step("create entity", async () => {
 })
 
 await step("raw read-back matches (new grammar + select)", async () => {
-  const row = await byKey(entityKey)
+  const row = await settled(() => byKey(entityKey), (found) => found !== undefined)
   assert(row !== undefined, "entity found via arkiv_query")
   assert(attrValue(row, "payload") === toHex(payload), "payload round-trips byte-identical")
   assert(row.creator?.toLowerCase() === writer.address.toLowerCase(), "creator is the writer")
@@ -139,7 +151,7 @@ await step("patch: set + tombstone unset, expiry untouched", async () => {
     set: { rank: i32(2), status: str("patched") },
     unset: ["flag"],
   })
-  const after = await byKey(entityKey)
+  const after = await settled(() => byKey(entityKey), (row) => attrValue(row, "rank") === 2)
   assert(after !== undefined, "entity still present")
   assert(attrValue(after, "rank") === 2, "set overwrote rank")
   assert(attrValue(after, "status") === "patched", "set added status")
@@ -151,7 +163,8 @@ await step("patch: set + tombstone unset, expiry untouched", async () => {
 await step("extend: grows, and shrinking reverts with a cause", async () => {
   const before = BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
   await writer.extendEntity({ entityKey, expiration: ExpirationTime.fromBlocks(150) })
-  const grown = BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
+  const expiry = async () => BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
+  const grown = await settled(expiry, (at) => at > before)
   console.log(`  expiresAt ${before} -> ${grown}`)
   assert(grown > before, "expiry strictly increased")
   try {
@@ -199,11 +212,16 @@ await step("batch: two creates + one patch in one transaction", async () => {
     patches: [{ schema: Probe, entityKey, set: { batched: str("yes") } }],
   })
   assert(createdEntities.length === 2, "two entity keys returned")
-  const [a, b, patched] = await Promise.all([
-    byKey(required(createdEntities[0], "first created key")),
-    byKey(required(createdEntities[1], "second created key")),
-    byKey(entityKey),
-  ])
+  const [a, b, patched] = await settled(
+    () =>
+      Promise.all([
+        byKey(required(createdEntities[0], "first created key")),
+        byKey(required(createdEntities[1], "second created key")),
+        byKey(entityKey),
+      ]),
+    ([first, second, third]) =>
+      first !== undefined && second !== undefined && attrValue(third, "batched") === "yes",
+  )
   assert(a !== undefined && b !== undefined, "both created entities readable")
   assert(attrValue(patched, "batched") === "yes", "patch applied in the same tx")
   console.log(`  one tx ${txHash}`)
@@ -221,7 +239,8 @@ await step("delete removes immediately", async () => {
     expiration: TTL,
   })
   await writer.deleteEntity({ entityKey: victim.entityKey })
-  assert((await byKey(victim.entityKey)) === undefined, "deleted entity gone from queries")
+  const left = await settled(() => byKey(victim.entityKey), (row) => row === undefined)
+  assert(left === undefined, "deleted entity gone from queries")
 })
 
 await step("expiry: entity leaves queries; the $expiresAt filter is exact at the boundary", async () => {

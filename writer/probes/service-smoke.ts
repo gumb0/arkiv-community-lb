@@ -48,6 +48,18 @@ async function query(q: string): Promise<QueriedRow[]> {
 
 const byKey = async (entityKey: Hex) => (await query(`$key = key(${entityKey})`))[0]
 
+// A query answer labeled with a write's block can miss that write for a
+// moment after its receipt, so a read that follows a write repeats until
+// it shows the write, for up to 2 s; the assertions judge the last answer.
+async function settled<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
+  const until = Date.now() + 2000
+  for (;;) {
+    const value = await read()
+    if (done(value) || Date.now() > until) return value
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
 const attrValue = (row: QueriedRow | undefined, name: string) =>
   row?.attributes?.find((attribute) => attribute.name === name)?.value
 
@@ -132,7 +144,7 @@ const entityKey = await step("POST /create — typed attributes, the payload a b
   console.log(`  key ${key}, expiresAt ${result.expiresAt} (bigint as string)`)
   assert(typeof result.expiresAt === "string", "bigints serialize as decimal strings")
 
-  const row = await byKey(key)
+  const row = await settled(() => byKey(key), (found) => found !== undefined)
   assert(row !== undefined, "entity readable over raw JSON-RPC")
   assert(attrValue(row, "payload") === payload, "bytes round-trip byte-identical")
   assert(attrValue(row, "run") === RUN, "str attribute round-trips")
@@ -159,7 +171,7 @@ await step("POST /patch — set, unset, payload replacement", async () => {
     },
     unset: ["live"],
   })
-  const row = await byKey(entityKey)
+  const row = await settled(() => byKey(entityKey), (found) => attrValue(found, "rank") === 2)
   assert(attrValue(row, "rank") === 2, "set overwrote rank")
   assert(attrValue(row, "status") === "patched", "set added status")
   assert(attrValue(row, "live") === undefined, "unset removed live")
@@ -169,7 +181,8 @@ await step("POST /patch — set, unset, payload replacement", async () => {
 await step("POST /extend — expiry grows", async () => {
   const before = BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
   const result = await ok("/extend", { entityKey, expiration: { seconds: 900 } })
-  const after = BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
+  const expiry = async () => BigInt((await byKey(entityKey))?.expiresAt ?? "0x0")
+  const after = await settled(expiry, (at) => at > before)
   console.log(`  expiresAt ${before} -> ${after} (service said ${result.expiresAt})`)
   assert(after > before, "expiry strictly increased")
 })
@@ -191,11 +204,16 @@ const batched = await step("POST /execute-batch — two creates and a patch in o
   const created = result.createdEntities as Hex[]
   assert(created.length === 2, "two keys returned, in batch order")
   assert((result.patchedEntities as Hex[]).length === 1, "one patched key returned")
-  const [a, b, patched] = await Promise.all([
-    byKey(required(created[0], "first created key")),
-    byKey(required(created[1], "second created key")),
-    byKey(entityKey),
-  ])
+  const [a, b, patched] = await settled(
+    () =>
+      Promise.all([
+        byKey(required(created[0], "first created key")),
+        byKey(required(created[1], "second created key")),
+        byKey(entityKey),
+      ]),
+    ([first, second, third]) =>
+      first !== undefined && second !== undefined && attrValue(third, "batched") === "yes",
+  )
   assert(a !== undefined && b !== undefined, "both created entities readable")
   assert(attrValue(a, "rank") === 10 && attrValue(b, "rank") === 11, "batch order preserved")
   assert(attrValue(patched, "batched") === "yes", "patch applied in the same tx")
@@ -217,7 +235,10 @@ const parallel = await step("parallel /create requests both land (the queue seri
   const results = await Promise.all([fire("p1"), fire("p2")])
   const keys = results.map((result) => result.entityKey as Hex)
   assert(new Set(keys).size === 2, "two distinct keys")
-  const rows = await Promise.all(keys.map(byKey))
+  const rows = await settled(
+    () => Promise.all(keys.map(byKey)),
+    (found) => found.every((row) => row !== undefined),
+  )
   assert(rows.every((row) => row !== undefined), "both entities on chain — neither request lost")
   console.log(`  ${keys.map((k) => k.slice(0, 12) + "…").join(", ")} in separate transactions`)
   return keys

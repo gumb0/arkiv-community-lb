@@ -27,7 +27,7 @@ import {
 import { defineChain, http, stringToHex, toHex, type Hex } from "viem"
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
 import { connectReader, connectWriter } from "../src/chain.ts"
-import { ledger } from "../src/ledger.ts"
+import { ledger, type Ledger, type Owed } from "../src/ledger.ts"
 import { pay } from "../src/pay.ts"
 import { attrAddr, byKind, creator, decodeReceipt, KIND } from "../src/records.ts"
 
@@ -62,6 +62,23 @@ let failures = 0
 function check(cond: boolean, what: string) {
   console.log(`${cond ? "✓" : "✗"} ${what}`)
   if (!cond) failures += 1
+}
+
+// A query answer labeled with a write's block can miss that write for a
+// moment after its receipt, so a read that follows a write repeats until
+// it shows the write, for up to 2 s; the checks judge the last answer.
+async function settled<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
+  const until = Date.now() + 2000
+  for (;;) {
+    const value = await read()
+    if (done(value) || Date.now() > until) return value
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
+/** What the ledger says the run's provider is owed, if anything. */
+function owedTo(plan: Ledger): Owed | undefined {
+  return plan.owed.find((o) => o.provider.toLowerCase() === provider.toLowerCase())
 }
 
 const reader = await connectReader(rpcUrl, apiKey)
@@ -109,8 +126,11 @@ try {
     counters.push(...(await lb.executeBatch({ creates })).createdEntities)
   }
 
-  const before = await ledger(reader, me, me)
-  const owed = before.owed.find((o) => o.provider.toLowerCase() === provider.toLowerCase())
+  const before = await settled(
+    () => ledger(reader, me, me),
+    (plan) => owedTo(plan)?.records.length === RECORDS,
+  )
+  const owed = owedTo(before)
   check(owed?.records.length === RECORDS, `${RECORDS} closed records owed to the run's provider`)
   if (owed === undefined) throw new Error("nothing owed to the run's provider")
 
@@ -130,14 +150,18 @@ try {
   check(transfers === 1 && paid.length === 1, "one transfer for the provider")
   check(paid[0]?.receipted === true && paid[0].records === RECORDS, "a receipt for every record")
 
-  const after = await ledger(reader, me, me)
-  check(
-    !after.owed.some((o) => o.provider.toLowerCase() === provider.toLowerCase()),
-    "nothing owed to the provider afterwards",
+  const after = await settled(
+    () => ledger(reader, me, me),
+    (plan) => owedTo(plan) === undefined,
   )
-  const receipts = (
-    await reader.query(byKind(KIND.receipt, creator(me), attrAddr("provider", provider)))
-  ).map(decodeReceipt)
+  check(owedTo(after) === undefined, "nothing owed to the provider afterwards")
+  const receipts = await settled(
+    async () =>
+      (await reader.query(byKind(KIND.receipt, creator(me), attrAddr("provider", provider)))).map(
+        decodeReceipt,
+      ),
+    (read) => read.length === RECORDS,
+  )
   const named = new Set(receipts.map((r) => r.counter.toLowerCase()))
   check(
     receipts.length === RECORDS &&

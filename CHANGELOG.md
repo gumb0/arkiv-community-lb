@@ -6,6 +6,13 @@ Notable changes per release, newest first. The LB box deploys a tag:
 
 ## Unreleased
 
+- A 400 from a node with a JSON-RPC body is the node's answer: it
+  reaches the client with its status, is not retried elsewhere, and
+  ticks nobody's health. Every node refuses a request the same way,
+  so a request every node refused failed over through the budget and
+  counted against each provider (#74). A 400 without a JSON-RPC body
+  is something in front of the node answering in its place, and every
+  other 4xx can be one provider's own setup; both still fail over.
 - A request body that does not start as a JSON object or array is
   refused by the LB with a plain-text 400, as an empty body was. A
   node answers such a body with 400 before parsing it, and every node

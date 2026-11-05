@@ -62,10 +62,13 @@ first-class concern, not an add-on.
   host's long-running processes.
 - Client headers are never forwarded to providers, and a provider's JSON-RPC
   error is an answer, not a failure — passed through, never retried elsewhere.
-  An answer always arrives as HTTP 2xx with a JSON body; a non-2xx status, or
-  a 2xx whose body is not JSON, means the node did not answer (the tunnel may
-  have answered instead of it) and fails over like a transport error, never
-  reaching the client.
+  An answer is a 2xx with a JSON body, or a 400 whose body is a JSON-RPC
+  response: the node refusing the request, which every node refuses
+  alike, so it reaches the client with its status. Anything else, a 2xx
+  whose body is not JSON, a 400 whose body is not a JSON-RPC response, or
+  any other status (a 413 or a 404 can be one provider's own setup),
+  means the node did not answer (the tunnel may have answered instead of
+  it) and fails over like a transport error, never reaching the client.
 - **The method denylist is code, not configuration** (`denylist.rs`): retries
   are replay-safe only because every non-replay-safe method is on it, so an
   operator must not be able to void that from the toml.

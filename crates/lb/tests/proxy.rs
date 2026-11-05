@@ -329,6 +329,74 @@ async fn http_error_status_fails_over() {
 }
 
 #[tokio::test]
+async fn a_400_with_a_json_rpc_body_is_the_nodes_answer() {
+    use axum::http::StatusCode;
+
+    // The node refusing the request itself, as every node would:
+    // passed to the client with its status, no failover, no tick.
+    let refusal = br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#;
+    let (refusing, refusing_fake) =
+        broken_provider(StatusCode::BAD_REQUEST, refusal, Duration::ZERO).await;
+    let answer = br#"{"jsonrpc":"2.0","id":4,"result":"ok"}"#;
+    let (live, live_fake) = fake_provider(answer, Duration::ZERO).await;
+    let (service, public) = start_lb(&[refusing, live]).await;
+
+    let (status, body) = post(&public, request(4)).await;
+    assert_eq!(status, 400, "the node's status");
+    assert_eq!(body["error"]["code"], -32700, "the node's body");
+    assert_eq!(refusing_fake.requests(), 1);
+    assert_eq!(live_fake.requests(), 0, "not retried elsewhere");
+    let entry = &service.pool.snapshot()[0];
+    assert_eq!(entry.health_streak.load(Ordering::Relaxed), 0);
+    assert_eq!(entry.transport_failures.load(Ordering::Relaxed), 0);
+    assert_eq!(entry.served_total.load(Ordering::Relaxed), 1, "an answer");
+}
+
+#[tokio::test]
+async fn a_400_without_a_json_rpc_body_fails_over() {
+    use axum::http::StatusCode;
+
+    // Something in front of the node refusing in its place.
+    let (page, page_fake) = broken_provider(
+        StatusCode::BAD_REQUEST,
+        br#"{"error":"bad request"}"#,
+        Duration::ZERO,
+    )
+    .await;
+    let answer = br#"{"jsonrpc":"2.0","id":5,"result":"ok"}"#;
+    let (live, _live_fake) = fake_provider(answer, Duration::ZERO).await;
+    let (service, public) = start_lb(&[page, live]).await;
+
+    let (status, body) = post(&public, request(5)).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["result"], "ok");
+    assert_eq!(page_fake.requests(), 1);
+    let entry = &service.pool.snapshot()[0];
+    assert_eq!(entry.transport_failures.load(Ordering::Relaxed), 1);
+    assert_eq!(entry.served_total.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn another_4xx_fails_over_even_with_a_json_rpc_body() {
+    use axum::http::StatusCode;
+
+    // A 413 is this provider's request cap, not every node's verdict:
+    // another node may answer.
+    let too_big =
+        br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32701,"message":"Request is too big"}}"#;
+    let (limited, limited_fake) =
+        broken_provider(StatusCode::PAYLOAD_TOO_LARGE, too_big, Duration::ZERO).await;
+    let answer = br#"{"jsonrpc":"2.0","id":6,"result":"ok"}"#;
+    let (live, _live_fake) = fake_provider(answer, Duration::ZERO).await;
+    let (_service, public) = start_lb(&[limited, live]).await;
+
+    let (status, body) = post(&public, request(6)).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["result"], "ok");
+    assert_eq!(limited_fake.requests(), 1);
+}
+
+#[tokio::test]
 async fn an_answer_behind_whitespace_is_still_an_answer() {
     // The body is judged by its first non-blank byte, however far in.
     let padded = format!(

@@ -96,9 +96,9 @@ no separate snapshot or cache.
   `served_total` counts them since the process started and is never
   reset or seeded: the stats basis.
 - `transport_failures` counts public forwarding attempts that produced
-  no provider answer, such as connection errors, timeouts, non-2xx
-  statuses, 2xx answers without a JSON body, and incomplete response
-  bodies.
+  no provider answer, such as connection errors, timeouts, 2xx answers
+  without a JSON body, 400 answers without a JSON-RPC body, any other
+  status, and incomplete response bodies.
 - `last_probe_ms` is the round-trip time of the latest provider
   `eth_blockNumber` health probe, including failed attempts, measured
   in whole milliseconds. It is `null` before the first probe; a
@@ -128,7 +128,11 @@ The Proxy forwards the request body untouched and builds fresh headers —
 nothing of the client's (auth, cookies, IPs) ever reaches a provider,
 and nothing of a provider's operational headers leaks back. The response
 is relayed within a size cap; a provider's JSON-RPC error is an answer,
-returned to the client, never retried elsewhere.
+returned to the client, never retried elsewhere. So is a 400 whose
+body is a JSON-RPC response: the node refusing the request, as every
+node would, passed to the client with its status. Every other 4xx
+fails over, since it can be one provider's own setup: a 413 from a
+request cap set lower than the LB's, a 404 from a misrouted proxy.
 
 Transport failures are retried on the next provider within a small
 budget, all under one request deadline (each attempt gets the smaller

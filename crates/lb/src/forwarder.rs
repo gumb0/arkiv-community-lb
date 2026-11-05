@@ -3,14 +3,15 @@
 //! the provider, fresh ones back to the client (upstream status and
 //! body, nothing else). Failover across providers is the caller's job.
 //!
-//! An answer is what a node's RPC layer produced — always an HTTP 2xx,
-//! even when it carries a JSON-RPC error. Any other status means the
-//! node did not answer (overloaded, misconfigured, or the tunnel
-//! speaking in its place) and counts as a failed attempt.
+//! An answer is what a node's RPC layer produced: a 2xx with a JSON
+//! body, even one carrying a JSON-RPC error, or a 400 carrying a
+//! JSON-RPC response, the node refusing the request itself. Any other
+//! status means the node did not answer (overloaded, misconfigured, or
+//! the tunnel speaking in its place) and counts as a failed attempt.
 
 use axum::{
     body::Bytes,
-    http::header,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 
@@ -27,8 +28,8 @@ pub struct Forwarder {
 pub enum Outcome {
     /// The provider answered — success or its own JSON-RPC error alike.
     Answer(Response),
-    /// No answer: transport failure, a non-2xx status, or a 2xx whose
-    /// body is not JSON.
+    /// No answer: transport failure, a 2xx whose body is not JSON, a
+    /// 400 whose body is not a JSON-RPC response, or any other status.
     NoAnswer,
     /// No answer within the attempt's timeout, on the send or the body
     /// read. Apart from the other failures because a slow provider is
@@ -73,7 +74,14 @@ impl Forwarder {
         };
 
         let status = response.status();
-        if !status.is_success() {
+        // A 400 can be the node refusing the request, which every node
+        // refuses alike, so it is read and judged by its body below. The
+        // other 4xx can be this provider's own setup, a 413 from a lower
+        // request cap or a 404 from a misrouted proxy, so another
+        // provider may answer: they fail over like a 5xx.
+        let refused = status == StatusCode::BAD_REQUEST;
+        let answered = status.is_success() || refused;
+        if !answered {
             tracing::debug!(provider = %provider.id, %status, "non-2xx from provider");
             return Outcome::NoAnswer;
         }
@@ -122,6 +130,22 @@ impl Forwarder {
             );
             return Outcome::NoAnswer;
         }
+        // A refusal is the node's answer only when its body is a
+        // JSON-RPC response; anything else is something in front of the
+        // node refusing in its place, and fails over like a 5xx. A
+        // parse, unlike the 2xx check: a refusal is a short error.
+        if refused {
+            if !is_json_rpc_response(&collected) {
+                tracing::debug!(
+                    provider = %provider.id,
+                    %status,
+                    bytes = collected.len(),
+                    "400 without a JSON-RPC body"
+                );
+                return Outcome::NoAnswer;
+            }
+            tracing::debug!(provider = %provider.id, %status, "the node refused the request");
+        }
 
         Outcome::Answer(
             (
@@ -143,6 +167,26 @@ fn failure(error: &reqwest::Error) -> Outcome {
     }
 }
 
+/// The longest body the check below parses. A node's error body is a
+/// few dozen bytes; a longer one comes from something else, an error
+/// page for example, and is not parsed at all.
+const REFUSAL_MAX: usize = 4096;
+
+/// Whether a body is a JSON-RPC response: an object with a `jsonrpc`
+/// field, or a batch of them.
+fn is_json_rpc_response(body: &[u8]) -> bool {
+    if body.len() > REFUSAL_MAX {
+        return false;
+    }
+    match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(serde_json::Value::Object(fields)) => fields.contains_key("jsonrpc"),
+        Ok(serde_json::Value::Array(batch)) => {
+            !batch.is_empty() && batch.iter().all(|item| item.get("jsonrpc").is_some())
+        }
+        _ => false,
+    }
+}
+
 /// Whether a body starts, after whitespace, as a JSON object or array.
 /// The scan stops at the first non-blank byte, usually the first byte,
 /// and a body of nothing but whitespace is bounded by the request or
@@ -151,4 +195,36 @@ pub(crate) fn looks_like_json(body: &[u8]) -> bool {
     body.iter()
         .find(|byte| !byte.is_ascii_whitespace())
         .is_some_and(|byte| *byte == b'{' || *byte == b'[')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_is_a_json_rpc_object_or_a_batch_of_them_within_the_ceiling() {
+        let error =
+            br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#;
+        assert!(is_json_rpc_response(error));
+        assert!(is_json_rpc_response(
+            br#"[{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid request"}}]"#
+        ));
+
+        assert!(!is_json_rpc_response(b"[]"), "an empty batch says nothing");
+        assert!(
+            !is_json_rpc_response(br#"[{"jsonrpc":"2.0","id":1,"result":"ok"},{"error":"x"}]"#),
+            "every item carries the envelope"
+        );
+        assert!(
+            !is_json_rpc_response(br#"{"error":"forbidden"}"#),
+            "plain JSON"
+        );
+        assert!(!is_json_rpc_response(b"<html>bad request</html>"));
+        assert!(!is_json_rpc_response(b""));
+
+        // Over the ceiling the body is not parsed, whatever it holds.
+        let padding = " ".repeat(REFUSAL_MAX);
+        let long = format!("{padding}{}", std::str::from_utf8(error).unwrap());
+        assert!(!is_json_rpc_response(long.as_bytes()));
+    }
 }

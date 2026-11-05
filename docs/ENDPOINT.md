@@ -74,12 +74,14 @@ errors). The load balancer's own errors use codes −32050…−32054, and
 **every message it generates starts with `lb: `** — that prefix is how
 you tell an LB error from a node error.
 
-A node's answer — success or error — always arrives as HTTP 2xx with
-a JSON body. A non-2xx status from a node, or a 2xx whose body is empty
-or not JSON, means it did not answer (overloaded, broken, or the
-tunnel answering instead of the node); the load balancer treats that as
-a failed attempt and tries another provider, so such responses never
-reach the client.
+A node's answer — success or error — arrives as HTTP 2xx with a JSON
+body, or as the node's own 400 with a JSON-RPC error body when it
+refuses the request, a parse error for example. Anything else, a 2xx
+whose body is empty or not JSON, a 400 whose body is not a JSON-RPC
+response, or any other status, means it did not answer
+(overloaded, broken, or the tunnel answering instead of the node); the
+load balancer treats that as a failed attempt and tries another
+provider, so such responses never reach the client.
 
 | Code | Meaning | HTTP |
 |---|---|---|

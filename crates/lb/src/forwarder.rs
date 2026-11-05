@@ -82,7 +82,12 @@ impl Forwarder {
         let refused = status == StatusCode::BAD_REQUEST;
         let answered = status.is_success() || refused;
         if !answered {
-            tracing::debug!(provider = %provider.id, %status, "non-2xx from provider");
+            tracing::debug!(
+                provider = %provider.id,
+                %status,
+                request = %head(body),
+                "non-2xx from provider"
+            );
             return Outcome::NoAnswer;
         }
         let cap = self.max_response_size;
@@ -126,6 +131,8 @@ impl Forwarder {
             tracing::debug!(
                 provider = %provider.id,
                 bytes = collected.len(),
+                body = %head(&collected),
+                request = %head(body),
                 "2xx without a JSON body"
             );
             return Outcome::NoAnswer;
@@ -140,6 +147,8 @@ impl Forwarder {
                     provider = %provider.id,
                     %status,
                     bytes = collected.len(),
+                    body = %head(&collected),
+                    request = %head(body),
                     "400 without a JSON-RPC body"
                 );
                 return Outcome::NoAnswer;
@@ -165,6 +174,18 @@ fn failure(error: &reqwest::Error) -> Outcome {
     } else {
         Outcome::NoAnswer
     }
+}
+
+/// The first bytes of a body as text, for a log line that has to say
+/// what was sent or answered without carrying a whole body.
+fn head(body: &[u8]) -> String {
+    const SHOWN: usize = 200;
+    let shown = &body[..body.len().min(SHOWN)];
+    let mut text = String::from_utf8_lossy(shown).into_owned();
+    if body.len() > SHOWN {
+        text.push('…');
+    }
+    text
 }
 
 /// The longest body the check below parses. A node's error body is a

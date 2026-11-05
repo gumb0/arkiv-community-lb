@@ -1,10 +1,63 @@
 # Changelog
 
-Notable changes per release, newest first. The LB box deploys a tag:
+Notable changes per release, newest first. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) from 0.6.0
+on, and the version numbers follow [Semantic Versioning](https://semver.org/):
+a release's entries are grouped as Added, Changed, Fixed or Removed,
+a summary and upgrade notes may precede them, and earlier releases
+keep the shape they were written in. The LB box deploys a tag:
 `git checkout <tag> && docker compose up -d --build`
 ([docs/RUNBOOK.md](docs/RUNBOOK.md)).
 
-## Unreleased
+## [Unreleased]
+
+## [0.6.0] - 2026-11-05
+
+A request every node refuses is answered by the LB or by the node,
+not failed over, so a client's mistake no longer counts against the
+providers; the stack stops in order at a reboot; settle reads its
+pages by key.
+
+Upgrade notes: the writer image changes with the SDK pin, which
+`docker compose up -d --build` builds again; settle takes it at its
+next `npm ci`. The systemd unit
+in `deploy/` is installed by hand once
+([docs/RUNBOOK.md](docs/RUNBOOK.md#first-deployment)); without it a
+reboot loses the counts since the last flush, as before.
+
+### Added
+
+- A systemd unit, `deploy/arkiv-lb-stack.service`, that runs `docker
+  compose stop` before Docker stops at shutdown, so the LB stops first
+  and writes its counts while the sidecar is still up, and runs
+  `docker compose up -d` at boot. Docker's own shutdown stops every
+  container at once, and the LB's last write failed.
+
+### Changed
+
+- The writer sidecar and settle are on `@arkiv-network/sdk` 1.0.1,
+  which sends every entity write with 25% over the gas estimate. With
+  1.0.0 the bare estimate was the limit, and a write sent right after
+  another could run out of gas when the endpoint answered the estimate
+  from a node one block behind (#77).
+- Settle reads a query by key, `$key > key(<last>) ORDER BY $key`,
+  instead of by offset: a record that expires during the walk skips no
+  other, and the restart on a changed count is gone. One more read per
+  query, and a page out of order or below the bound refuses the run,
+  since a node that ignored the bound would return one page for ever.
+- The LB counts agreements and counter records through `arkiv_query`'s
+  count projection, the way the node's API documents it, so a node
+  that drops `arkiv_getEntityCount` does not stop the LB from starting.
+- Documentation: what a client sees across providers a block apart, a
+  read right after a write, a gas estimate right after a write, and
+  pages from different blocks, with what to do about each
+  ([docs/ENDPOINT.md](docs/ENDPOINT.md)); overlapping settle runs can
+  pay every record twice, so the cron and a hand run must not overlap;
+  how to discard the hourly stats after a network reset; a reference
+  behind the providers hides lag rather than showing it; what settle's
+  key needs in GLM for its receipts.
+
+### Fixed
 
 - A 400 from a node with a JSON-RPC body is the node's answer: it
   reaches the client with its status, is not retried elsewhere, and
@@ -14,12 +67,13 @@ Notable changes per release, newest first. The LB box deploys a tag:
   is something in front of the node answering in its place, and every
   other 4xx can be one provider's own setup; both still fail over.
 - A request body that does not start as a JSON object or array is
-  refused by the LB with a plain-text 400, as an empty body was. A
-  node answers such a body with 400 before parsing it, and every node
-  the same, so forwarding it failed over through the budget and
-  counted a failure against each provider for the client's mistake.
+  refused by the LB with a plain-text 400, as an empty body was, and
+  logged as `outcome=refused`. A node answers such a body with 400
+  before parsing it, and every node the same, so forwarding it failed
+  over through the budget and counted a failure against each provider
+  for the client's mistake.
 
-## v0.5.0
+## [0.5.0] - 2026-10-30
 
 The move to the rabdi testnet and its node line, arkiv-reth v1.0.0.
 This release does not run on an earlier network: a node's entity is
@@ -61,7 +115,7 @@ arkiv-community-lb_lb-state`), and build: `docker compose up -d
 --build`. Settle what the previous chain owes with the previous
 release first, if it matters: this settle cannot read it.
 
-## v0.4.0
+## [0.4.0] - 2026-10-29
 
 The load test and what it changed: the open-files limit, the attempt
 timeout, a slow provider no longer quarantined for timeouts, a 2xx
@@ -143,7 +197,7 @@ proxy name; the CA bundles after eMudhra.
   ran, its results and how to run it again are in
   [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
 
-## v0.3.0
+## [0.3.0] - 2026-10-08
 
 Integrity: a provider serving wrong data is found and taken out of
 rotation, with both answers logged side by side; the handover
@@ -202,7 +256,7 @@ the `[integrity]` section turns the checks on (`interval`,
 in `.env`. `offer_max_lifetime` now defaults to one day; set it back
 to two if the old value is wanted. Records on the chain are unchanged.
 
-## v0.2.0
+## [0.2.0] - 2026-09-24
 
 The marketplace: a provider joins by posting an offer on Arkiv, serves
 through a tunnel its own signature admits, is counted on chain, and is
@@ -256,7 +310,7 @@ marketplace instead. `docker compose up -d --build` starts the sidecar
 with the rest. A restart now waits up to `stop_grace_period`, 200 s,
 for the counts to be written.
 
-## v0.1.0
+## [0.1.0] - 2026-09-07
 
 First release: the proxy core over a configured provider list.
 
@@ -276,3 +330,11 @@ First release: the proxy core over a configured provider list.
   the tunnel server, runbook.
 - Test rig (`crates/rig/`): scenarios over the shipped binary and real
   dev-node containers, plus a standalone load generator.
+
+[Unreleased]: https://github.com/gumb0/arkiv-community-lb/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/gumb0/arkiv-community-lb/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/gumb0/arkiv-community-lb/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/gumb0/arkiv-community-lb/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/gumb0/arkiv-community-lb/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/gumb0/arkiv-community-lb/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/gumb0/arkiv-community-lb/releases/tag/v0.1.0

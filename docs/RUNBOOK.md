@@ -313,14 +313,21 @@ A release is a git tag with its notes on GitHub. Deploy one with
 
 ```sh
 git fetch --tags && git checkout v0.2.0
-docker compose up -d --build
+docker compose build
+docker compose stop
+docker compose up -d
 ```
 
-The build takes a few minutes; `up -d` then stops the running LB,
-which writes its counts first and can take up to `stop_grace_period`
-(200 s), and starts the new one. The tunnel clients reconnect on their
-own and `/nodes` fills in within the boot window. Nothing on the
-providers' side changes unless the notes say so.
+The build takes a few minutes, and the running stack serves meanwhile.
+`docker compose stop` stops the LB before the sidecar, so the LB
+writes its counts first; it can take up to `stop_grace_period`
+(200 s). Do not shorten this to `docker compose up -d --build`: when
+the sidecar's image changes too, compose replaces the sidecar while
+the old LB still runs, and the LB's last write finds no sidecar. The
+counts since the last flush are then lost. `up -d` starts the new
+stack. The tunnel clients reconnect on their own and `/nodes` fills
+in within the boot window. Nothing on the providers' side changes
+unless the notes say so.
 
 Before updating, check the config keys the new tag adds or removes:
 the LB refuses to start on an unknown key, so a removed one has to

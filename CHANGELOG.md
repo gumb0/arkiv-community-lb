@@ -5,9 +5,8 @@ Notable changes per release, newest first. The format follows
 on, and the version numbers follow [Semantic Versioning](https://semver.org/):
 a release's entries are grouped as Added, Changed, Fixed or Removed,
 a summary and upgrade notes may precede them, and earlier releases
-keep the shape they were written in. The LB box deploys a tag:
-`git checkout <tag> && docker compose up -d --build`
-([docs/RUNBOOK.md](docs/RUNBOOK.md)).
+keep the shape they were written in. The LB box deploys a tag, with
+the steps in [docs/RUNBOOK.md](docs/RUNBOOK.md#releases-and-updates).
 
 ## [Unreleased]
 

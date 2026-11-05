@@ -43,7 +43,8 @@ blocks:
   the transaction then fails out of gas. A client that sends writes
   back to back sets the gas limit itself, with a margin over the
   estimate (for example 1.2 times it). It is charged only for the gas
-  the write uses.
+  the write uses. The Arkiv SDK adds such a margin itself from version
+  1.0.1.
 - The pages of one query can come from different blocks, so paging by
   offset can skip or repeat rows between them. A client that needs
   every row pages by key instead: `ORDER BY $key`, each page asking for

@@ -33,9 +33,6 @@ for the market. How to operate with them is [RUNBOOK.md](RUNBOOK.md).
   write fails out of gas, and the pages of one query can come from
   different blocks. Clients retry reads, page by key, and set a margin
   on the gas limit ([ENDPOINT.md](ENDPOINT.md#consecutive-requests)).
-  The LB's own writes go out the same way, through the Arkiv endpoint
-  it is given, which may sit in front of several nodes too
-  ([#77](https://github.com/gumb0/arkiv-community-lb/issues/77)).
 - **Method filtering is a text search** over the request body, not a
   JSON parse: a request that merely mentions a refused method name is
   refused, and requests cannot be counted per method

@@ -329,6 +329,26 @@ async fn http_error_status_fails_over() {
 }
 
 #[tokio::test]
+async fn an_answer_behind_whitespace_is_still_an_answer() {
+    // The body is judged by its first non-blank byte, however far in.
+    let padded = format!(
+        "{}{}",
+        "\n".repeat(300),
+        r#"{"jsonrpc":"2.0","id":7,"result":"ok"}"#
+    );
+    let (addr, fake) = fake_provider(padded.as_bytes(), Duration::ZERO).await;
+    let (service, public) = start_lb(&[addr]).await;
+
+    let (status, body) = post(&public, request(7)).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["result"], "ok");
+    assert_eq!(fake.requests(), 1);
+    let entry = &service.pool.snapshot()[0];
+    assert_eq!(entry.served_total.load(Ordering::Relaxed), 1);
+    assert_eq!(entry.transport_failures.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
 async fn a_2xx_without_a_json_body_fails_over() {
     use axum::http::StatusCode;
 
@@ -768,6 +788,48 @@ async fn empty_body_is_refused_without_spending_the_budget() {
         0,
         "nodes answer an empty body with 400, which would burn every attempt"
     );
+}
+
+#[tokio::test]
+async fn a_body_that_is_not_json_rpc_is_refused_without_spending_the_budget() {
+    // A node answers 400 to a body whose first byte is not `{` or `[`,
+    // before it parses anything; the LB refuses it the same way, so no
+    // provider is tried or ticked for it. A truncated object is a
+    // node's business: it starts right and gets a parse error answer.
+    let answer = br#"{"jsonrpc":"2.0","id":1,"result":"0x1"}"#;
+    let (addr, fake) = fake_provider(answer, Duration::ZERO).await;
+    let (service, public) = start_lb(&[addr]).await;
+
+    for junk in ["ping", "  null", "method=eth_blockNumber", "\"{\""] {
+        let response = client()
+            .post(&public)
+            .header("content-type", "application/json")
+            .body(junk)
+            .send()
+            .await
+            .expect("lb answers");
+        assert_eq!(response.status(), 400, "{junk:?}");
+    }
+    assert_eq!(fake.requests(), 0, "no node saw them");
+    let entry = &service.pool.snapshot()[0];
+    assert_eq!(entry.health_streak.load(Ordering::Relaxed), 0);
+    assert!(entry.eligible());
+
+    let (status, _) = post(&public, request(1)).await;
+    assert_eq!(status, 200, "a request that starts right is forwarded");
+    assert_eq!(fake.requests(), 1);
+
+    // Leading whitespace of any length is skipped, as a node skips it.
+    let padded = format!("{}{}", " ".repeat(300), request(1));
+    let response = client()
+        .post(&public)
+        .header("content-type", "application/json")
+        .body(padded)
+        .send()
+        .await
+        .expect("lb answers");
+    assert_eq!(response.status(), 200);
+    assert_eq!(fake.requests(), 2);
 }
 
 #[tokio::test]

@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use crate::{
     config::Proxy,
     denylist,
-    forwarder::{Forwarder, Outcome},
+    forwarder::{Forwarder, Outcome, looks_like_json},
     jsonrpc,
     pool::{HealthSignal, Pool},
 };
@@ -98,12 +98,14 @@ pub(crate) fn check_request(body: Result<Bytes, BytesRejection>) -> Result<Bytes
         }
         Err(rejection) => return Err(rejection.into_response()),
     };
-    // A healthy node answers empty body with 400,
-    // which would lead to failover below and return NO_HEALTHY_PROVIDER.
-    if body.is_empty() {
+    // A node answers 400 to a body that does not start as a JSON object
+    // or array, before it parses anything, and every node answers the
+    // same; forwarded, it would fail over through the budget and tick
+    // each provider's health for the client's mistake.
+    if !looks_like_json(&body) {
         return Err((
             StatusCode::BAD_REQUEST,
-            "Empty request body: expected a JSON-RPC request.\n",
+            "Request body is not a JSON-RPC request: expected a JSON object or a batch array.\n",
         )
             .into_response());
     }

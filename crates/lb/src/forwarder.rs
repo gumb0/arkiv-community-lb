@@ -144,11 +144,11 @@ fn failure(error: &reqwest::Error) -> Outcome {
 }
 
 /// Whether a body starts, after whitespace, as a JSON object or array.
-/// Only the first bytes are looked at, so a body of whitespace costs
-/// nothing to refuse; a node's answer has at most a newline in front.
-fn looks_like_json(body: &[u8]) -> bool {
+/// The scan stops at the first non-blank byte, usually the first byte,
+/// and a body of nothing but whitespace is bounded by the request or
+/// response cap, which was already paid to read it in.
+pub(crate) fn looks_like_json(body: &[u8]) -> bool {
     body.iter()
-        .take(64)
         .find(|byte| !byte.is_ascii_whitespace())
         .is_some_and(|byte| *byte == b'{' || *byte == b'[')
 }

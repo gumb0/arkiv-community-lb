@@ -4,6 +4,14 @@ Notable changes per release, newest first. The LB box deploys a tag:
 `git checkout <tag> && docker compose up -d --build`
 ([docs/RUNBOOK.md](docs/RUNBOOK.md)).
 
+## Unreleased
+
+- A request body that does not start as a JSON object or array is
+  refused by the LB with a plain-text 400, as an empty body was. A
+  node answers such a body with 400 before parsing it, and every node
+  the same, so forwarding it failed over through the budget and
+  counted a failure against each provider for the client's mistake.
+
 ## v0.5.0
 
 The move to the rabdi testnet and its node line, arkiv-reth v1.0.0.

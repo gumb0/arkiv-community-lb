@@ -11,9 +11,10 @@ directly. No API key, no registration.
 
 POST to the root path is the only request it serves. Any other path
 gets a plain-text 404, any other method a plain-text 405 with
-`Allow: POST, OPTIONS`, and a POST with an empty body a plain-text
-400; none of these reaches a node. Everything else this endpoint
-returns is JSON-RPC.
+`Allow: POST, OPTIONS`, and a POST whose body is empty or does not
+start as a JSON object or array a plain-text 400, the answer a node
+gives such a body; none of these reaches a node. Everything else this
+endpoint returns is JSON-RPC.
 
 ## Served methods
 

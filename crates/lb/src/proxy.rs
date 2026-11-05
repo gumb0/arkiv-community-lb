@@ -103,6 +103,7 @@ pub(crate) fn check_request(body: Result<Bytes, BytesRejection>) -> Result<Bytes
     // same; forwarded, it would fail over through the budget and tick
     // each provider's health for the client's mistake.
     if !looks_like_json(&body) {
+        tracing::info!(bytes = body.len(), outcome = %"refused", "request");
         return Err((
             StatusCode::BAD_REQUEST,
             "Request body is not a JSON-RPC request: expected a JSON object or a batch array.\n",

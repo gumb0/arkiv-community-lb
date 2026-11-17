@@ -19,7 +19,7 @@ export type WriteReceipts = (records: ReceiptRecord[]) => Promise<void>
  * the node's size cap; the margin is there because a receipt's size
  * follows its payload, and nothing stops a future field.
  */
-const RECEIPTS_PER_BATCH = 50
+export const RECEIPTS_PER_BATCH = 50
 
 export type Paid = {
   provider: Hex

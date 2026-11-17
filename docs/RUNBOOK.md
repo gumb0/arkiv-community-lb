@@ -464,23 +464,31 @@ not report by itself; have the log checked, or mail it.
 **When a transfer fails**, nothing is lost: the run says so, moves to
 the next provider, and the next run finds those records unpaid.
 
-**When a run says `PAID BUT NOT RECEIPTED`**, a person has to decide,
-because the tool cannot repair it. The money has certainly moved: a
-run waits for a transfer to be mined before it writes any receipt, so
-that line means the transfer landed and the receipts did not. Settle
-reads a record as unpaid until one of its own receipts names it, so
-the next run would pay those records a second time.
+**When a run says `PAID BUT NOT RECEIPTED` or `MAY HAVE PAID`**, stop
+settle, cron included, until this is resolved. Settle reads a record
+as unpaid until one of its own receipts names it, so the next run
+would pay those records a second time. `PAID BUT NOT RECEIPTED` means
+the transfer landed and its receipts were not written. `MAY HAVE PAID`
+means the transfer was sent and the run lost sight of it, for example
+when the payout endpoint stopped answering; it may have landed.
 
-Keep the output of that run. It lists every record the transfer
-covered, above the line, and names the transaction. Confirm the
-transaction and its amount on the payout chain, then choose one:
+Keep the output of that run. It names the transaction, and its
+rehearsal part lists the provider's records above it. Then write the
+missing receipts with the `receipts` command in `settle/`, first
+without the key:
 
-- **Pay again.** Let the next run proceed. It is the only choice that
-  needs no work, and it costs the provider's records twice over.
-- **Stop settle until the receipts exist.** Nothing must run, cron
-  included, while those records have no receipt. Writing them is a
-  manual job today: one receipt per record, under the settle key,
-  naming that transaction (`ENTITIES.md` has the shape).
+```
+npm run receipts -- <tx> <record>...
+SETTLE_PRIVATE_KEY=0x... npm run receipts -- <tx> <record>...
+```
+
+It writes nothing unless the transfer is mined, was sent by the settle
+key, and moved exactly what the records are worth to their provider,
+and unless none of the records has a receipt yet. If it says the
+transfer is not mined, wait and ask again: a `MAY HAVE PAID` transfer
+that never lands moved nothing, and the next run pays those records as
+usual. Once the receipts are written, `npm run settle` should show
+those records as paid.
 
 ## Keys
 

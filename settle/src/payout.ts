@@ -11,6 +11,8 @@ import {
   formatEther,
   http,
   keccak256,
+  parseEventLogs,
+  TransactionReceiptNotFoundError,
   type Chain,
   type Hex,
 } from "viem"
@@ -41,6 +43,16 @@ export type Payout = {
    * one that was sent. A transaction that reverts throws.
    */
   transfer(to: Hex, amountWei: bigint): Promise<Hex>
+  /** What a mined transaction moved, or undefined if it is not mined. */
+  moved(tx: Hex): Promise<Moved | undefined>
+}
+
+/** A mined transaction: who sent it, whether it ran, and the GLM it moved. */
+export type Moved = {
+  status: "success" | "reverted"
+  sender: Hex
+  /** The token's Transfer events in the transaction, in log order. */
+  transfers: { from: Hex; to: Hex; amountWei: bigint }[]
 }
 
 export async function connectPayout(config: PayoutConfig): Promise<Payout> {
@@ -88,6 +100,21 @@ export async function connectPayout(config: PayoutConfig): Promise<Payout> {
         args: [address],
       }),
     gas: (address) => client.getBalance({ address }),
+    moved: async (hash) => {
+      let receipt
+      try {
+        receipt = await client.getTransactionReceipt({ hash })
+      } catch (error) {
+        if (error instanceof TransactionReceiptNotFoundError) return undefined
+        throw error
+      }
+      // Read from the token's own events, not from the calldata: the
+      // events are what the contract says moved.
+      const transfers = parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs: receipt.logs })
+        .filter((log) => log.address.toLowerCase() === config.token.toLowerCase())
+        .map((log) => ({ from: log.args.from, to: log.args.to, amountWei: log.args.value }))
+      return { status: receipt.status, sender: receipt.from, transfers }
+    },
   }
 }
 

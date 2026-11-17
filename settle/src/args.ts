@@ -17,7 +17,8 @@ Configuration comes from the environment; see .env.example.
 
 Exit code 1 means the run refused to start, or that a provider it
 meant to pay was not paid. Anything printed as PAID BUT NOT RECEIPTED
-needs a person before the next run.`
+or MAY HAVE PAID needs a person before the next run: npm run receipts
+writes the receipts of a transfer that landed.`
 
 /** Refuses what it does not understand rather than ignoring it. */
 export function parseArgs(argv: readonly string[]): Run {

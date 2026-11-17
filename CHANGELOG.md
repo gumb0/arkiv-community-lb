@@ -10,6 +10,14 @@ the steps in [docs/RUNBOOK.md](docs/RUNBOOK.md#releases-and-updates).
 
 ## [Unreleased]
 
+### Added
+
+- `npm run receipts` in `settle/` writes the receipts for a transfer
+  that landed without them, after a run that printed `PAID BUT NOT
+  RECEIPTED` or `MAY HAVE PAID`. It checks the transfer on the payout
+  chain against the records before writing, and only rehearses without
+  the key (#37).
+
 ## [0.6.0] - 2026-11-05
 
 A request every node refuses is answered by the LB or by the node,

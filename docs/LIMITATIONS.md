@@ -174,10 +174,11 @@ itself:
 ## Settlement
 
 - **A run that paid and could not write its receipts** leaves records
-  that look unpaid, and there is no way to write those receipts
-  afterwards; the run says so and stops, and a person decides
+  that look unpaid, and the next run would pay them again. The run
+  says so, and a person writes the receipts with `npm run receipts`
+  before settle runs again
   ([RUNBOOK.md](RUNBOOK.md#paying-the-providers),
-  [#37](https://github.com/gumb0/arkiv-community-lb/issues/37)).
+  [#68](https://github.com/gumb0/arkiv-community-lb/issues/68)).
 - **One counter record settle cannot decode stops every provider
   being paid** ([#40](https://github.com/gumb0/arkiv-community-lb/issues/40)).
 - **A receipt is written after one confirmation**, so a reorg of the
